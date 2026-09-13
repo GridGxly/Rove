@@ -66,6 +66,8 @@ The design uses:
 
 The research agent should not have submission tools or credentials. The application agent should not have unrestricted filesystem or shell access.
 
+For concrete examples of malicious pages, email injection, poisoned MCP output, and the exact boundaries that should stop them, read [docs/prompt-injection.md](docs/prompt-injection.md).
+
 ## Operating modes
 
 The same local model can run under different permission sets:
