@@ -1,8 +1,8 @@
 # How Erga Autopilot works
 
-Erga Autopilot is a local recruiting agent built around one principle: the model should reason about ambiguous work, while deterministic code owns facts, authorization, state, and irreversible actions.
+Erga Autopilot is a local recruiting agent. Qwen handles the parts that need judgment. Normal code owns facts, permissions, state, and irreversible actions.
 
-It is not a hosted job-application service and it is not intended to be a multi-user SaaS backend. The current design is for one person running the system on their own Mac.
+This is not a hosted job-application service or a multi-user SaaS backend. The current design is for one person running it on their own Mac.
 
 ## System map
 
@@ -35,48 +35,46 @@ Autopilot control plane
         └── application receipts
 ```
 
-## The model is not the source of truth
+## What Qwen is responsible for
 
-Qwen is the reasoning layer.
+Qwen is the reasoning layer. It is useful when the answer is not a simple lookup.
 
-It is useful for work such as:
+Examples:
 
-- deciding whether a job is worth applying to;
-- interpreting unfamiliar application wording;
-- selecting relevant experience;
-- researching a company;
-- recovering from a browser validation problem;
-- drafting a written response;
-- understanding an ambiguous recruiting email.
+- deciding whether a job is worth applying to
+- interpreting unfamiliar application wording
+- selecting relevant experience
+- researching a company
+- recovering from a browser validation problem
+- drafting a written response
+- making sense of an ambiguous recruiting email
 
-Qwen should not invent or remember exact applicant facts on its own.
+Qwen is not the source of truth for applicant facts.
 
-Facts such as legal name, contact information, school, graduation date, work authorization, sponsorship status, relocation preferences, and previously approved application answers come from structured local state.
+Legal name, contact information, school, graduation date, work authorization, sponsorship status, relocation preferences, and saved application answers come from structured local state.
 
-## Erga is the career foundation
+## What Erga does
 
-This project exists because [Erga](https://github.com/Adr1an04/erga-mcp) already solves important parts of the recruiting workflow well.
+This project exists because [Erga](https://github.com/Adr1an04/erga-mcp) already solves several parts of the recruiting workflow well.
 
-Erga is the foundation for:
+Erga remains the foundation for:
 
-- evidence-backed resume material;
-- project and Git evidence;
-- application tracking;
-- LaTeX resume generation and validation;
-- recruiting-mail reconciliation;
-- auditable career claims.
+- evidence-backed resume material
+- project and Git evidence
+- application tracking
+- LaTeX resume generation and validation
+- recruiting-mail reconciliation
+- auditable career claims
 
-Autopilot is intentionally additive. It introduces the browser/application layer and personal-agent product around Erga rather than pretending the original work does not exist.
+Autopilot adds the browser/application layer and the personal-agent experience around that work. It does not pretend the Erga foundation is original to this repo.
 
 ## Hermes runs the agent loop
 
-Hermes is the intended harness around Qwen.
+Hermes sits between Qwen and the tools.
 
-It provides sessions, MCP integration, skills, subagents, and the agent loop that lets the local model move between reasoning and tools.
+It provides sessions, MCP integration, skills, subagents, and the loop that lets Qwen reason, call a tool, inspect the result, and continue.
 
-Autopilot uses operating modes to change what the agent is allowed to do without changing the underlying model.
-
-Examples:
+Autopilot changes the available tools depending on what the agent is doing.
 
 ```text
 ONBOARDING
@@ -89,41 +87,47 @@ MAIL_REVIEW
 MANUAL_TAKEOVER
 ```
 
-Onboarding can update approved profile fields but cannot redesign the profile schema. Research can browse public sources but cannot submit an application. Application preparation can fill a form but cannot click the final submit action until submission policy allows it.
+The same model can work in all of those modes. The permissions change.
 
-## Playwright is the browser body
+For example:
 
-Playwright MCP provides the application browser.
+- onboarding can fill approved profile fields but cannot redesign the profile schema
+- research can browse public sources but cannot submit an application
+- application preparation can fill the form but cannot use the final submit action until policy allows it
 
-The agent receives structured page state and can navigate, fill fields, make selections, upload approved files, and move through multi-page application flows.
+## Playwright runs the browser
 
-The browser profile is dedicated to recruiting. It is separate from the user's normal browser.
+Playwright MCP gives the agent its application browser.
 
-The project does not begin with one custom adapter per ATS. Greenhouse, Lever, Workday, Ashby, and custom career sites are treated as websites first. If a recurring site needs special handling, a small versioned skill or playbook can be added without replacing the generic Playwright loop.
+The agent receives structured page state and can navigate, fill fields, select options, upload approved files, and work through multi-page forms.
+
+That browser uses a dedicated recruiting profile. It stays separate from your normal browser.
+
+The project does not start with one custom integration for every ATS. Greenhouse, Lever, Workday, Ashby, and custom career sites are treated as websites first. If one of them has a recurring quirk, add a small versioned skill or helper instead of replacing the generic browser loop.
 
 ## Candidate onboarding
 
-The applicant profile is versioned and schema-driven.
+The applicant profile is versioned and defined by a schema.
 
-Onboarding is conversational, but the model cannot invent new top-level memory categories. It fills predefined facts, policies, and story slots.
+Onboarding can feel conversational, but the model cannot create new top-level memory categories. It fills fields, policies, and story slots that are already defined in code.
 
-The onboarding flow covers areas such as:
+The onboarding covers things like:
 
-- identity and contact information;
-- education;
-- internship eligibility;
-- work authorization and sponsorship;
-- location and work-style preferences;
-- compensation policy;
-- legal/compliance questions;
-- demographic self-identification preferences;
-- company and referral preferences;
-- skills and evidence;
-- writing and research preferences.
+- identity and contact information
+- education
+- internship eligibility
+- work authorization and sponsorship
+- location and work-style preferences
+- compensation policy
+- legal and compliance questions
+- demographic self-identification preferences
+- company and referral preferences
+- skills and evidence
+- writing and research preferences
 
-A separate story interview produces `introduction.md`, which captures motivations, interests, proudest work, teamwork, leadership, failure/learning stories, career direction, and writing voice.
+A separate story interview produces `introduction.md`. That file stores the less rigid context that helps with writing: motivations, interests, proudest work, teamwork, leadership, failure and learning stories, career direction, and writing voice.
 
-The intended source order is:
+When the agent needs information, it checks sources in this order:
 
 ```text
 approved candidate profile
@@ -137,54 +141,54 @@ portfolio / GitHub
 external research
 ```
 
-When a new application asks a question that has no approved answer, the application pauses. The user answers once and can choose whether that answer should be remembered for future semantically equivalent questions.
+If a form asks a question with no approved answer, the application pauses. You answer it once and decide whether that answer should be remembered for future equivalent questions.
 
 ## Job intake and shortlist
 
-Jobs can arrive from a Discord feed or be provided directly by URL.
+Jobs can come from a Discord feed or a direct URL.
 
-The intake layer stores the original source message, follows the application link, captures the official posting, and creates a stable local job record.
+The intake code keeps the original source message, follows the application link, captures the official posting, and creates a stable local job record.
 
-Hard eligibility rules run before fuzzy model scoring. Examples include internship status, graduation requirements, location, work authorization, sponsorship, experience requirements, and recruiting term.
+Hard eligibility rules run before Qwen scores fit. Those rules can cover internship status, graduation requirements, location, work authorization, sponsorship, experience requirements, and recruiting term.
 
-The shortlist is for jobs where the user should make the call. Borderline roles, local companies, startups, unusual opportunities, or true new-grad positions may be saved there rather than silently rejected or automatically applied to.
+The shortlist is for jobs where you should make the call. Borderline roles, local companies, startups, unusual opportunities, and true new-grad positions can land there instead of being silently rejected or automatically applied to.
 
 ## Resume preparation
 
-Erga chooses and validates evidence-backed resume material.
+Erga chooses and validates resume material from approved evidence.
 
-Autopilot stores the exact resulting file used for each application.
+Autopilot stores the exact file that was used for the application.
 
-The system should never regenerate a resume months later and pretend it is the same file. The archive keeps the exact PDF bytes and hash associated with the submission.
+If a recruiter looks at your resume months later, the archive should show the same PDF they received. It should not regenerate a new copy and treat it as equivalent.
 
-## Company research and written responses
+## Company research and written answers
 
-Substantive written answers begin as a research task.
+Substantive written questions start with research.
 
 A restricted research agent may read:
 
-- the job description;
-- official company pages;
-- careers / values / culture pages;
-- engineering or product material;
-- recent first-party announcements;
-- relevant `introduction.md` sections;
-- the user's portfolio and approved Erga evidence;
-- reputable third-party reporting when useful.
+- the job description
+- official company pages
+- careers, values, or culture pages
+- engineering or product material
+- recent first-party announcements
+- relevant sections of `introduction.md`
+- your portfolio and approved Erga evidence
+- reputable third-party reporting when it adds useful context
 
 The research agent cannot submit applications or access credentials.
 
-The writing pipeline then drafts an answer, applies the project's humanized-writing skill, validates factual claims against approved evidence, and sends the exact draft to the user for approval.
+The writing step then drafts an answer, runs the configured writing cleanup skill, checks factual claims against approved evidence, and sends the draft to you for approval.
 
-The final approved text is what the browser inserts and what the archive records.
+The browser inserts the exact approved text. The archive stores that same version.
 
 ## The application flight recorder
 
 Every application gets a Discord forum post.
 
-The forum is a human-readable archive, not the machine database.
+That thread is the readable history. It is not the machine database.
 
-During an application, the system records meaningful events in order:
+During an application, the system should leave records like this:
 
 ```text
 step: personal information
@@ -202,13 +206,13 @@ clicked: Save and continue
 result: accepted, advanced to screening
 ```
 
-The archive should include every meaningful field, selection, click, retry, approval, upload, account-creation event, submit action, and receipt.
+The thread should include every meaningful field, selection, click, retry, approval, upload, account-creation event, submit action, and receipt.
 
-Secrets are excluded even from this detailed history.
+Secrets stay out of that history.
 
 ## Lifecycle tracking
 
-Application forum tags represent the current lifecycle state:
+Forum tags show the current lifecycle state:
 
 ```text
 Preparing
@@ -221,53 +225,53 @@ Accepted
 Withdrawn
 ```
 
-`Needs Action` and `Priority` are overlays rather than lifecycle states.
+`Needs Action` and `Priority` are overlays, not lifecycle states.
 
-A tag change is never silent. A detailed timeline comment explains:
+A tag change is never silent. The thread should explain:
 
-- the old and new status;
-- what triggered the change;
-- source evidence;
-- confidence / matching signals;
-- deadlines and timezone;
-- reminders created;
-- calendar updates;
-- any remaining action for the user.
+- the old and new status
+- what triggered the change
+- the source evidence
+- confidence or matching signals
+- deadlines and timezone
+- reminders that were created
+- calendar updates
+- anything you still need to do
 
-When Zoho mail caused the change, the thread can also include a rendered screenshot of the exact triggering email.
+If Zoho mail caused the change, the thread can also include a rendered screenshot of the email that triggered it.
 
 ## Recruiting mail
 
-Zoho integration watches recruiting mail using the official API where possible.
+Zoho watches recruiting mail through the official API where possible.
 
 The system can track:
 
-- application acknowledgements;
-- account-verification email;
-- online assessments;
-- interview scheduling and rescheduling;
-- offers;
-- rejections;
-- recruiter follow-ups;
-- portal updates.
+- application acknowledgements
+- account-verification email
+- online assessments
+- interview scheduling and rescheduling
+- offers
+- rejections
+- recruiter follow-ups
+- portal updates
 
-Email content is data, not an instruction channel. A message cannot grant new tool permissions or change the candidate profile.
+Email is input data, not an instruction channel. A message cannot grant itself new tool permissions or change the candidate profile.
 
 ## Application account creation
 
 If an employer requires an account, Autopilot can generate a unique password and store it encrypted in the local database.
 
-Discord records that an account was created and verified but does not print the password or verification code.
+Discord can record that the account was created and verified, but it must not print the password or verification code.
 
-Email verification can be handled through Zoho. CAPTCHA, SMS MFA, authenticator apps, security keys, and unusual identity verification pause the workflow for manual action.
+Normal email verification can go through Zoho. CAPTCHA, SMS MFA, authenticator apps, security keys, and unusual identity checks pause for manual action.
 
 ## Submission safety
 
-Submission is treated as an irreversible operation.
+Submission is irreversible, so the final click has its own state and checks.
 
-Before the final click, Autopilot freezes an application package containing the exact job snapshot, profile version, answer mappings, resume hash, written responses, skipped optional fields, warnings, and browser state.
+Before Submit becomes available, Autopilot freezes an application package with the exact job snapshot, profile version, answer mappings, resume hash, written responses, skipped optional fields, warnings, and browser state.
 
-If the browser crashes after Submit, the system must not blindly retry. The application enters an unknown-submission state while confirmation pages, employer accounts, browser/network state, and recruiting mail are checked.
+If the browser crashes after Submit, the system must not blindly retry. The application moves into an unknown-submission state while the confirmation page, employer account, browser/network state, and recruiting mail are checked.
 
 ## Prompt injection
 
@@ -275,18 +279,18 @@ Job pages, emails, attachments, scraped research, resumes, and tool output are u
 
 They cannot authorize new actions.
 
-Only the user's approved Discord action and stored local policy can grant authority.
+Only your approved Discord action and stored local policy can grant authority.
 
-The application agent should not have arbitrary shell access, arbitrary file uploads, unrestricted filesystem access, unrelated browser sessions, or access to secrets it does not need.
+The application agent should not have arbitrary shell access, arbitrary file uploads, unrestricted filesystem access, unrelated browser sessions, or secrets it does not need.
 
 Read [SECURITY.md](../SECURITY.md) for the full trust model.
 
-## Why local
+## Why keep it local
 
-The project is local-first because recruiting data is personal and long-lived.
+Recruiting data sticks around for a long time and gets personal fast.
 
-A complete application history can include contact details, work authorization, school information, resume versions, written answers, employer credentials, email, interview schedules, and offer details.
+A full application history can contain contact details, work authorization, school information, resume versions, written answers, employer credentials, email, interview schedules, and offer details.
 
-Keeping the reasoning model and state local gives the user direct control over that archive and removes a per-application model bill from the normal workflow.
+Keeping the model and state local gives you direct control over that archive and avoids a per-application model bill for the normal workflow.
 
-Local does not mean automatically safe. Browser sessions, Discord, Zoho, external job sites, and third-party MCP tools still cross trust boundaries and need explicit permissions.
+Local still does not mean automatically safe. Discord, Zoho, external job sites, browser sessions, and third-party MCP tools all cross trust boundaries and need explicit permissions.
