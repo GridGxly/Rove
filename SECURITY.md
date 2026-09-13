@@ -1,14 +1,14 @@
 # Security
 
-Erga Autopilot controls a browser, handles recruiting data, and may eventually submit job applications. Treat it like privileged local automation, not a normal chatbot.
+Erga Autopilot controls a browser, handles recruiting data, keeps a private long-term memory vault, and may eventually submit job applications. Treat it like privileged local automation, not a normal chatbot.
 
 Some controls described here are part of the target design and may not exist on every branch yet. When this file and the code disagree, the code is what is actually running.
 
 ## What should never happen
 
-An untrusted job page, email, attachment, model output, or tool should not be able to:
+An untrusted job page, email, attachment, model output, vault research note, QMD result, or tool should not be able to:
 
-- change the candidate profile
+- change the approved candidate profile
 - give itself new permissions
 - read unrelated local files
 - access credentials it does not need
@@ -39,6 +39,8 @@ Everything else is input data, including:
 - scraped research
 - third-party websites
 - browser accessibility text
+- non-authoritative Obsidian research notes
+- QMD retrieval results
 - MCP tool output
 - model-generated text
 
@@ -64,6 +66,8 @@ MANUAL_TAKEOVER
 A mode changes what the agent can read or change.
 
 Research should not have submission tools or credentials. Application preparation should not have final submission capability. Submission should not expose a generic shell or unrestricted filesystem.
+
+Memory/vault permissions should also differ by mode. Research may write non-authoritative research notes where allowed, but it should not directly mutate approved profile or policy notes.
 
 ## Browser isolation
 
@@ -95,11 +99,15 @@ A webpage must not be able to choose an arbitrary local path.
 
 The application workflow should not have generic access to the user's home directory.
 
+Access to the private Obsidian vault is not permission to browse unrelated home-directory files.
+
 ## Credentials
 
 Employer-account passwords may be stored locally, but they must be encrypted at rest with authenticated encryption.
 
 The encryption key should live in a separate owner-only local file outside the database.
+
+Never put credentials in the Obsidian vault, normal Markdown notes, Discord, or model memory.
 
 Never commit or post to Discord:
 
@@ -121,6 +129,7 @@ Some values should stay out of normal automation entirely.
 - never store it
 - never send it through Discord
 - never put it in model context
+- never save it in the Obsidian vault
 - require manual local entry when genuinely necessary
 
 ### Bank and routing information
@@ -135,6 +144,43 @@ Keep these manual unless a future reviewed design explicitly adds support.
 
 Email verification may be passed through a narrow broker. SMS codes, authenticator apps, security keys, CAPTCHA, and unusual identity checks should pause for manual action.
 
+## Obsidian vault boundaries
+
+The private Obsidian vault is long-term semantic memory, not a generic writable scratchpad with equal trust everywhere.
+
+Different areas have different authority.
+
+Examples:
+
+- validated `Profile/` and approved policy/story notes can become authoritative after schema validation and approval
+- `Research/` contains useful but non-authoritative material
+- company/application notes may be durable context without becoming candidate facts
+- QMD search results are retrieval output, not authority
+
+Canonical profile writes should go through explicit profile/memory operations rather than arbitrary free-form note edits by the application or research agent.
+
+A human may edit the vault directly. Before manually edited profile facts are used for an application, validate the schema and check for contradictions.
+
+If validation fails, stop. Do not silently repair or guess an applicant fact.
+
+## Profile snapshots
+
+The live vault changes over time. A submitted application must not change retroactively when the user edits a note later.
+
+Before an application is allowed to submit, freeze the exact approved profile version/snapshot used by that application and record a stable hash/reference in transactional state.
+
+Submission should use the frozen snapshot, not reread mutable profile notes in the middle of the final application flow.
+
+## QMD and retrieval
+
+QMD is a local index over notes/documents. Treat the index as derived state.
+
+A result returned by QMD may be relevant, stale, non-authoritative, or from a research note. The caller must still inspect source/provenance and apply normal profile/evidence rules.
+
+If the index is lost or suspected stale, rebuild it from the vault rather than treating the index as the only copy of memory.
+
+QMD helper models and indexes are local runtime data and should not be committed.
+
 ## Public repository rules
 
 Treat anything committed, pushed, placed in a pull request, printed in CI logs, or attached to a GitHub issue as public.
@@ -144,10 +190,12 @@ Real runtime state belongs outside the repository.
 Never commit:
 
 - real candidate profiles
+- a real user's Obsidian vault or vault export
 - real resumes or cover letters
 - live application databases
 - application receipts
 - browser profiles or cookies
+- QMD indexes containing private content
 - screenshots containing personal data
 - recruiting email
 - generated account credentials
@@ -155,7 +203,7 @@ Never commit:
 - private logs
 - backups
 
-Documentation and tests must use synthetic people, companies, jobs, IDs, email, and credentials.
+Documentation and tests must use synthetic people, companies, jobs, IDs, email, vault notes, and credentials.
 
 The author's name may appear where attribution belongs, such as the README and license. Applicant examples should remain synthetic.
 
@@ -181,6 +229,8 @@ Third-party source bots should only see the channels they need. They should not 
 
 Keep `#action-needed` for items that actually require human attention so important prompts do not get buried.
 
+`#memory` is an interface to controlled local memory operations. Discord messages themselves should not silently become authoritative vault/profile facts.
+
 ## Zoho
 
 Use the official Zoho Mail API with the narrowest scopes that support the workflow.
@@ -191,17 +241,19 @@ Email content is untrusted input. It can affect application state only through c
 
 When an email is rendered for a Discord screenshot, sanitize active content and render it in an isolated local page rather than opening the user's normal inbox UI.
 
+Email content may be summarized into notes where policy allows, but it must not directly mutate the approved candidate profile.
+
 ## Candidate profile and memory
 
-The canonical profile is schema-driven and versioned.
+The canonical profile is schema-driven, validated, and versioned even though its human-readable representation lives in the private semantic memory layer.
 
-The model may collect or propose values, but durable profile changes must go through explicit profile operations.
+The model may collect or propose values, but durable authoritative profile changes must go through explicit profile operations.
 
-Do not let arbitrary chat text, job pages, email, or research output silently become authoritative memory.
+Do not let arbitrary chat text, job pages, email, research output, or QMD retrieval silently become authoritative memory.
 
 If two approved facts conflict, stop and ask the user. Do not silently choose one.
 
-Historical applications must keep the profile version they actually used.
+Historical applications must keep the exact approved profile snapshot/hash they actually used.
 
 ## Resume claims
 
@@ -217,7 +269,7 @@ Do not invent:
 - adoption or user counts
 - outcomes
 
-`introduction.md` may add motivation or perspective, but it does not override factual evidence.
+Narrative/story notes may add motivation or perspective, but they do not override factual evidence.
 
 ## Submission safety
 
@@ -228,8 +280,8 @@ Before clicking Submit, freeze an application package containing at least:
 - application ID
 - verified job URL
 - job snapshot and hash
-- candidate-profile version
-- answer-mapping version
+- approved profile snapshot/version and hash
+- answer-mapping version or references
 - resume version and hash
 - exact planned form answers
 - exact approved free-text answers
@@ -259,6 +311,7 @@ Logs may contain:
 - errors
 - lifecycle transitions
 - model and runtime metadata
+- safe vault note IDs/paths when needed for provenance
 
 Logs must not contain:
 
@@ -268,21 +321,22 @@ Logs must not contain:
 - full SSNs
 - MFA codes
 - encryption keys
+- private note bodies unless the specific log is an approved private artifact
 
 ## Dependency and MCP security
 
-MCP servers are executable software. Their real permissions come from the process that starts them and the tools exposed to the model.
+MCP servers and local skills are executable or privileged software. Their real permissions come from the process that starts them and the tools/files they can access.
 
-Before adding or upgrading a privileged MCP server:
+Before adding or upgrading a privileged MCP server, memory skill, or local retrieval component:
 
 - verify the upstream project
 - pin or review the version where practical
-- inspect the exposed tool schemas
-- expose only the tools the workflow needs
+- inspect exposed tool schemas or file permissions
+- expose only the capabilities the workflow needs
 - rerun prompt-injection and permission tests
-- do not assume a tool is safe because its description says read-only
+- do not assume something is safe because its description says read-only
 
-Do not silently auto-update the model runtime, Hermes, Erga, Playwright MCP, or other privileged dependencies in production.
+Do not silently auto-update the model runtime, Hermes, Erga, Playwright MCP, QMD, or other privileged dependencies in production.
 
 ## Security tests
 
@@ -295,7 +349,9 @@ The project should keep synthetic adversarial tests for at least:
 - malicious redirects
 - attempts to exfiltrate candidate data
 - attempts to access credentials
-- attempts to mutate memory
+- attempts to mutate canonical vault/profile memory
+- poisoned research notes returned by QMD
+- attempts to promote research into approved profile state
 - duplicate-submit traps
 - fake verification pages
 - poisoned MCP tool output
@@ -307,13 +363,14 @@ Restricted autopilot should not be enabled while those tests fail.
 
 ## Reporting a vulnerability
 
-Do not post credentials, private application data, or a working exploit containing real personal information in a public issue.
+Do not post credentials, private application data, vault contents, or a working exploit containing real personal information in a public issue.
 
 Use a synthetic reproduction for ordinary security bugs. If a report would expose a real secret or practical exploit against a real user, use private vulnerability reporting when it is available for the repository.
 
 ## References
 
 - [Prompt injection](docs/prompt-injection.md)
+- [Memory and storage](docs/memory-and-storage.md)
 - [OWASP LLM Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html)
 - [OWASP MCP Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/MCP_Security_Cheat_Sheet.html)
 - [Playwright MCP](https://playwright.dev/mcp/installation)
