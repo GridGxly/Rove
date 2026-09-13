@@ -12,12 +12,30 @@ Recommended development target:
 
 - Apple Silicon Mac;
 - 48GB unified memory for the full Qwen3.8-27B stack;
-- 1TB or more free local storage is comfortable for model files, browser state, traces, resumes, and application archives;
+- 1TB or more local storage is comfortable for model files, browser state, traces, resumes, and application archives;
 - macOS with current security updates.
 
-The author's primary machine is a 14-inch MacBook Pro with an M5 Pro, 48GB unified memory, and a 1TB SSD.
+The author's current development machine is:
 
-Lower-memory Apple Silicon machines may work with smaller context windows or different local-model settings, but they are not the main target for this repository.
+- 14-inch MacBook Pro;
+- Apple M5 Pro with an 18-core CPU and 20-core GPU;
+- 48GB unified memory;
+- 1TB SSD.
+
+Lower-memory Apple Silicon machines may work with smaller context windows, a different quantization, lower concurrency, or another local-model configuration, but they are not the main target for this repository.
+
+You do not need to match the author's hardware exactly to experiment with the project. Clone or fork the repository and tune the runtime to your own machine. The parts most likely to need adjustment are:
+
+- local model or quantization;
+- maximum context length;
+- KV-cache settings;
+- how many model requests may run at once;
+- whether the browser runs headed or headless;
+- trace and screenshot retention;
+- application queue concurrency;
+- memory and disk guardrails.
+
+If you make a different hardware profile work well, document the exact machine and settings rather than assuming those settings are portable to every system.
 
 ## Software prerequisites
 
@@ -61,6 +79,8 @@ git clone https://github.com/GridGxly/erga-autopilot.git
 cd erga-autopilot
 uv sync
 ```
+
+If your hardware differs from the primary development machine, make your runtime changes in your own clone or fork and keep them versioned. The project is intentionally not hard-wired to one Mac configuration.
 
 ## Keep runtime data outside Git
 
