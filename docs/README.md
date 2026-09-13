@@ -5,6 +5,7 @@ Erga Autopilot is a personal local-first recruiting system, not a hosted service
 If you're new here, start with these:
 
 - [Getting started](getting-started.md) for local setup, requirements, and the first safe run
+- [Hardware sanity check](hardware-check.md) for checking whether your machine can run the current stack and what to tune if it cannot run the defaults comfortably
 - [How it works](how-it-works.md) for the architecture and day-to-day behavior
 - [Security](../SECURITY.md) for permissions, credentials, prompt injection, and submission safety
 - [Prompt injection](prompt-injection.md) for concrete attack examples, tool boundaries, and the tests that should block autopilot when those boundaries fail
