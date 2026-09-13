@@ -2,11 +2,9 @@
 
 Erga Autopilot is an independent project by Ralph Clavens Love Noel.
 
-It was created on top of the foundation provided by [Erga](https://github.com/Adr1an04/erga-mcp), a local-first recruiting assistant maintained by Adrian (`Adr1an04`) and the Erga contributors.
+It exists because [Erga](https://github.com/Adr1an04/erga-mcp) already gave me a strong local-first recruiting foundation. I wanted to take that setup further for my own use by letting the agent operate the application browser, ask me for missing information, keep the exact resume and answers it submitted, and track the recruiting process afterward.
 
-This repository exists because I wanted to take that foundation one step further for my own use: let the local recruiting agent actually operate the application browser, ask me for missing information, preserve the exact resume and answers it submitted, and track the recruiting process afterward.
-
-Erga Autopilot is not an official Erga project, is not endorsed by its maintainer, and should not be confused with the upstream repository.
+This is not an official Erga project, is not endorsed by its maintainer, and should not be confused with the upstream repository.
 
 ## Erga
 
@@ -44,12 +42,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-The Erga logo mark and outlined wordmark used by this repository are derived from the upstream Erga asset under the same MIT license. The Autopilot label is an addition for this project.
+The Erga logo mark and outlined wordmark in this repository come from the upstream Erga asset under the same MIT license. The `AUTOPILOT` label is specific to this project.
 
 ## Other dependencies
 
-Erga Autopilot is intended to integrate with independent open-source and third-party projects including Qwen, Hermes Agent, Playwright MCP, MLX/MLX-VLM, Discord, and Zoho APIs.
+Erga Autopilot is built to work with independent open-source and third-party projects including Qwen, Hermes Agent, Playwright MCP, MLX/MLX-VLM, Discord, and Zoho APIs.
 
-Those projects retain their own names, trademarks, licenses, and terms. Inclusion or interoperability does not imply endorsement or affiliation.
+Those projects keep their own names, trademarks, licenses, and terms. Using or integrating with them does not imply endorsement or affiliation.
 
-As implementation lands, this file should be updated when a dependency's license requires explicit attribution or redistribution notices.
+As implementation lands, this file should be updated whenever a dependency requires explicit attribution or redistribution notices.
