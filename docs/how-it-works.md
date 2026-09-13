@@ -1,8 +1,8 @@
 # How Erga Autopilot works
 
-Erga Autopilot is a local recruiting agent. Qwen handles the parts that need judgment. Normal code owns facts, permissions, state, and irreversible actions.
+Erga Autopilot is a local recruiting agent. Qwen handles the parts that need judgment. Normal code owns permissions, validation, state transitions, and irreversible actions.
 
-It is built for one person running it on their own Mac, not as a hosted job-application service or multi-user backend.
+It is built for one person running it on their own machine, not as a hosted job-application service or multi-user backend.
 
 ## System map
 
@@ -13,7 +13,15 @@ Discord
 Autopilot
   │
   ├── Hermes Agent
-  │     └── Qwen3.8-27B
+  │     ├── Qwen3.8-27B
+  │     └── small hot memory
+  │
+  ├── Obsidian vault
+  │     ├── profile / preferences
+  │     ├── story / narrative context
+  │     ├── companies / research
+  │     └── decisions / long-term notes
+  │          └── QMD local retrieval index
   │
   ├── Erga
   │     ├── career evidence
@@ -21,18 +29,25 @@ Autopilot
   │     ├── resume generation
   │     └── application lifecycle
   │
+  ├── Autopilot SQLite
+  │     ├── job + source checkpoints
+  │     ├── browser/application runs
+  │     ├── submission attempts
+  │     ├── Discord / Zoho bindings
+  │     └── queues / idempotency
+  │
+  ├── private files
+  │     ├── resumes
+  │     ├── frozen application packages
+  │     ├── receipts
+  │     ├── screenshots
+  │     └── traces
+  │
   ├── Playwright MCP
   │     └── dedicated recruiting browser
   │
-  ├── Zoho
-  │     └── recruiting mail and verification events
-  │
-  └── Autopilot SQLite
-        ├── candidate profile
-        ├── answer mappings
-        ├── browser events
-        ├── Discord bindings
-        └── application receipts
+  └── Zoho
+        └── recruiting mail and verification events
 ```
 
 ## Qwen handles ambiguity
@@ -49,28 +64,19 @@ Examples:
 - drafting a written response
 - making sense of an ambiguous recruiting email
 
-Qwen is not the source of truth for applicant facts.
+Qwen is not the source of truth for applicant facts and it is not the authority for irreversible actions.
 
-Legal name, contact information, school, graduation date, work authorization, sponsorship status, relocation preferences, and saved application answers come from structured local state.
-
-## Erga is the career foundation
-
-[Erga](https://github.com/Adr1an04/erga-mcp) already covers several parts of the recruiting workflow that this project depends on:
-
-- evidence-backed resume material
-- project and Git evidence
-- application tracking
-- LaTeX resume generation and validation
-- recruiting-mail reconciliation
-- auditable career claims
-
-Autopilot adds the browser/application layer and the personal-agent workflow around that work.
+Exact applicant facts come from validated local memory/evidence. Submission permission comes from code and approved policy.
 
 ## Hermes runs the agent loop
 
 Hermes sits between Qwen and the tools.
 
 It provides sessions, MCP integration, skills, subagents, and the loop that lets Qwen reason, call a tool, inspect the result, and continue.
+
+Hermes built-in memory is intentionally small. `MEMORY.md` and `USER.md` are useful for compact session-start context such as stable preferences, project conventions, environment facts, tool quirks, and pointers to deeper local knowledge.
+
+They are not the full recruiting knowledge base.
 
 Autopilot changes the available tools depending on what the agent is doing.
 
@@ -89,9 +95,144 @@ The same model can work in each mode. The permissions change.
 
 For example:
 
-- onboarding can fill approved profile fields but cannot redesign the profile schema
-- research can browse public sources but cannot submit an application
-- application preparation can fill a form but cannot use final submission tools until policy allows it
+- onboarding can collect answers and write approved values through the validated profile flow but cannot redesign the profile schema
+- research can browse public sources and write non-authoritative research notes where allowed but cannot submit an application or mutate canonical profile facts
+- application preparation can fill a form using a frozen approved profile snapshot but cannot use final submission tools until policy allows it
+- submission can act only on the validated frozen application package it was given
+
+## Obsidian is the long-term semantic memory
+
+The private Obsidian vault is the main human-readable memory layer.
+
+It stores knowledge that benefits from being readable, searchable, linkable, and editable by the user:
+
+- approved candidate profile
+- application preferences and policies
+- story/narrative context
+- company notes
+- research
+- decisions and lessons learned
+- long-term application notes
+- career context
+
+A reference layout may look like:
+
+```text
+Erga Autopilot/
+├── Profile/
+├── Story/
+├── Career/
+├── Companies/
+├── Applications/
+├── Research/
+├── Decisions/
+├── Daily/
+└── System/
+```
+
+The vault lives outside the Git checkout.
+
+The public config may reference `OBSIDIAN_VAULT_PATH`; the user's real path stays local.
+
+## Obsidian is readable, not permissionless
+
+A Markdown file becoming easy to edit does not make arbitrary text authoritative.
+
+Canonical candidate/profile notes should use a schema that code can validate. Frontmatter can carry stable metadata such as schema version, profile version, approval state, and timestamps.
+
+A user may edit the vault directly in Obsidian. Before Autopilot uses those edits for an application, it should validate the relevant notes and detect contradictions.
+
+If the structure is invalid or two approved facts conflict, stop and ask instead of guessing.
+
+Untrusted content cannot write itself into `Profile/` merely because Qwen can see it.
+
+## Profile versions are frozen for applications
+
+The live vault may change over time, but a submitted application needs an exact record of the facts it used.
+
+When the approved profile changes, Autopilot should create or maintain a normalized immutable profile snapshot and hash.
+
+A frozen application package points to that approved snapshot instead of rereading changing vault notes during submission.
+
+That gives the user a pleasant editable knowledge base without rewriting historical applications.
+
+## QMD searches the vault
+
+As the vault grows, the agent should not need to know an exact filename before it can find relevant context.
+
+QMD is the reference local retrieval layer over the vault. It can provide keyword, semantic, and reranked search over Markdown.
+
+QMD is derived data, not authority.
+
+A search result is useful context, but the underlying note and its approval/provenance still determine whether it can be treated as a candidate fact.
+
+If the index is deleted, rebuild it from the vault.
+
+## SQLite handles exact machine state
+
+SQLite still matters, but it has a narrower job than the semantic memory layer.
+
+Use it for state where duplicates, ordering, crash recovery, uniqueness, or exact transitions matter.
+
+Examples:
+
+- source Discord message checkpoints
+- normalized jobs and deduplication
+- onboarding session checkpoints
+- application runs
+- browser runs
+- submission attempts
+- unknown-submission recovery
+- question fingerprints and answer references
+- Discord forum/message bindings
+- Zoho message/reconciliation IDs
+- reminders and action-needed items
+- outbox/idempotency records
+- artifact metadata and hashes
+- audit-event indexes
+
+SQLite should answer questions like:
+
+- did we already process this job message?
+- did we already attempt submission?
+- is this application safe to retry?
+- which Discord thread belongs to this application?
+- did this Zoho message already change lifecycle state?
+
+Those are transactional questions, not note-taking questions.
+
+## Erga is the career foundation
+
+[Erga](https://github.com/Adr1an04/erga-mcp) already covers several parts of the recruiting workflow that this project depends on:
+
+- evidence-backed resume material
+- project and Git evidence
+- application tracking
+- LaTeX resume generation and validation
+- recruiting-mail reconciliation
+- auditable career claims
+
+Autopilot adds the browser/application layer, long-term personal memory, and the personal-agent workflow around that work.
+
+Erga keeps its own storage. Autopilot should use Erga's supported interfaces rather than replacing that storage with Obsidian or editing its database from browser code.
+
+## Private files preserve exact artifacts
+
+Large or immutable artifacts belong in private filesystem storage.
+
+Examples include:
+
+- exact submitted resume PDFs
+- frozen application packages
+- receipts
+- screenshots
+- browser traces
+- rendered recruiting-email evidence
+- job snapshots
+
+SQLite can store paths, hashes, and relationships to those files.
+
+Do not put large binary artifacts into the Obsidian vault just because the vault is the memory layer.
 
 ## Playwright runs the browser
 
@@ -105,9 +246,9 @@ The project does not start with a custom integration for every ATS. Greenhouse, 
 
 ## Candidate onboarding
 
-The applicant profile is versioned and defined by a schema.
+The applicant profile is schema-driven and lives in the private semantic memory layer after approval.
 
-Onboarding can feel conversational, but the model cannot create new top-level memory categories. It fills fields, policies, and story slots already defined in code.
+Onboarding can feel conversational, but the model cannot create new top-level memory categories. It fills fields, policies, and story slots already defined by the application/profile schema.
 
 The onboarding covers areas such as:
 
@@ -123,16 +264,20 @@ The onboarding covers areas such as:
 - skills and evidence
 - writing and research preferences
 
-A separate story interview produces `introduction.md`. That file stores less rigid context that helps with writing: motivations, interests, proudest work, teamwork, leadership, failure and learning stories, career direction, and writing voice.
+Temporary onboarding state can live in SQLite so an interrupted session can resume safely.
+
+Once a section or final review is approved, the durable result is written through the validated Obsidian profile flow.
+
+A separate story interview writes approved narrative context under the vault's story area. That stores things such as motivations, interests, proudest work, teamwork, leadership, failure and learning stories, career direction, and writing voice.
 
 When the agent needs information, it checks sources in this order:
 
 ```text
-approved candidate profile
+approved profile snapshot / validated vault profile
         ↓
 approved Erga evidence
         ↓
-introduction.md
+approved narrative/story context
         ↓
 portfolio / GitHub
         ↓
@@ -140,6 +285,25 @@ external research
 ```
 
 If a form asks a question with no approved answer, the application pauses. The user answers it once and can decide whether that answer should be remembered for future equivalent questions.
+
+## Research is not candidate truth
+
+Research notes can live in the vault without becoming authoritative profile facts.
+
+A restricted research agent may read:
+
+- the job description
+- official company pages
+- careers, values, or culture pages
+- engineering or product material
+- recent first-party announcements
+- relevant approved story context
+- the user's portfolio and approved Erga evidence
+- reputable third-party reporting when useful
+
+It may write research notes where policy allows, with provenance when useful.
+
+It cannot submit applications, access credentials, or promote a research claim into the canonical candidate profile by itself.
 
 ## Job intake and shortlist
 
@@ -163,28 +327,15 @@ If a recruiter looks at the resume months later, the archive should show the sam
 
 Substantive written questions start with research.
 
-A restricted research agent may read:
+The writing step can retrieve relevant approved vault context, combine it with Erga evidence and external research, draft an answer, run the configured writing cleanup skill, check factual claims, and send the draft to the user for approval.
 
-- the job description
-- official company pages
-- careers, values, or culture pages
-- engineering or product material
-- recent first-party announcements
-- relevant sections of `introduction.md`
-- the user's portfolio and approved Erga evidence
-- reputable third-party reporting when useful
-
-The research agent cannot submit applications or access credentials.
-
-The writing step drafts an answer, runs the configured writing cleanup skill, checks factual claims against approved evidence, and sends the draft to the user for approval.
-
-The browser inserts the exact approved text. The archive stores that same version.
+The browser inserts the exact approved text. The frozen application package and archive keep that same version.
 
 ## The application flight recorder
 
-Every application gets a Discord forum post.
+Every application gets a Discord forum post once preparation begins.
 
-That thread is the readable history. It is not the machine database.
+That thread is the readable remote history. It is not the machine database.
 
 A synthetic example looks like this:
 
@@ -194,7 +345,7 @@ url: https://jobs.example.com/apply/123
 
 asked: First name
 filled: Alex
-source: candidate_profile.legal_first_name
+source: profile_snapshot.legal_first_name
 
 asked: Resume / CV
 uploaded: example-resume.pdf
@@ -207,6 +358,8 @@ result: accepted, advanced to screening
 The thread should include every meaningful field, selection, click, retry, approval, upload, account-creation event, submit action, and receipt.
 
 Secrets stay out of that history.
+
+Obsidian may also hold long-term notes about the application, but the exact submission state comes from SQLite plus the frozen application package.
 
 ## Lifecycle tracking
 
@@ -263,30 +416,32 @@ Discord can record that the account was created and verified, but it must not pr
 
 Normal email verification can go through Zoho. CAPTCHA, SMS MFA, authenticator apps, security keys, and unusual identity checks pause for manual action.
 
+Credentials do not belong in the Obsidian vault.
+
 ## Submission safety
 
 Submission is irreversible, so the final click has its own state and checks.
 
-Before Submit becomes available, Autopilot freezes an application package with the exact job snapshot, profile version, answer mappings, resume hash, written responses, skipped optional fields, warnings, and browser state.
+Before Submit becomes available, Autopilot freezes an application package with the exact job snapshot, approved profile snapshot/hash, answer mappings, resume hash, written responses, skipped optional fields, warnings, and browser state.
 
 If the browser crashes after Submit, the system must not blindly retry. The application moves into an unknown-submission state while confirmation pages, employer accounts, browser/network state, and recruiting mail are checked.
 
 ## Prompt injection
 
-Job pages, emails, attachments, scraped research, resumes, browser text, and tool output are untrusted inputs.
+Job pages, emails, attachments, scraped research, resumes, browser text, vault research notes, QMD results, and tool output are untrusted unless they come from an approved authoritative memory path.
 
 They can provide information. They cannot grant authority.
 
 Only an authenticated user action or previously approved local policy can authorize privileged behavior.
 
-Read [Prompt injection](prompt-injection.md) and [SECURITY.md](../SECURITY.md) for the detailed model.
+Read [Prompt injection](prompt-injection.md), [Memory and storage](memory-and-storage.md), and [SECURITY.md](../SECURITY.md) for the detailed model.
 
 ## Why keep it local
 
 Recruiting data gets personal quickly and sticks around for a long time.
 
-A full application history can include contact details, work authorization, school information, resume versions, written answers, employer credentials, email, interview schedules, and offer details.
+A full application history can include contact details, work authorization, school information, resume versions, written answers, employer credentials, email, interview schedules, company notes, and offer details.
 
-Keeping the model and state local gives the user direct control over that archive and avoids a per-application model bill for the normal workflow.
+Keeping the model, vault, indexes, state, and artifacts local gives the user direct control over that archive and avoids a per-application model bill for the normal workflow.
 
-Local still does not mean automatically safe. Discord, Zoho, external job sites, browser sessions, and third-party MCP tools all cross trust boundaries and need explicit permissions.
+Local still does not mean automatically safe. Discord, Zoho, external job sites, browser sessions, third-party MCP tools, and any optional sync service cross trust boundaries and need explicit permissions.
