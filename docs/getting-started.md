@@ -4,6 +4,8 @@ Erga Autopilot is still experimental. Some of this guide describes the setup the
 
 Start with synthetic data and prepare-only browser runs. Do not connect real recruiting data until the earlier pieces work and the security checks pass.
 
+Before installing the full stack, read [Requirements to run](requirements.md). It tracks the software, services, accounts, APIs, local configuration, browser setup, and network access a complete installation needs.
+
 ## Hardware
 
 The primary development machine is:
@@ -245,9 +247,9 @@ Do not jump straight to autopilot because the browser can click Submit.
 
 ## Next
 
+- [Requirements to run](requirements.md)
 - [Will this run on my machine?](hardware-check.md)
 - [How it works](how-it-works.md)
 - [Prompt injection](prompt-injection.md)
 - [Security](../SECURITY.md)
 - [Contributing](../CONTRIBUTING.md)
-- [Agent guide](../AGENTS.md)
