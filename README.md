@@ -118,14 +118,16 @@ Exact facts such as contact information, education, work authorization, dates, a
 
 This project is currently designed and developed for Apple Silicon macOS.
 
-My target machine is:
+My current development machine is:
 
 - 14-inch MacBook Pro;
-- M5 Pro, 15-core CPU / 16-core GPU;
+- M5 Pro, 18-core CPU / 20-core GPU;
 - 48GB unified memory;
 - 1TB SSD.
 
-Qwen3.8-27B at 4-bit is a large local model. For the full stack, 48GB unified memory is the comfortable target. Lower-memory Apple Silicon systems may work with smaller contexts or more aggressive model choices, but they are not the primary development target and should not be assumed to behave the same way.
+Qwen3.8-27B at 4-bit is a large local model. For the full stack, 48GB unified memory is the comfortable target I am developing against. Lower-memory Apple Silicon systems may still work with a smaller context window, a different quantization, or a lighter model configuration, but they should not be expected to behave exactly like the primary development machine.
+
+The repository is intentionally editable rather than tied to one exact Mac. If your hardware is different, clone or fork the project and adjust the local model, context length, concurrency, browser settings, and other runtime limits for your machine. Those alternate configurations are welcome, but they are not the primary tested target yet.
 
 Other platforms may work eventually, but they are not currently tested.
 
