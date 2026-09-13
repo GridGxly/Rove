@@ -116,6 +116,8 @@ The current plan uses:
 - Discord bot credentials;
 - optional Zoho Mail OAuth for recruiting-mail tracking.
 
+For the complete software, account, API, secret, local-state, browser, and network checklist, read [Requirements to run](docs/requirements.md).
+
 See [Getting started](docs/getting-started.md) before connecting real data.
 
 ## Security and privacy
