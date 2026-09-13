@@ -65,6 +65,8 @@ Never commit real:
 
 Use synthetic people, companies, jobs, IDs, emails, and credentials in public docs and tests.
 
+Public source code may show which environment variable, config key, API, or service is used, but never the real value from a maintainer's machine. Code such as `os.environ["ZOHO_CLIENT_ID"]` is appropriate; a literal client secret is not.
+
 `.gitignore` is only a backup layer. Before committing or pushing, inspect the diff and run the repository's secret checks. Never bypass a secret-scanning or push-protection warning just to make a push succeed. If a real secret is committed, rotate or revoke it before cleaning history.
 
 ## Security model
@@ -212,7 +214,7 @@ Do not invent performance numbers. Verify the current runtime and benchmark the 
 
 If a user's hardware differs, preserve the architecture where practical and tune the local model/runtime first. Start with context length, KV-cache cost, concurrency, quantization, browser mode, and retention settings before replacing major components.
 
-Read [docs/getting-started.md](docs/getting-started.md) and [docs/hardware-check.md](docs/hardware-check.md) before setting up a new machine. The hardware guide includes a reusable prompt for another capable agent to inspect a machine safely and recommend a starting profile.
+Read [docs/requirements.md](docs/requirements.md), [docs/getting-started.md](docs/getting-started.md), and [docs/hardware-check.md](docs/hardware-check.md) before setting up a new machine. The requirements page is the public checklist for software, services, APIs, accounts, configuration, permissions, and network access. The hardware guide includes a reusable prompt for another capable agent to inspect a machine safely and recommend a starting profile.
 
 During installation:
 
@@ -241,7 +243,9 @@ Do not merge or rewrite shared history unless the user explicitly asks.
 
 ## Keep documentation tied to the code
 
-When implemented behavior, setup, configuration, Discord layout, security boundaries, or user-facing workflows change, update the relevant docs in the same branch.
+When implemented behavior, setup, configuration, Discord layout, security boundaries, dependencies, APIs, environment variables, required accounts, OS permissions, or user-facing workflows change, update the relevant docs in the same branch.
+
+Treat [docs/requirements.md](docs/requirements.md) as the canonical public checklist for what a full installation needs. If implementation changes what must be installed, configured, authenticated, or allowed, update that file at the same time.
 
 Do not document speculative commands as if they already work. If the docs and implementation disagree, the current code and tests are the source of truth, and the docs should be corrected.
 
