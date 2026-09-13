@@ -9,22 +9,24 @@ Read:
 - [AGENTS.md](AGENTS.md)
 - [README.md](README.md)
 - [docs/getting-started.md](docs/getting-started.md)
+- [docs/requirements.md](docs/requirements.md)
+- [docs/memory-and-storage.md](docs/memory-and-storage.md)
 - [docs/how-it-works.md](docs/how-it-works.md)
 - [docs/prompt-injection.md](docs/prompt-injection.md)
 - [SECURITY.md](SECURITY.md)
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
-If your change touches browser submission, candidate memory, credentials, recruiting mail, or MCP permissions, read the security docs first.
+If your change touches browser submission, candidate memory, Obsidian/QMD, credentials, recruiting mail, or MCP permissions, read the security docs first.
 
 ## Keep business rules outside interfaces
 
-Discord, Hermes, MCP, CLI, and browser code are interfaces around the local core.
+Discord, Hermes, MCP, CLI, Obsidian, and browser code are interfaces around the local core.
 
-Reusable decisions should live in typed modules instead of being buried in Discord callbacks or model prompts.
+Reusable decisions should live in typed modules instead of being buried in Discord callbacks, model prompts, or arbitrary Markdown parsing.
 
 ## The model is not authorization
 
-A prompt or model output cannot grant itself access to a new tool or approve an irreversible action.
+A prompt, note, retrieval result, or model output cannot grant itself access to a new tool or approve an irreversible action.
 
 Permissions and submission rules belong in code.
 
@@ -34,13 +36,15 @@ Resume and application claims should come from approved profile data or Erga evi
 
 If information is unknown, keep it unknown or ask the user.
 
+Research notes and QMD results are not candidate facts unless they point back to an approved authoritative source.
+
 ## Keep changes focused
 
-Avoid giant refactors mixed with unrelated features. If a change alters a security boundary or data model, explain why and update the relevant tests and docs.
+Avoid giant refactors mixed with unrelated features. If a change alters a security boundary, storage role, or data model, explain why and update the relevant tests and docs.
 
 ## Keep local-first behavior
 
-Do not add a hosted database, telemetry service, or cloud-model dependency as a silent requirement.
+Do not add a hosted database, telemetry service, cloud-model dependency, or cloud sync product as a silent requirement.
 
 Optional integrations should stay optional.
 
@@ -64,6 +68,8 @@ Never commit real:
 
 - resumes or cover letters
 - applicant profiles
+- Obsidian vault contents or exports from a real setup
+- QMD indexes containing private content
 - addresses, phone numbers, or personal email addresses
 - dates of birth or demographic answers
 - work-authorization or sponsorship answers
@@ -95,13 +101,46 @@ Prepare-only behavior must remain testable separately from submission.
 
 A change that makes it easier to submit must not make it easier to submit twice.
 
-## Candidate profile changes
+## Candidate profile and memory changes
 
-The profile schema is versioned code.
+The approved profile is represented in the private semantic memory layer but remains schema-driven and versioned.
 
 Do not let the model create new top-level memory categories at runtime.
 
-Schema changes should include migrations, compatibility behavior for old profiles, contradiction handling where relevant, and tests that preserve the profile version used by historical applications.
+Canonical profile writes should go through explicit profile/memory operations. Research agents should not get generic write access to authoritative profile areas.
+
+Manual Obsidian edits are allowed, but code must validate relevant notes before using them in an application.
+
+A profile/storage change should include the pieces relevant to it, such as:
+
+- schema/version changes
+- compatibility behavior for older notes/snapshots
+- contradiction handling
+- tests for manual-edit validation
+- tests proving research/QMD results cannot silently become candidate facts
+- tests that historical application packages keep the exact approved profile snapshot/hash they used
+
+## SQLite changes
+
+Autopilot SQLite is for transactional machine state, not the main semantic knowledge base.
+
+Good reasons to add a table/field include deduplication, exact workflow state, crash recovery, queues, idempotency, bindings, submission attempts, or artifact metadata.
+
+Do not move readable long-term user knowledge back into SQLite merely because adding a table is convenient.
+
+## Obsidian and QMD changes
+
+Treat the vault as private runtime data.
+
+QMD is an index over the vault, not the source of truth.
+
+Changes to vault layout, canonical note schemas, write permissions, retrieval behavior, or QMD setup should update:
+
+- [Memory and storage](docs/memory-and-storage.md)
+- [Requirements to run](docs/requirements.md) when setup/dependencies change
+- security tests when authority/write boundaries change
+
+If a contribution broadens what an agent can write inside the vault, explain the new trust boundary explicitly.
 
 ## Security-sensitive changes
 
@@ -113,7 +152,8 @@ Changes involving any of the following need explicit tests:
 - navigation or domain rules
 - credentials
 - Discord authorization
-- memory mutation
+- memory/vault mutation
+- QMD/retrieval behavior
 - application submission
 - recruiting-mail classification
 - prompt-injection defenses
@@ -122,7 +162,7 @@ If a security control needs to be weakened to make a workflow work, explain the 
 
 ## Documentation
 
-When implemented behavior, configuration, Discord layout, security boundaries, or user-facing workflows change, update the relevant docs in the same branch.
+When implemented behavior, configuration, Discord layout, memory/storage architecture, security boundaries, dependencies, or user-facing workflows change, update the relevant docs in the same branch.
 
 Do not document speculative commands as if they already work.
 
@@ -135,7 +175,7 @@ Use small, readable commits with lower-case messages.
 Examples:
 
 ```text
-add profile versioning
+add profile snapshot validation
 prevent duplicate submit retries
 cover malicious redirects
 explain browser isolation
