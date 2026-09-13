@@ -1,78 +1,73 @@
 # Getting started
 
-Erga Autopilot is still experimental. This guide explains the intended local setup and the order the project is being built in. If a command described here does not exist yet, check the repository status before assuming your machine is misconfigured.
+Erga Autopilot is still experimental. Some of the docs describe the system we are building toward, not something that is already ready on every branch. If a command in this guide does not exist yet, check the repo status before assuming your setup is broken.
 
-The safest way to try the project today is with synthetic profile data and prepare-only browser workflows.
+For now, use synthetic profile data and keep browser tests in prepare-only mode until the earlier pieces are proven.
 
-## Before you start
+## Hardware
 
-This project is currently designed around Apple Silicon macOS.
+I am building this on Apple Silicon macOS.
 
-Recommended development target:
+My current development machine is:
 
-- Apple Silicon Mac;
-- 48GB unified memory for the full Qwen3.8-27B stack;
-- 1TB or more local storage is comfortable for model files, browser state, traces, resumes, and application archives;
-- macOS with current security updates.
+- 14-inch MacBook Pro
+- Apple M5 Pro with an 18-core CPU and 20-core GPU
+- 48GB unified memory
+- 1TB SSD
 
-The author's current development machine is:
+The full Qwen3.8-27B stack is comfortable on 48GB, which is the setup I am tuning against. That does not mean you need the same machine.
 
-- 14-inch MacBook Pro;
-- Apple M5 Pro with an 18-core CPU and 20-core GPU;
-- 48GB unified memory;
-- 1TB SSD.
+If your hardware is different, clone or fork the repo and adjust the runtime for it. The settings most likely to change are:
 
-Lower-memory Apple Silicon machines may work with smaller context windows, a different quantization, lower concurrency, or another local-model configuration, but they are not the main target for this repository.
+- model or quantization
+- context length
+- KV-cache settings
+- model concurrency
+- headed vs. headless browser mode
+- screenshot and trace retention
+- application queue concurrency
+- memory and disk limits
 
-You do not need to match the author's hardware exactly to experiment with the project. Clone or fork the repository and tune the runtime to your own machine. The parts most likely to need adjustment are:
+Lower-memory Apple Silicon machines may still work with smaller context windows, a more aggressive quantization, or a lighter local-model setup. Other platforms may work too, but they are not tested here yet.
 
-- local model or quantization;
-- maximum context length;
-- KV-cache settings;
-- how many model requests may run at once;
-- whether the browser runs headed or headless;
-- trace and screenshot retention;
-- application queue concurrency;
-- memory and disk guardrails.
+If you get a different hardware profile working well, document the exact machine and settings instead of assuming they will carry over to everyone else.
 
-If you make a different hardware profile work well, document the exact machine and settings rather than assuming those settings are portable to every system.
+## Software you will need
 
-## Software prerequisites
+The current stack expects:
 
-The planned stack uses:
+- Python 3.11 or newer
+- [`uv`](https://docs.astral.sh/uv/)
+- Git
+- Node.js 20 or newer
+- an MLX-compatible Qwen3.8 runtime
+- Hermes Agent
+- Playwright MCP
+- Discord bot credentials
+- optional Zoho OAuth credentials for recruiting-mail tracking
 
-- Python 3.11 or newer;
-- [`uv`](https://docs.astral.sh/uv/);
-- Git;
-- Node.js 20 or newer;
-- an MLX-compatible Qwen3.8 runtime;
-- Hermes Agent;
-- Playwright MCP;
-- Discord bot credentials;
-- optional Zoho OAuth credentials for recruiting-mail tracking.
-
-On macOS, make sure the Xcode command-line tools are available:
+On macOS, install the Xcode command-line tools if you do not already have them:
 
 ```bash
 xcode-select --install
 ```
 
-Install `uv` using its official installation instructions, then verify it:
+Install `uv` from its official instructions, then check it:
 
 ```bash
 uv --version
 ```
 
-Verify Git and Node as well:
+Check Git and Node too:
 
 ```bash
 git --version
 node --version
 ```
 
-Playwright MCP currently requires Node.js 20 or newer.
+Playwright MCP currently needs Node.js 20 or newer.
 
-## Clone the repository
+## Clone the repo
 
 ```bash
 git clone https://github.com/GridGxly/erga-autopilot.git
@@ -80,13 +75,13 @@ cd erga-autopilot
 uv sync
 ```
 
-If your hardware differs from the primary development machine, make your runtime changes in your own clone or fork and keep them versioned. The project is intentionally not hard-wired to one Mac configuration.
+If you are changing runtime settings for different hardware, keep those changes in your own clone or fork so they are easy to track.
 
-## Keep runtime data outside Git
+## Keep live data out of the repo
 
-Do not put your live recruiting state inside the repository.
+Your real recruiting state should live outside Git.
 
-The intended local layout is similar to:
+A local layout might look like this:
 
 ```text
 ~/.config/erga-autopilot/
@@ -100,53 +95,53 @@ The intended local layout is similar to:
 └── backups/
 ```
 
-The repository should contain code, schemas, tests, synthetic fixtures, documentation, and versioned skills. It should not contain your real applicant profile, browser cookies, OAuth tokens, generated passwords, resume output history, application receipts, private screenshots, or live databases.
+The repo is for code, schemas, tests, synthetic fixtures, docs, and versioned skills. Keep your real applicant profile, browser cookies, OAuth tokens, generated passwords, resume output history, application receipts, private screenshots, and live databases out of it.
 
 ## Erga
 
 Erga Autopilot builds on [Erga](https://github.com/Adr1an04/erga-mcp).
 
-Erga remains responsible for the parts it already does well:
+Erga already handles:
 
-- career evidence;
-- project and Git evidence;
-- resume sources;
-- resume tailoring;
-- LaTeX generation and validation;
-- application lifecycle state;
-- recruiting-mail reconciliation.
+- career evidence
+- project and Git evidence
+- resume sources
+- resume tailoring
+- LaTeX generation and validation
+- application lifecycle state
+- recruiting-mail reconciliation
 
-Autopilot adds browser execution, onboarding/profile memory, Discord product UI, form-level auditing, and submission orchestration around that core.
+Autopilot adds the pieces I wanted around it: browser execution, onboarding and profile memory, the Discord UI, field-by-field application logging, and submission orchestration.
 
-Do not replace Erga's storage by editing its SQLite tables directly from browser code. Use its public application/domain surface or its MCP tools.
+Do not bypass Erga by poking at its SQLite tables from browser code. Use its application/domain surface or MCP tools.
 
 ## Local model
 
-The target model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), which is Apache-2.0 licensed.
+The target model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), licensed under Apache 2.0.
 
-The project is designed to run a 4-bit MLX-compatible build locally and expose it to Hermes through a localhost-only model server.
+The plan is to run a 4-bit MLX-compatible build locally and expose it to Hermes through a localhost-only model server.
 
-Do not bind the model server to your LAN or the public internet.
+Do not bind that server to your LAN or the public internet.
 
-A normal development workflow should certify the model before trusting it with applications:
+Before trusting the model with real applications, test it on the machine you are actually using:
 
-- confirm tool-call formatting;
-- confirm structured output;
-- test 8K, 16K, 32K, and 64K contexts;
-- measure memory pressure and swap;
-- verify browser use while the model is loaded;
-- test cancellation and restart behavior;
-- run synthetic prompt-injection cases.
+- tool-call formatting
+- structured output
+- 8K, 16K, 32K, and 64K contexts
+- memory pressure and swap
+- browser use while the model is loaded
+- cancellation and restart behavior
+- synthetic prompt-injection cases
 
-The repository should record the exact model revision and runtime versions once the local configuration is certified.
+Once a local setup is stable, record the exact model revision and runtime versions you used.
 
 ## Hermes
 
-Hermes is the intended production agent harness.
+Hermes is the agent harness around Qwen.
 
-It should connect to the local Qwen endpoint and expose only the tools needed for the current operating mode.
+It connects to the local model and exposes only the tools allowed for the current mode.
 
-Examples of modes include:
+Example modes:
 
 ```text
 ONBOARDING
@@ -159,25 +154,21 @@ MAIL_REVIEW
 MANUAL_TAKEOVER
 ```
 
-The same Qwen model can be used across those modes. The mode changes permissions and available tools, not the identity of the model.
+The model stays the same. The mode changes what it is allowed to read or change.
 
 ## Playwright MCP
 
-Browser automation is handled with [Playwright MCP](https://playwright.dev/mcp/installation).
+Browser automation goes through [Playwright MCP](https://playwright.dev/mcp/installation).
 
-Use a dedicated recruiting browser profile.
+Use a dedicated recruiting browser profile. Do not connect Autopilot to your everyday browser profile or give it unrelated logins, banking sessions, personal password-manager extensions, or other private browser state.
 
-Do not connect Autopilot to your everyday browser profile. The browser used for job applications should not contain unrelated logins, saved banking sessions, personal password-manager extensions, or other private browsing state.
-
-Start in headed, prepare-only mode so you can watch the browser work.
-
-Do not enable unattended submission before the prepare-only stage has been tested against real application flows.
+Start with a visible browser and prepare-only runs so you can watch what happens. Do not turn on unattended submission until those runs are solid.
 
 ## Discord
 
-Discord is the intended remote interface.
+Discord is the phone-friendly control surface.
 
-A typical private server layout is:
+A private server can be laid out like this:
 
 ```text
 SOURCES
@@ -200,66 +191,66 @@ SYSTEM
 # system-log
 ```
 
-The source bot should have access only to the source channels it needs. Your Autopilot bot should be authorized by your numeric Discord user ID, not only a display name.
+A third-party source bot should only see the source channels it actually needs. Your Autopilot bot should authorize you by numeric Discord user ID, not just a display name.
 
-The `applications` forum is the human-readable archive. Local state remains authoritative.
+The `applications` forum is the readable archive. The local databases remain the machine source of truth.
 
 ## Zoho
 
-Zoho integration is optional, but it is useful for:
+Zoho is optional, but it is useful for:
 
-- application acknowledgements;
-- email verification for employer accounts;
-- online assessment invitations;
-- interview scheduling;
-- offers;
-- rejections;
-- recruiter follow-ups.
+- application acknowledgements
+- employer-account email verification
+- online-assessment invitations
+- interview scheduling
+- offers
+- rejections
+- recruiter follow-ups
 
-Prefer the official Zoho Mail API with narrow, read-only scopes where possible instead of browser scraping the inbox.
+Use the official Zoho Mail API with narrow read-only scopes where possible instead of scraping the inbox through a browser.
 
-Do not permanently log verification codes.
+Do not keep verification codes in logs or Discord after they are used.
 
 ## First safe run
 
-Before using real applicant data, verify the stack with a synthetic profile.
+Before using real applicant data, prove the stack with a fake profile.
 
-A safe first end-to-end test should look like:
+A good first end-to-end test is:
 
-1. create a fake job record;
-2. create a synthetic candidate profile;
-3. have Qwen classify form questions;
-4. open a demo form through Playwright MCP;
-5. fill the form without submitting;
-6. record every field and click;
-7. generate a fake application forum timeline;
-8. confirm no secret or private file was exposed.
+1. create a fake job record
+2. create a synthetic candidate profile
+3. have Qwen classify the form questions
+4. open a demo form through Playwright MCP
+5. fill it without submitting
+6. record every field and click
+7. generate a fake Discord application timeline
+8. confirm that no secret or private file was exposed
 
-Only after that should you connect real resumes, Discord, Zoho, and employer application pages.
+Only then should you connect real resumes, Discord, Zoho, and employer application pages.
 
-## Build stages
+## Build order
 
-The project is intentionally staged:
+The project is being built in this order:
 
-1. repository and architecture foundation;
-2. Mac runtime foundation;
-3. Qwen3.8 local-runtime certification;
-4. Hermes policy and mode layer;
-5. Erga integration and local state;
-6. security and prompt-injection tests;
-7. Discord control plane;
-8. applicant onboarding;
-9. job ingestion and shortlist;
-10. resume and company research;
-11. Playwright prepare-only automation;
-12. controlled submission;
-13. recruiting-mail tracking;
-14. restricted autopilot;
-15. operations, backups, and upgrade testing.
+1. repository and architecture foundation
+2. Mac runtime foundation
+3. Qwen3.8 local-runtime certification
+4. Hermes policy and mode layer
+5. Erga integration and local state
+6. security and prompt-injection tests
+7. Discord control plane
+8. applicant onboarding
+9. job ingestion and shortlist
+10. resume and company research
+11. Playwright prepare-only automation
+12. controlled submission
+13. recruiting-mail tracking
+14. restricted autopilot
+15. operations, backups, and upgrade testing
 
-Do not skip directly to autopilot.
+Do not jump straight to autopilot just because the browser can click Submit.
 
-## Next reading
+## Next
 
 - [How it works](how-it-works.md)
 - [Security](../SECURITY.md)
