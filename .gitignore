@@ -1,0 +1,107 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# uv / build output
+dist/
+build/
+*.egg-info/
+
+# Node / Playwright
+node_modules/
+playwright-report/
+test-results/
+blob-report/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/*.local.json
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.token
+secrets/
+
+# Autopilot live state
+.erga-autopilot/
+state/
+runtime/
+private/
+backups/
+logs/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Candidate profile and personal memory
+profile/
+introduction.md
+candidate*.json
+applicant*.json
+answers*.json
+
+# Browser state
+browser-profile/
+browser-state/
+playwright/.auth/
+storage-state*.json
+cookies*.json
+
+# Application artifacts
+applications/
+generated-resumes/
+receipts/
+traces/
+screenshots/
+email-evidence/
+*.har
+*.trace.zip
+
+# Resume / document output
+*.pdf
+*.docx
+*.tex
+*.aux
+*.log
+*.out
+*.synctex.gz
+
+# Keep synthetic/test assets that are intentionally committed
+!tests/fixtures/**/*.pdf
+!tests/fixtures/**/*.docx
+!tests/fixtures/**/*.tex
+!examples/**/*.pdf
+!examples/**/*.tex
+
+# Local Zoho / Discord credentials
+zoho-*.json
+discord-*.json
+oauth-*.json
+mcp-tokens/
+
+# Local model/cache pointers
+models/
+model-cache/
+*.safetensors
+*.gguf
