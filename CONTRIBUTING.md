@@ -51,7 +51,7 @@ Optional integrations should stay optional.
 The project uses Python and `uv`.
 
 ```bash
-git clone https://github.com/TransferTrack/erga-autopilot.git
+git clone https://github.com/GridGxly/erga-autopilot.git
 cd erga-autopilot
 uv sync
 ```
@@ -60,24 +60,30 @@ As more implementation lands, the test commands will be kept here and in [Gettin
 
 Erga already has a strong verification gate. If your change keeps or modifies Erga code, keep the relevant formatting, typing, test, packaging, and security checks passing.
 
-## Test data
+## Public repo and test data
 
-Use synthetic data only.
+Treat anything committed here as public.
+
+The author's name can appear where attribution belongs, such as the README, license, copyright notice, and third-party notices. Applicant data is different: examples, fixtures, screenshots, mail, resumes, IDs, and application records must be synthetic.
 
 Never commit real:
 
 - resumes
 - applicant profiles
-- addresses or phone numbers
+- addresses, phone numbers, or personal email addresses
+- Discord user, guild, channel, forum, or role IDs
+- Zoho account IDs or recruiting mailbox data
 - employer credentials
 - email contents
 - OAuth tokens
-- browser sessions
+- browser sessions or cookies
 - application databases
 - application receipts
-- screenshots containing personal information
+- screenshots, traces, or HAR files containing personal information
 
-Fake data should still be realistic enough to exercise the workflow.
+Fake data should still be realistic enough to exercise the workflow. Use names such as `Alex Rivera`, addresses such as `alex@example.com`, and clearly fake company or school records. Do not copy a real production artifact into `tests/fixtures` just because it is convenient.
+
+Before committing, inspect the staged diff and make sure a generated file, credential, local ID, or private runtime artifact has not slipped in. If a new tool creates local files, decide whether its output belongs in `.gitignore` before committing it.
 
 ## Browser changes
 
@@ -123,7 +129,7 @@ If a workflow only works after weakening a security control, stop and explain th
 
 Keep the docs plain and specific.
 
-If behavior changes, update the relevant doc in the same pull request.
+If behavior changes, update the relevant doc in the same pull request. Examples and sample configuration must stay synthetic and must not contain the maintainer's real Discord IDs, mailbox IDs, application data, or other private runtime values.
 
 Do not make experimental behavior sound finished before it is.
 
