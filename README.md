@@ -129,6 +129,8 @@ You do not need the same Mac to experiment with the repo. If your machine has le
 
 Other platforms may work later, but I am not testing them right now.
 
+Not sure where your machine lands? [Run the hardware sanity check](docs/hardware-check.md). It includes a prompt you can give to ChatGPT, Claude, Gemini, Grok, or another capable agent so it can read the current repo, inspect your specs, and recommend a starting configuration without guessing benchmark numbers.
+
 ## Requirements
 
 The local stack currently expects:
@@ -176,7 +178,7 @@ Read [SECURITY.md](SECURITY.md) before connecting Discord, Playwright, Zoho, or 
 This is not a one-command consumer app yet. If you want to try it, start with synthetic data:
 
 ```bash
-git clone https://github.com/TransferTrack/erga-autopilot.git
+git clone https://github.com/GridGxly/erga-autopilot.git
 cd erga-autopilot
 uv sync
 ```
