@@ -35,7 +35,7 @@ A normal run should look roughly like this:
 9. keep the exact resume, answers, clicks, screenshots, and receipt;
 10. watch recruiting mail for OAs, interviews, offers, and rejections.
 
-Discord is the remote interface. The model, databases, resumes, browser state, credentials, and application history stay on the user's machine.
+Discord is the remote interface. The model, memory, databases, resumes, browser state, credentials, and application history stay on the user's machine.
 
 ## Architecture
 
@@ -46,16 +46,20 @@ Discord
 Autopilot
   │
   ├── Qwen3.8-27B      reasoning
-  ├── Hermes Agent     sessions, tools, MCP, agent loop
+  ├── Hermes Agent     sessions, tools, MCP, hot memory
   ├── Erga             career evidence, resumes, application state
+  ├── Obsidian         long-term semantic memory
+  │     └── QMD        local search/indexing
+  ├── SQLite           transactional workflow state
   ├── Playwright MCP   browser control
-  ├── Zoho Mail        recruiting mail and verification events
-  └── SQLite           local profile and automation state
+  └── Zoho Mail        recruiting mail and verification events
 ```
 
-The split is deliberate: code owns facts, permissions, and irreversible actions; Qwen handles ambiguity; Hermes runs the agent loop; Playwright operates the browser; Erga handles career evidence and resume work; Discord shows the readable history.
+The split is deliberate. Obsidian holds the human-readable long-term knowledge: candidate profile, preferences, story, company notes, research, and decisions. SQLite stays focused on state that must be exact: queues, checkpoints, browser runs, submission attempts, deduplication, Discord bindings, mail reconciliation, and idempotency. Large artifacts such as resumes, receipts, screenshots, and traces stay as private files.
 
-Read [How it works](docs/how-it-works.md) for the longer version.
+Hermes' built-in memory remains small and hot. It should point the agent toward the durable local knowledge rather than trying to hold the whole recruiting history in the system prompt.
+
+Read [How it works](docs/how-it-works.md) and [Memory and storage](docs/memory-and-storage.md) for the longer version.
 
 ## Application archive
 
@@ -78,11 +82,23 @@ It can record:
 
 Secrets are excluded from that history.
 
+## Memory
+
+The private Obsidian vault is the long-term semantic memory layer.
+
+It is intended to hold approved profile information, application preferences, narrative context, company notes, research, decisions, and other knowledge the user may want to browse or edit directly.
+
+Canonical profile notes are still validated by code. A webpage, email, research result, or model output cannot write itself into the approved candidate profile just because it appears in the vault.
+
+When an application is prepared, Autopilot freezes the approved profile/version and other inputs it used so later edits to the vault do not rewrite history.
+
+QMD can provide local retrieval over the vault as it grows. QMD is an index, not the source of truth.
+
 ## Local model
 
 The target model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), running locally on Apple Silicon with an MLX-compatible quantization.
 
-Qwen handles judgment calls such as job fit, unfamiliar form wording, company research, browser recovery, resume selection, and written-response drafting. Exact applicant facts come from structured local state rather than model memory.
+Qwen handles judgment calls such as job fit, unfamiliar form wording, company research, browser recovery, resume selection, and written-response drafting. Exact applicant facts come from validated local state rather than free-form model memory.
 
 ## Hardware
 
@@ -95,7 +111,7 @@ The primary development machine is:
 
 Qwen3.8-27B at 4-bit is still a large local model. The full stack is being tuned against 48GB unified memory.
 
-You do not need the same Mac to experiment with the project. If your machine is different, clone or fork the repo and adjust the model, quantization, context size, concurrency, browser mode, and retention limits for your hardware. Settings tested on one machine should not be assumed to behave the same everywhere else.
+You do not need the same Mac to experiment with the project. If your machine is different, clone or fork the repo and adjust the model, quantization, context size, concurrency, browser mode, retention limits, and local retrieval settings for your hardware. Settings tested on one machine should not be assumed to behave the same everywhere else.
 
 Other platforms may work later, but Apple Silicon macOS is the current development target.
 
@@ -103,15 +119,18 @@ Not sure where your machine lands? Read [Will this run on my machine?](docs/hard
 
 ## Requirements
 
-The current plan uses:
+The current reference setup uses:
 
 - macOS on Apple Silicon;
 - Python 3.11+;
 - [`uv`](https://docs.astral.sh/uv/);
 - Git;
-- Node.js 20+;
+- Node.js 22+ for the full reference setup with QMD;
 - an MLX / MLX-VLM runtime that supports Qwen3.8;
 - Hermes Agent;
+- Erga;
+- Obsidian or an Obsidian-compatible local Markdown vault;
+- QMD for local vault retrieval in the reference full setup;
 - Playwright MCP;
 - Discord bot credentials;
 - optional Zoho Mail OAuth for recruiting-mail tracking.
@@ -124,7 +143,7 @@ See [Getting started](docs/getting-started.md) before connecting real data.
 
 This project handles sensitive recruiting data. Treat anything committed to this repository as public.
 
-Real profiles, resumes, browser sessions, credentials, application receipts, recruiting mail, screenshots, logs, and live databases belong outside the Git checkout. Public examples and tests must use synthetic people, companies, messages, and credentials.
+Real profiles, the private Obsidian vault, resumes, browser sessions, credentials, application receipts, recruiting mail, screenshots, logs, and live databases belong outside the Git checkout. Public examples and tests must use synthetic people, companies, messages, and credentials.
 
 Read [SECURITY.md](SECURITY.md) and [Prompt injection](docs/prompt-injection.md) before connecting Discord, Playwright, Zoho, or real application data.
 
@@ -144,7 +163,7 @@ If you want the original local-first recruiting assistant without browser auto-a
 
 ## Status
 
-The project is being built in stages: local runtime, model certification, Erga integration, Discord control, onboarding, job intake, resume/research workflows, prepare-only browser automation, controlled submission, recruiting lifecycle tracking, and finally restricted autopilot.
+The project is being built in stages: local runtime, model certification, Hermes/Obsidian memory, Erga integration, transactional state, Discord control, onboarding, job intake, resume/research workflows, prepare-only browser automation, controlled submission, recruiting lifecycle tracking, and finally restricted autopilot.
 
 Working code is not the same thing as safe unattended submission. Irreversible behavior stays behind test gates until the earlier pieces have been proven.
 
