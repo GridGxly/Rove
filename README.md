@@ -16,28 +16,28 @@
 
 I built Erga Autopilot for my own internship search.
 
-I liked what [Erga](https://github.com/Adr1an04/erga-mcp) already did well: local application tracking, evidence-backed resume tailoring, Git-backed project evidence, and recruiting-mail reconciliation. I wanted one more layer on top of that foundation: a local agent that could actually open an application, fill it out, ask me when it did not know something, and leave behind a complete record of what it submitted.
+[Erga](https://github.com/Adr1an04/erga-mcp) already handled a lot of the hard parts I cared about: local application tracking, evidence-backed resume tailoring, Git-backed project evidence, and recruiting-mail reconciliation. I wanted to take that foundation one step further and let a local agent actually work through applications for me.
 
-That is why this repository exists.
+That means opening the form, filling what it knows, stopping when it needs me, keeping the exact resume and answers it submitted, and tracking what happens afterward.
 
-Erga Autopilot is not an official Erga project and is not affiliated with its maintainer. It is an independent personal project built on top of ideas and code from Erga under its MIT license. The original work belongs to Adrian and the Erga contributors; this project extends that foundation for browser-based application automation. See [Third-party notices](THIRD_PARTY_NOTICES.md) for details.
+Erga Autopilot is not an official Erga project and is not affiliated with its maintainer. Adrian and the Erga contributors did the original Erga work. This repo builds on that foundation under the MIT license and adds the browser automation and personal-agent layer I wanted for myself. See [Third-party notices](THIRD_PARTY_NOTICES.md) for the attribution details.
 
 ## What it does
 
-Erga Autopilot is designed around a local recruiting loop:
+A normal run looks like this:
 
-1. ingest job leads from Discord or a direct URL;
-2. decide whether the role matches your profile and application rules;
-3. use Erga to prepare evidence-backed resume material;
-4. research the company when a written answer needs real context;
-5. use a local Qwen model as the reasoning layer;
-6. control a dedicated browser through Playwright MCP;
-7. pause and ask you when a fact or written response needs approval;
-8. submit only when the application package is complete;
-9. archive the exact resume, answers, clicks, screenshots, and receipt;
+1. pick up a job from Discord or a direct URL;
+2. check it against your profile and application rules;
+3. use Erga to prepare an evidence-backed resume;
+4. research the company when a written question needs context;
+5. use local Qwen3.8-27B for reasoning;
+6. work through the application in a dedicated Playwright browser;
+7. stop and ask you when something is unknown or needs approval;
+8. submit only after the application package is complete;
+9. keep the exact resume, answers, clicks, screenshots, and receipt;
 10. watch recruiting mail for OAs, interviews, offers, and rejections.
 
-The intended interface is Discord. The model, databases, resumes, browser state, application history, and credentials stay on your machine.
+Discord is the remote interface. The model, databases, resumes, browser state, application history, and credentials stay on your machine.
 
 ## Architecture
 
@@ -55,40 +55,38 @@ Autopilot control plane
   └── SQLite           local profile and automation state
 ```
 
-The main rule is simple:
+The split is deliberate: local state stores the facts, Discord shows the readable history, Qwen handles ambiguity, Hermes runs the agent loop, Playwright operates the browser, and Zoho catches recruiting events afterward.
 
-> local state holds machine truth; Discord shows the human-readable history; Qwen reasons; Hermes orchestrates; Playwright acts; Zoho observes what happens afterward.
-
-Read [How it works](docs/how-it-works.md) for the full design.
+Read [How it works](docs/how-it-works.md) for the longer version.
 
 ## Application archive
 
-Each application gets a Discord forum post that acts like a flight recorder.
+Every application gets its own Discord forum post. I want that thread to be useful months later, not just say "applied."
 
-The thread is expected to record:
+It should keep:
 
 - the source job and official application URL;
-- the exact resume file uploaded;
-- every form page reached;
-- every field label and value entered;
-- the source of each answer;
+- the exact resume file that was uploaded;
+- each form page the agent reached;
+- every field label and value it entered;
+- where each answer came from;
 - every checkbox, selection, and meaningful click;
 - account creation and email verification events;
 - written answers and approval history;
 - browser validation errors and retries;
 - the final submit action;
 - the confirmation page and receipt;
-- later lifecycle events such as OA, interview, offer, rejection, or withdrawal.
+- later events such as an OA, interview, offer, rejection, or withdrawal.
 
-Lifecycle tags show the current state. Detailed timeline comments explain how the application got there.
+Tags show the current lifecycle state. Timeline comments show how it got there.
 
 ## Memory and onboarding
 
-Autopilot does not let the model invent its own personal-memory structure.
+The model does not get to invent its own memory format.
 
-The candidate profile is a versioned schema defined in code. Onboarding is conversational, but Qwen only fills predefined fields, policies, and story slots. A separate `introduction.md` captures narrative context such as motivations, interests, proudest projects, leadership stories, and writing style.
+The candidate profile is a versioned schema in code. Qwen can conduct the onboarding conversation and ask follow-ups, but it only writes into fields, policies, and story slots that already exist. A separate `introduction.md` stores the more human context: motivations, interests, proudest projects, leadership stories, writing style, and similar background.
 
-The intended source order is:
+When the agent needs information, it checks sources in this order:
 
 1. approved candidate profile;
 2. approved Erga evidence;
@@ -96,86 +94,86 @@ The intended source order is:
 4. portfolio and GitHub;
 5. external research.
 
-If a new application asks something the profile does not know, Autopilot pauses, asks once, and can save the answer into the existing structure after approval.
+If a form asks something the profile has never seen, Autopilot pauses and asks. You can save the answer afterward so the next equivalent question does not interrupt you again.
 
 ## Browser automation
 
-Browser work is handled through [Playwright MCP](https://playwright.dev/mcp/installation) in a dedicated browser profile.
+Browser work goes through [Playwright MCP](https://playwright.dev/mcp/installation) in its own recruiting profile.
 
-Your personal browser should stay separate. The application agent should not be connected to your everyday browser profile, saved passwords, banking sessions, or unrelated accounts.
+Keep your everyday browser separate. The application agent should not inherit unrelated logins, banking sessions, saved passwords, or personal browser state.
 
-The project starts in visible / prepare-only mode. Submission and unattended autopilot are intentionally later stages.
+The project starts in visible, prepare-only mode so you can watch it work. Submission and unattended autopilot come later.
 
 ## Local model
 
-The target model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), run locally on Apple Silicon using an MLX-compatible quantization.
+The target model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), running locally on Apple Silicon with an MLX-compatible quantization.
 
-The model is not the database and it is not the authorization layer. It handles ambiguity: job fit, unfamiliar form wording, company research, browser recovery, resume selection, and written-response drafting.
+Qwen is the part that handles judgment calls: job fit, unfamiliar form wording, company research, browser recovery, resume selection, and written-response drafting.
 
-Exact facts such as contact information, education, work authorization, dates, and saved application answers come from structured local state.
+It is not the database and it is not the authorization layer. Exact facts such as contact information, education, work authorization, dates, and saved application answers come from structured local state.
 
 ## Hardware
 
-This project is currently designed and developed for Apple Silicon macOS.
+I am developing and testing this on Apple Silicon macOS.
 
-My current development machine is:
+My current machine is:
 
-- 14-inch MacBook Pro;
-- M5 Pro, 18-core CPU / 20-core GPU;
-- 48GB unified memory;
-- 1TB SSD.
+- 14-inch MacBook Pro
+- M5 Pro, 18-core CPU / 20-core GPU
+- 48GB unified memory
+- 1TB SSD
 
-Qwen3.8-27B at 4-bit is a large local model. For the full stack, 48GB unified memory is the comfortable target I am developing against. Lower-memory Apple Silicon systems may still work with a smaller context window, a different quantization, or a lighter model configuration, but they should not be expected to behave exactly like the primary development machine.
+Qwen3.8-27B at 4-bit is still a large local model. The full stack is comfortable on 48GB, which is the hardware I am tuning against.
 
-The repository is intentionally editable rather than tied to one exact Mac. If your hardware is different, clone or fork the project and adjust the local model, context length, concurrency, browser settings, and other runtime limits for your machine. Those alternate configurations are welcome, but they are not the primary tested target yet.
+You do not need the same Mac to experiment with the repo. If your machine has less memory or a different GPU/CPU setup, clone or fork it and tune the model, quantization, context size, concurrency, browser mode, and retention limits for your hardware. Just do not assume settings tested on my machine will behave the same everywhere else.
 
-Other platforms may work eventually, but they are not currently tested.
+Other platforms may work later, but I am not testing them right now.
 
 ## Requirements
 
-The planned local stack includes:
+The local stack currently expects:
 
-- macOS on Apple Silicon;
-- Python 3.11+;
-- [`uv`](https://docs.astral.sh/uv/);
-- Git;
-- Node.js 20+ for Playwright MCP;
-- a supported MLX / MLX-VLM runtime;
-- Hermes Agent;
-- Discord bot credentials;
-- optional Zoho Mail OAuth for recruiting-mail tracking.
+- macOS on Apple Silicon
+- Python 3.11+
+- [`uv`](https://docs.astral.sh/uv/)
+- Git
+- Node.js 20+ for Playwright MCP
+- an MLX / MLX-VLM runtime that supports Qwen3.8
+- Hermes Agent
+- Discord bot credentials
+- optional Zoho Mail OAuth for recruiting-mail tracking
 
-See [Getting started](docs/getting-started.md) before installing anything.
+See [Getting started](docs/getting-started.md) before wiring it up to real data.
 
 ## Status
 
-This repository is experimental and is being built in phases.
+This is experimental software and it is being built in stages.
 
-The intended rollout is:
+The rough order is:
 
-- local runtime and model certification;
-- candidate onboarding and memory;
-- Discord control plane;
-- job ingestion and shortlist;
-- resume and company-research pipeline;
-- Playwright prepare-only automation;
-- controlled submission;
-- recruiting-mail tracking;
-- restricted autopilot.
+- local runtime and model certification
+- candidate onboarding and memory
+- Discord control plane
+- job ingestion and shortlist
+- resume and company research
+- Playwright prepare-only automation
+- controlled submission
+- recruiting-mail tracking
+- restricted autopilot
 
-Do not assume unattended submission is safe merely because the code runs. Each irreversible capability should be enabled only after the earlier stage has been tested against real application flows.
+Working code is not the same thing as safe unattended submission. Irreversible steps stay behind test gates until the earlier pieces have been proven against real application flows.
 
 ## Security and privacy
 
-This project handles unusually sensitive information: resumes, contact details, browser sessions, employment history, recruiting email, and generated employer-account credentials.
+This project handles resumes, contact details, browser sessions, employment history, recruiting email, and employer-account credentials.
 
-Real user state must stay outside the repository. Do not commit databases, resumes, application receipts, cookies, OAuth tokens, screenshots, private profile data, generated passwords, or logs containing personal information.
+Keep real runtime state out of Git. Do not commit databases, resumes, application receipts, cookies, OAuth tokens, screenshots, private profile data, generated passwords, or logs with personal information.
 
 Read [SECURITY.md](SECURITY.md) before connecting Discord, Playwright, Zoho, or real application data.
 
 ## Getting started
 
-The repository is not yet a one-command consumer product. If you want to experiment with it, start with the setup guide and synthetic data:
+This is not a one-command consumer app yet. If you want to try it, start with synthetic data:
 
 ```bash
 git clone https://github.com/TransferTrack/erga-autopilot.git
@@ -185,13 +183,13 @@ uv sync
 
 Then follow [docs/getting-started.md](docs/getting-started.md).
 
-If you are looking for the original local-first recruiting assistant without browser auto-application behavior, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
+If you want the original local-first recruiting assistant without browser auto-application behavior, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
 
 ## Contributing
 
-This started as a personal tool, so the priority is correctness, auditability, and not lying on job applications.
+This started as a personal tool, so I care more about correctness and traceability than clever automation.
 
-Issues and focused pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before changing application state, browser permissions, profile memory, resume evidence, or security boundaries.
+Issues and focused pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing application state, browser permissions, profile memory, resume evidence, or security boundaries.
 
 ## Author
 
@@ -201,4 +199,4 @@ Built by [Ralph Clavens Love Noel](https://github.com/GridGxly) for personal use
 
 Erga Autopilot is licensed under the [MIT License](LICENSE).
 
-Portions and design foundations derived from Erga remain subject to Erga's MIT license and attribution requirements. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Parts of the project and some design decisions come from Erga and remain subject to Erga's MIT license and attribution requirements. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
