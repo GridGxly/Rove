@@ -32,6 +32,8 @@ Lower-memory Apple Silicon machines may still work with smaller context windows,
 
 If you get a different hardware profile working well, document the exact machine and settings instead of assuming they will carry over to everyone else.
 
+If you are not sure whether your machine has enough headroom for the whole stack, use the [hardware sanity check](hardware-check.md). It gives you a prompt to paste into ChatGPT, Claude, Gemini, Grok, or another capable agent so it can compare your machine with the current repo before you start changing things.
+
 ## Software you will need
 
 The current stack expects:
@@ -252,6 +254,7 @@ Do not jump straight to autopilot just because the browser can click Submit.
 
 ## Next
 
+- [Hardware sanity check](hardware-check.md)
 - [How it works](how-it-works.md)
 - [Security](../SECURITY.md)
 - [Contributing](../CONTRIBUTING.md)
