@@ -7,6 +7,7 @@ If you're new here, start with these:
 - [Getting started](getting-started.md) for local setup, requirements, and the first safe run
 - [How it works](how-it-works.md) for the architecture and day-to-day behavior
 - [Security](../SECURITY.md) for permissions, credentials, prompt injection, and submission safety
+- [Prompt injection](prompt-injection.md) for concrete attack examples, tool boundaries, and the tests that should block autopilot when those boundaries fail
 - [Roadmap](roadmap.md) for the staged path from local setup to restricted autopilot
 - [Contributing](../CONTRIBUTING.md) for development rules and pull-request expectations
 - [Third-party notices](../THIRD_PARTY_NOTICES.md) for Erga attribution and other dependency notes
