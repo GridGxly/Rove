@@ -26,20 +26,58 @@ blob-report/
 .AppleDouble
 .LSOverride
 
-# IDE
+# IDE and local agent settings
 .idea/
 .vscode/*.local.json
+.claude/settings.local.json
+.claude/*.local.json
 
-# Local environment / secrets
+# Local environment / machine-specific config
 .env
 .env.*
 !.env.example
+.envrc
+.envrc.*
+.direnv/
+*.local.toml
+*.local.yaml
+*.local.yml
+config.local.*
+settings.local.*
+secrets.local.*
+.mcp.json
+!.mcp.example.json
+
+# Keys, tokens, and credential files
 *.key
 *.pem
 *.p12
 *.pfx
+*.cer
+*.der
+*.jks
+*.keystore
 *.token
+credentials*.json
+credential*.json
+client_secret*.json
+client_secrets*.json
+service-account*.json
+service_account*.json
+tokens*.json
+oauth*.json
+zoho*.json
+discord*.json
+*.credentials.json
+.netrc
+.npmrc
+.pypirc
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
 secrets/
+mcp-tokens/
 
 # Autopilot live state
 .erga-autopilot/
@@ -48,11 +86,24 @@ runtime/
 private/
 backups/
 logs/
+exports/
+attachments/
+downloads/
+mail-cache/
+tmp/
+temp/
+cache/
 *.sqlite
 *.sqlite3
 *.db
 *.db-shm
 *.db-wal
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Candidate profile and personal memory
 profile/
@@ -61,12 +112,18 @@ candidate*.json
 applicant*.json
 answers*.json
 
-# Browser state
+# Agent / browser state
+.hermes/
+.playwright/
 browser-profile/
 browser-state/
+user-data-dir/
+chromium-profile/
 playwright/.auth/
 storage-state*.json
+auth-state*.json
 cookies*.json
+session*.json
 
 # Application artifacts
 applications/
@@ -87,18 +144,14 @@ email-evidence/
 *.out
 *.synctex.gz
 
-# Keep synthetic/test assets that are intentionally committed
+# Keep intentionally synthetic source fixtures
 !tests/fixtures/**/*.pdf
 !tests/fixtures/**/*.docx
 !tests/fixtures/**/*.tex
+!tests/fixtures/**/*.example.json
 !examples/**/*.pdf
 !examples/**/*.tex
-
-# Local Zoho / Discord credentials
-zoho-*.json
-discord-*.json
-oauth-*.json
-mcp-tokens/
+!examples/**/*.example.json
 
 # Local model/cache pointers
 models/
