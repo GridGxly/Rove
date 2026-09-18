@@ -12,6 +12,7 @@ Read:
 - [docs/requirements.md](docs/requirements.md)
 - [docs/memory-and-storage.md](docs/memory-and-storage.md)
 - [docs/how-it-works.md](docs/how-it-works.md)
+- [docs/discord.md](docs/discord.md)
 - [docs/prompt-injection.md](docs/prompt-injection.md)
 - [SECURITY.md](SECURITY.md)
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
