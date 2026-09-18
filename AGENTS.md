@@ -379,3 +379,9 @@ If implementation changes what must be installed, configured, authenticated, sto
 Do not document speculative commands as if they already work. If the docs and implementation disagree, the current code and tests are the source of truth, and the docs should be corrected.
 
 Public-facing docs should be clear and specific. Keep useful technical language, but cut marketing copy, filler, fake certainty, repetitive summaries, and generic agent jargon.
+
+## Task tracking
+
+Project-level TODOs, roadmaps, backlogs, launch checklists, and action plans live only in `TransferTrack/website/docs/todos/`.
+Do not create or maintain a second local TODO Markdown tracker in this repo. Update the central tracker and link to code, issues, or source docs from there.
+Historical handoffs may keep context, but they are not the authoritative task list.
