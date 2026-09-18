@@ -16,7 +16,7 @@
 
 I built Erga Autopilot for my own internship search.
 
-[Erga](https://github.com/Adr1an04/erga-mcp) already handled several parts I cared about: local application tracking, evidence-backed resume tailoring, Git-backed project evidence, and recruiting-mail reconciliation. I wanted to keep that foundation and add the part I was still doing by hand: opening applications, working through forms, asking me when something was unknown, preserving exactly what was submitted, and tracking what happened afterward.
+It’s built on top of [Erga](https://github.com/Adr1an04/erga-mcp), which already handles the stuff I care about like application tracking, resume tailoring, project evidence, and recruiting emails. I wanted to take it a step further and automate the part I was still doing by hand: opening applications, filling out forms, asking me when something is unclear, saving exactly what was submitted, and tracking what happens afterward.
 
 Erga Autopilot is **not** an official Erga project and is not affiliated with its maintainer. Adrian and the Erga contributors did the original Erga work. This project builds on that foundation under the MIT license and adds browser automation, a Discord control surface, local applicant memory, and application orchestration. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution details.
 
