@@ -59,7 +59,7 @@ The split is deliberate. Obsidian holds the human-readable long-term knowledge: 
 
 Hermes' built-in memory remains small and hot. It should point the agent toward the durable local knowledge rather than trying to hold the whole recruiting history in the system prompt.
 
-Read [How it works](docs/how-it-works.md) and [Memory and storage](docs/memory-and-storage.md) for the longer version.
+Read [How it works](docs/how-it-works.md), [Discord architecture](docs/discord.md), and [Memory and storage](docs/memory-and-storage.md) for the longer version.
 
 ## Application archive
 
