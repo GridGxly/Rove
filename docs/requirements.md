@@ -34,7 +34,7 @@ A full local setup is expected to need:
 - Erga
 - Obsidian or an Obsidian-compatible local Markdown vault
 - QMD for the reference local retrieval/indexing layer
-- Playwright MCP and its browser dependencies
+- Playwright/Chromium and the dependencies used by the fast local browser runtime
 - SQLite for Autopilot transactional state
 
 As implementation lands, pin exact versions where compatibility requires it. Do not guess version requirements in documentation. Verify them against the code and upstream projects.
@@ -43,7 +43,7 @@ If QMD is disabled, the minimum Node.js version may be lower and should follow t
 
 ## Local model
 
-The reference reasoning model is Qwen3.8-27B using an MLX-compatible quantization on Apple Silicon.
+The reference reasoning model is Qwen3.8-27B using an MLX-compatible quantization on Apple Silicon. Qwen remains the only required reasoning model in the reference architecture. Browser performance should come from a more efficient runtime, deterministic form handling, batching, and fewer model calls rather than a required cloud browser-decision model.
 
 The reference setup is expected to use:
 
@@ -155,11 +155,19 @@ Erga remains the foundation for career evidence, project evidence, resume tailor
 
 Autopilot should integrate through Erga's supported interfaces rather than reaching directly into its database from browser code.
 
-### Playwright MCP
+### Fast browser runtime
 
-Playwright MCP controls a dedicated recruiting browser.
+The production browser path uses a dedicated Playwright/Chromium recruiting browser.
+
+The runtime should support compact structured observation, deterministic field resolution, batch form execution, targeted waits, post-action verification, controlled uploads, multi-page navigation, and the coverage needed for real ATS flows.
+
+Playwright MCP may be installed for development, debugging, manual inspection, or fallback use. The production design should not require a general MCP round trip for every routine field and click.
+
+No Jev/TypeSafe or other cloud browser-decision model is required by the reference setup.
 
 Use a separate browser profile for recruiting. Do not reuse the user's everyday browser profile, password-manager extensions, unrelated sessions, or browser sync.
+
+Read [Browser automation](browser-automation.md) before implementing or replacing this layer.
 
 ### Discord
 
