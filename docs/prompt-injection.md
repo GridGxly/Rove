@@ -65,7 +65,7 @@ A compromised research page should not matter if the research agent has no tool 
 
 ## Browser boundaries
 
-The application browser uses its own Playwright profile.
+The application browser uses its own dedicated Playwright/Chromium profile.
 
 Before personal data is entered or a file is uploaded, code should verify the expected employer, ATS, or authentication destination.
 
@@ -75,7 +75,7 @@ The application agent should not have:
 - unrelated logged-in sessions
 - arbitrary filesystem access
 - arbitrary local-file upload paths
-- unrestricted Playwright code execution
+- unrestricted Playwright, CDP, or JavaScript execution
 - generic shell access
 
 Redirects to unexpected domains should stop the workflow rather than being followed automatically.
@@ -287,4 +287,5 @@ Any contribution that adds a browser action, MCP server, vault write path, retri
 - [How it works](how-it-works.md)
 - [OWASP LLM Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html)
 - [OWASP MCP Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/MCP_Security_Cheat_Sheet.html)
-- [Playwright MCP](https://playwright.dev/mcp/installation)
+- [Browser automation](browser-automation.md)
+- [Playwright](https://playwright.dev/)
