@@ -9,6 +9,7 @@ If you're new here, start with these:
 - [Memory and storage](memory-and-storage.md) for the split between Hermes hot memory, Obsidian, QMD, SQLite, Erga state, and local artifacts
 - [Will this run on my machine?](hardware-check.md) for checking your hardware and tuning a clone or fork
 - [How it works](how-it-works.md) for the architecture and application flow
+- [Browser automation](browser-automation.md) for the fast local form runtime, Qwen escalation rules, batching, verification, and browser reliability strategy
 - [Prompt injection](prompt-injection.md) for the trust model around untrusted pages, email, notes, retrieval, and tool output
 - [Security](../SECURITY.md) for permissions, credentials, browser isolation, memory boundaries, and submission safety
 - [Roadmap](roadmap.md) for the build order
