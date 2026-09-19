@@ -43,8 +43,10 @@ Autopilot
   │     ├── screenshots
   │     └── traces
   │
-  ├── Playwright MCP
-  │     └── dedicated recruiting browser
+  ├── fast browser runtime
+  │     ├── compact form/DOM observation
+  │     ├── deterministic field resolution + batching
+  │     └── dedicated Playwright/Chromium recruiting browser
   │
   └── Zoho
         └── recruiting mail and verification events
@@ -234,15 +236,34 @@ SQLite can store paths, hashes, and relationships to those files.
 
 Do not put large binary artifacts into the Obsidian vault just because the vault is the memory layer.
 
-## Playwright runs the browser
+## The browser runtime is fast-path first
 
-Playwright MCP gives the agent a dedicated recruiting browser.
+Autopilot uses a dedicated Playwright/Chromium recruiting browser, but Qwen should not drive every routine browser action one at a time.
 
-The agent can read structured page state, navigate, fill fields, select options, upload approved files, and work through multi-page forms.
+The production browser runtime should:
 
-That browser stays separate from the user's normal browser.
+- keep a long-lived dedicated browser session
+- inspect visible actionable controls in a compact structured observation
+- normalize the current form as a group
+- resolve known fields from the frozen approved profile/application package
+- batch-fill deterministic fields when safe
+- verify values after execution
+- use short event/state-driven waits instead of default multi-second sleeps
+- re-observe only when relevant semantic state changes
+- call Qwen for ambiguity, substantive written answers, or unfamiliar recovery
+- preserve a generic structured-browser fallback for unsupported sites
 
-The project does not start with a custom integration for every ATS. Greenhouse, Lever, Workday, Ashby, and custom career sites are treated as websites first. If a recurring site needs special handling, a small versioned skill or helper can be added without replacing the generic browser loop.
+Playwright MCP can remain useful for development, debugging, manual inspection, and fallback tooling. The production application loop should not require a general MCP round trip or Qwen decision for every field.
+
+Trusted runtime code may use narrowly scoped Playwright or CDP helpers internally to reduce browser round trips. Do not expose arbitrary browser code execution to Qwen.
+
+Screenshots and traces remain valuable evidence. They are not the default reasoning input when structured DOM/form state is sufficient.
+
+The browser stays separate from the user's normal browser.
+
+Recurring ATS behavior can be captured in small versioned adapters when repeated evidence justifies it. Those adapters may accelerate observation, normalization, widgets, or verification, but they must not bypass authentication, domain checks, frozen application inputs, or submission policy.
+
+Read [Browser automation](browser-automation.md) for the performance, batching, fallback, reliability, and benchmarking design.
 
 ## Candidate onboarding
 
