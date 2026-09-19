@@ -94,9 +94,22 @@ If a real secret is committed, revoke or rotate it before cleaning up the Git hi
 
 ## Browser changes
 
-Browser automation should stay generic first.
+Read [docs/browser-automation.md](docs/browser-automation.md) before changing browser observation, execution, field resolution, batching, waits, ATS adapters, or submission verification.
 
-Do not add a large ATS-specific framework because one form is inconvenient. If a recurring site needs special handling, prefer a small versioned skill or helper with tests.
+Browser automation should stay generic first, but generic does not mean model-driven one field at a time.
+
+Prefer changes that reduce unnecessary browser/model round trips while preserving observable state and verification:
+
+- compact structured form observation
+- deterministic field resolution from the frozen application package
+- safe batch filling
+- targeted event/state waits
+- post-fill value verification
+- narrow versioned ATS adapters when repeated evidence justifies them
+
+Do not add a large ATS-specific framework because one form is inconvenient. If a recurring site needs special handling, prefer a small versioned adapter or helper with tests.
+
+Do not add a required cloud browser-decision model to solve latency. Qwen3.8-27B remains the reference local reasoning model, and routine browser mechanics belong in normal code.
 
 Prepare-only behavior must remain testable separately from submission.
 
