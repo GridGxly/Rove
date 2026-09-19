@@ -46,7 +46,7 @@ The Erga logo mark and wordmark used by this repository are derived from the ups
 
 ## Other dependencies
 
-Erga Autopilot is intended to work with independent projects and services including Qwen, Hermes Agent, Playwright MCP, MLX/MLX-VLM, Obsidian, QMD, Discord, and Zoho APIs.
+Erga Autopilot is intended to work with independent projects and services including Qwen, Hermes Agent, Playwright/Chromium, optional Playwright MCP tooling, MLX/MLX-VLM, Obsidian, QMD, Discord, and Zoho APIs.
 
 Obsidian is used as the reference human interface for the private local Markdown vault. QMD is used as a local retrieval/indexing layer over that vault in the reference full setup.
 
