@@ -29,7 +29,7 @@ A normal run should look roughly like this:
 3. use Erga to prepare an evidence-backed resume;
 4. research the company when a written answer needs context;
 5. use local Qwen3.8-27B for reasoning;
-6. work through the application in a dedicated Playwright browser;
+6. work through the application in a dedicated fast local browser runtime;
 7. stop when something is unknown, sensitive, or needs approval;
 8. submit only when the application package is complete;
 9. keep the exact resume, answers, clicks, screenshots, and receipt;
@@ -51,7 +51,7 @@ Autopilot
   ├── Obsidian         long-term semantic memory
   │     └── QMD        local search/indexing
   ├── SQLite           transactional workflow state
-  ├── Playwright MCP   browser control
+  ├── Browser runtime  fast Playwright/Chromium execution
   └── Zoho Mail        recruiting mail and verification events
 ```
 
@@ -59,7 +59,7 @@ The split is deliberate. Obsidian holds the human-readable long-term knowledge: 
 
 Hermes' built-in memory remains small and hot. It should point the agent toward the durable local knowledge rather than trying to hold the whole recruiting history in the system prompt.
 
-Read [How it works](docs/how-it-works.md), [Discord architecture](docs/discord.md), and [Memory and storage](docs/memory-and-storage.md) for the longer version.
+Read [How it works](docs/how-it-works.md), [Browser automation](docs/browser-automation.md), [Discord architecture](docs/discord.md), and [Memory and storage](docs/memory-and-storage.md) for the longer version.
 
 ## Application archive
 
@@ -98,7 +98,7 @@ QMD can provide local retrieval over the vault as it grows. QMD is an index, not
 
 The target model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), running locally on Apple Silicon with an MLX-compatible quantization.
 
-Qwen handles judgment calls such as job fit, unfamiliar form wording, company research, browser recovery, resume selection, and written-response drafting. Exact applicant facts come from validated local state rather than free-form model memory.
+Qwen handles judgment calls such as job fit, unfamiliar form wording, company research, browser recovery, resume selection, and written-response drafting. Exact applicant facts come from validated local state rather than free-form model memory. Qwen is not used as the low-level driver for every routine field and click. The browser runtime handles compact observation, deterministic field resolution, batching, waits, and verification in normal code.
 
 ## Hardware
 
@@ -131,7 +131,7 @@ The current reference setup uses:
 - Erga;
 - Obsidian or an Obsidian-compatible local Markdown vault;
 - QMD for local vault retrieval in the reference full setup;
-- Playwright MCP;
+- Playwright/Chromium browser dependencies for the fast local browser runtime;
 - Discord bot credentials;
 - optional Zoho Mail OAuth for recruiting-mail tracking.
 
@@ -145,7 +145,7 @@ This project handles sensitive recruiting data. Treat anything committed to this
 
 Real profiles, the private Obsidian vault, resumes, browser sessions, credentials, application receipts, recruiting mail, screenshots, logs, and live databases belong outside the Git checkout. Public examples and tests must use synthetic people, companies, messages, and credentials.
 
-Read [SECURITY.md](SECURITY.md) and [Prompt injection](docs/prompt-injection.md) before connecting Discord, Playwright, Zoho, or real application data.
+Read [SECURITY.md](SECURITY.md), [Browser automation](docs/browser-automation.md), and [Prompt injection](docs/prompt-injection.md) before connecting Discord, the browser runtime, Zoho, or real application data.
 
 ## Getting started
 
