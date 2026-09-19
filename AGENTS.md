@@ -31,7 +31,7 @@ These choices are deliberate. Do not replace them casually just because another 
 - **Obsidian** is the private long-term semantic memory and human-readable knowledge layer.
 - **QMD** is the reference local retrieval/indexing layer for the Obsidian vault as it grows.
 - **SQLite** is the transactional state engine for jobs, browser/application runs, checkpoints, idempotency, bindings, reminders, and other exact machine state.
-- **Playwright MCP** controls a dedicated recruiting browser.
+- **Fast browser runtime** owns a dedicated Playwright/Chromium recruiting browser. It uses compact structured observations, deterministic form resolution, safe batch execution, targeted waits, and verification. Playwright MCP may be used for development or fallback inspection, but production should not require a model or MCP round trip for every field.
 - **Discord** is the phone-friendly control surface and human-readable application archive.
 - **Zoho Mail** is an optional recruiting-mail integration.
 - **Private files** preserve exact artifacts such as resumes, application packages, receipts, screenshots, traces, and job snapshots.
@@ -43,6 +43,8 @@ The model is not the database and it is not the authorization layer. Normal code
 If implementation proves a settled choice is technically wrong, document the evidence before changing the architecture. Do not reopen architecture by default.
 
 Read [docs/memory-and-storage.md](docs/memory-and-storage.md) before changing the memory/storage split.
+
+Read [docs/browser-automation.md](docs/browser-automation.md) before changing browser observation, execution, ATS adapters, field resolution, waits, Qwen escalation, or submission verification.
 
 ## The memory and storage split
 
@@ -136,6 +138,27 @@ When an approved profile changes, create or maintain a normalized immutable snap
 
 Do not let untrusted web/email/research content write directly to authoritative profile notes.
 
+## Browser automation strategy
+
+Qwen3.8-27B remains the reference reasoning model. Do not add a required cloud browser-decision model or a second required browser model as a shortcut for browser latency.
+
+The fast path should move routine mechanics into normal code:
+
+- inspect a form as a group instead of one field at a time
+- build a compact structured observation
+- resolve known values from the frozen approved profile/application package
+- batch-fill deterministic fields when safe
+- verify the resulting values
+- wait for concrete UI state changes rather than sleeping for fixed multi-second intervals
+- call Qwen only for ambiguity, substantive writing, unfamiliar recovery, or unresolved questions
+- keep screenshots and full traces for evidence/debugging rather than making them the default reasoning input
+- use small versioned ATS adapters only when repeated evidence justifies them
+- preserve a generic structured-browser fallback
+
+The production agent should receive narrow browser operations. It should not receive unrestricted Playwright, CDP, JavaScript, shell, or filesystem execution even if trusted runtime code uses lower-level browser APIs internally.
+
+Optimize single-application correctness and measured browser round trips before adding concurrency. One active Qwen request at a time remains the reference starting point until the local 48GB runtime is measured under load.
+
 ## Local-first means local-first
 
 Real recruiting state belongs outside the Git checkout. The repository is for code, docs, schemas, migrations, tests, synthetic fixtures, and versioned skills.
@@ -193,7 +216,7 @@ Enforce security with boundaries in code:
 - make profile and memory writes deterministic and versioned
 - never blindly retry an ambiguous submission
 
-Read [SECURITY.md](SECURITY.md), [docs/prompt-injection.md](docs/prompt-injection.md), and [docs/memory-and-storage.md](docs/memory-and-storage.md) before changing browser permissions, MCP tools, vault writes, credentials, memory rules, email handling, or submission behavior.
+Read [SECURITY.md](SECURITY.md), [docs/prompt-injection.md](docs/prompt-injection.md), [docs/browser-automation.md](docs/browser-automation.md), and [docs/memory-and-storage.md](docs/memory-and-storage.md) before changing browser permissions, browser tooling, MCP tools, vault writes, credentials, memory rules, email handling, or submission behavior.
 
 Some data stays out of normal automation entirely: full SSNs, bank/routing information, passport or driver's-license numbers/images, SMS/authenticator/security-key MFA, and similar identity steps should remain manual unless a later reviewed design explicitly adds support.
 
@@ -271,7 +294,7 @@ When the [Unslop](https://github.com/theclaymethod/unslop) skill is available, u
 
 ## Browser and application archive
 
-Playwright uses a dedicated recruiting profile. Keep it separate from unrelated browser logins, banking sessions, personal password managers, and browser sync.
+The fast browser runtime uses a dedicated Playwright/Chromium recruiting profile. Keep it separate from unrelated browser logins, banking sessions, personal password managers, and browser sync.
 
 Every real application should have one Discord forum post once preparation begins. That thread is the human-readable flight recorder. It should preserve meaningful fields, answers, uploads, approvals, navigation, retries, submit actions, confirmations, and later recruiting events while filtering secrets.
 
