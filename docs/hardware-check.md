@@ -82,7 +82,7 @@ If the default setup is too heavy, keep the project architecture where practical
 - use a smaller compatible local model
 - change the local inference runtime only when the platform requires it
 
-Do not casually replace Hermes, Erga, Obsidian, SQLite transactional state, Playwright MCP, Discord, or the local-first design just because my hardware differs.
+Do not casually replace Hermes, Erga, Obsidian, SQLite transactional state, the fast Playwright/Chromium browser runtime, Discord, or the local-first design just because my hardware differs. Qwen3.8-27B remains the reference model unless measured hardware limits require a smaller local fallback.
 
 Give me:
 
