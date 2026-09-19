@@ -71,7 +71,7 @@ Memory/vault permissions should also differ by mode. Research may write non-auth
 
 ## Browser isolation
 
-The recruiting browser must use its own Playwright profile.
+The recruiting browser must use its own dedicated Playwright/Chromium profile.
 
 Do not connect Autopilot to an everyday browser profile.
 
@@ -85,7 +85,7 @@ The recruiting profile should not contain:
 
 Before personal data is entered, the workflow should verify that the browser is still on the expected employer, ATS, or authentication destination.
 
-Do not expose arbitrary Playwright code execution to the application agent.
+Do not expose arbitrary Playwright, CDP, or JavaScript execution to the application agent. Trusted browser-runtime code may use low-level browser APIs internally, but the model-facing tool surface must stay narrow and policy-aware.
 
 ## File access and uploads
 
@@ -336,7 +336,7 @@ Before adding or upgrading a privileged MCP server, memory skill, or local retri
 - rerun prompt-injection and permission tests
 - do not assume something is safe because its description says read-only
 
-Do not silently auto-update the model runtime, Hermes, Erga, Playwright MCP, QMD, or other privileged dependencies in production.
+Do not silently auto-update the model runtime, Hermes, Erga, Playwright/Chromium browser runtime, Playwright MCP when installed, QMD, or other privileged dependencies in production.
 
 ## Security tests
 
@@ -373,5 +373,6 @@ Use a synthetic reproduction for ordinary security bugs. If a report would expos
 - [Memory and storage](docs/memory-and-storage.md)
 - [OWASP LLM Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html)
 - [OWASP MCP Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/MCP_Security_Cheat_Sheet.html)
-- [Playwright MCP](https://playwright.dev/mcp/installation)
+- [Browser automation](docs/browser-automation.md)
+- [Playwright](https://playwright.dev/)
 - [Erga security model](https://github.com/Adr1an04/erga-mcp/blob/main/docs/security.md)
