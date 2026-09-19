@@ -46,7 +46,7 @@ The reference full setup uses:
 - Erga
 - Obsidian or an Obsidian-compatible local Markdown vault
 - QMD for local vault retrieval
-- Playwright MCP
+- Playwright/Chromium browser dependencies for the fast local browser runtime
 - Discord bot credentials
 - optional Zoho OAuth credentials for recruiting-mail tracking
 
@@ -221,13 +221,19 @@ The model can stay the same while the available tools and permissions change.
 
 The reference setup uses Hermes' Obsidian skill for vault operations. Canonical profile writes should still be mediated by Autopilot's validated profile/memory operations rather than unrestricted model edits.
 
-## Playwright MCP
+## Fast browser runtime
 
-Browser automation goes through [Playwright MCP](https://playwright.dev/mcp/installation).
+The production browser path uses a dedicated Playwright/Chromium recruiting browser.
+
+Qwen3.8-27B remains the local reasoning model. The browser layer should make routine form work fast in normal code by using compact observations, deterministic field resolution, safe batching, targeted waits, and post-fill verification. Qwen should be called when the form is ambiguous or needs real judgment, not for every known field.
+
+Playwright MCP can still be useful while developing or debugging the browser layer, but it is not required as the per-action production loop.
 
 Use a dedicated recruiting browser profile. Do not connect Autopilot to your everyday browser profile or give it unrelated logins, banking sessions, password-manager extensions, or other private browser state.
 
-Start with a visible browser and prepare-only runs so you can watch what happens. Do not turn on unattended submission until those runs are reliable.
+Start with a visible browser and prepare-only runs so you can watch what happens. Measure browser round trips, Qwen calls, fill accuracy, retries, manual takeovers, and memory pressure before turning on unattended submission.
+
+Read [Browser automation](browser-automation.md) for the full design.
 
 ## Discord
 
@@ -286,12 +292,13 @@ A good first test is:
 2. create a fake job record
 3. have Qwen retrieve the right synthetic profile context
 4. verify QMD retrieval if QMD is enabled
-5. open a demo form through Playwright MCP
-6. fill it without submitting
-7. record every field and click
-8. generate a fake Discord application timeline
-9. confirm that no secret or private file was exposed
-10. confirm a frozen profile/application snapshot is not affected by later edits to the synthetic vault
+5. open a demo form through the fast browser runtime
+6. inspect and normalize the form as a group
+7. fill deterministic fields in a safe batch without submitting
+8. verify every filled value and record each field/action
+9. generate a fake Discord application timeline
+10. confirm that no secret or private file was exposed
+11. confirm a frozen profile/application snapshot is not affected by later edits to the synthetic vault
 
 Only after that should real resumes, the private vault, Discord, Zoho, and employer application pages be connected.
 
@@ -309,11 +316,12 @@ The current build order is:
 8. applicant onboarding and validated vault profile
 9. job ingestion and shortlist
 10. resume and company research
-11. Playwright prepare-only automation
-12. controlled submission
-13. recruiting-mail tracking
-14. restricted autopilot
-15. operations, backups, and upgrade testing
+11. fast browser runtime, compact observation, form normalization, and deterministic batch filling
+12. prepare-only browser reliability and ATS adapter testing
+13. controlled submission
+14. recruiting-mail tracking
+15. restricted autopilot
+16. operations, backups, and upgrade testing
 
 Do not jump straight to autopilot because the browser can click Submit.
 
