@@ -26,7 +26,7 @@ A full local setup is expected to need:
 - macOS on Apple Silicon for the primary tested path
 - Xcode Command Line Tools
 - Git
-- Python 3.11 or newer
+- Python 3.12 through 3.14 for Autopilot, as declared in `pyproject.toml`
 - [`uv`](https://docs.astral.sh/uv/)
 - Node.js 22 or newer for the reference full setup with QMD
 - a supported MLX / MLX-VLM runtime
@@ -37,7 +37,7 @@ A full local setup is expected to need:
 - Playwright/Chromium and the dependencies used by the fast local browser runtime
 - SQLite for Autopilot transactional state
 
-As implementation lands, pin exact versions where compatibility requires it. Do not guess version requirements in documentation. Verify them against the code and upstream projects.
+Autopilot dependencies are locked in `uv.lock`. See [Local runtime](local-runtime.md) for the tested oMLX and model revisions and certification commands.
 
 If QMD is disabled, the minimum Node.js version may be lower and should follow the current requirements of the remaining Node-based tools. The reference full setup uses Node.js 22+ because the current Hermes QMD skill requires it.
 

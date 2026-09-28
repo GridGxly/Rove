@@ -4,6 +4,8 @@ Erga Autopilot is still experimental. Some of this guide describes the setup the
 
 Start with synthetic data and prepare-only browser runs. Do not connect real recruiting data until the earlier pieces work and the security checks pass.
 
+See [Local runtime](local-runtime.md) for the implemented certification commands and pinned model. `uv run autopilot smoke` launches the dedicated browser against a local synthetic form. It does not accept production application URLs.
+
 Before installing the full stack, read [Requirements to run](requirements.md). It tracks the software, services, accounts, APIs, memory/storage layers, local configuration, browser setup, and network access a complete installation needs.
 
 ## Hardware
@@ -37,7 +39,7 @@ If you are not sure whether your machine has enough headroom, use [Will this run
 
 The reference full setup uses:
 
-- Python 3.11 or newer
+- Python 3.12 through 3.14 for Autopilot (Erga itself supports 3.11+)
 - [`uv`](https://docs.astral.sh/uv/)
 - Git
 - Node.js 22 or newer when using the reference QMD retrieval setup
