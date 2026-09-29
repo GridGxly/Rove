@@ -1,6 +1,6 @@
 # Local runtime
 
-The local reasoning stack and synthetic prepare-only workflow are operational on the reference Mac. This is a certification runtime, not a production ATS implementation. Its four MCP tools cannot navigate arbitrary sites, execute shell commands, change approved facts, or submit applications.
+The local reasoning stack and synthetic prepare-only workflow are operational on the reference Mac. [Real onboarding and Keryx intake](onboarding-and-jobs.md) extend it with bounded discovery and draft-profile tools. This is not a production ATS submission implementation. The MCP tools cannot navigate arbitrary sites, execute shell commands, approve facts, or submit applications.
 
 See [Runtime measurements](runtime-benchmarks.md) for measured throughput, cache behavior, full-stack memory pressure and acceptance results.
 
@@ -130,4 +130,4 @@ With incoming gateway work paused, `uv run python scripts/benchmark_kv.py /priva
 
 The browser fixture verifies ten known fields, a frozen upload, unknown-sensitive and writing holds, post-batch dynamic-field detection, and zero submissions. SQLite deduplicates applications, records runs/checkpoints, and completes run/application state atomically. Submission attempts and forged submitted/approved states are rejected. Tests also cover changed resume bytes, hostile labels, unapproved dynamic answers, and external-network denial.
 
-Synthetic Discord certification used three Qwen calls and all four MCP tools. Routine field filling used zero model calls. The answer remained an unapproved draft. This verifies the local stack, not real ATS accounts, CAPTCHA/MFA handling, unattended submission, applicant onboarding, or optional Zoho mail integration.
+Synthetic Discord certification used three Qwen calls and all four certification MCP tools. Routine field filling used zero model calls. The answer remained an unapproved draft. This verifies the local stack, not real ATS accounts, CAPTCHA/MFA handling, unattended submission, or optional Zoho mail integration. Real candidate onboarding is covered separately in [Onboarding and jobs](onboarding-and-jobs.md).

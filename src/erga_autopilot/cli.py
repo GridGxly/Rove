@@ -45,6 +45,20 @@ def main():
         sub.add_parser(command)
     gw = sub.add_parser("gateway")
     gw.add_argument("action", choices=["start", "stop", "restart", "status"])
+    jobs = sub.add_parser("jobs")
+    jobs.add_argument("action", choices=["sync", "status", "search", "read", "matches"])
+    jobs.add_argument("--query", default="")
+    jobs.add_argument("--program", default="", choices=["", "internship", "new-grad"])
+    jobs.add_argument("--cycle", default="")
+    jobs.add_argument("--limit", type=int, default=10)
+    jobs.add_argument("--offset", type=int, default=0)
+    jobs.add_argument("--id")
+    jobs.add_argument("--preview-draft", action="store_true")
+    onboard = sub.add_parser("onboarding")
+    onboard.add_argument("action", choices=["status", "show", "propose", "approve"])
+    onboard.add_argument("--section")
+    onboard.add_argument("--file", type=Path)
+    onboard.add_argument("--expected-hash")
     args = parser.parse_args()
     if args.command == "model":
         if args.action == "status":
@@ -90,6 +104,40 @@ def main():
         from .browser import smoke
 
         print(json.dumps(smoke(hold_seconds=args.hold_seconds), indent=2))
+    elif args.command == "jobs":
+        from .jobs import job_status, read_job, search_jobs, sync_keryx
+
+        if args.action == "sync":
+            result = sync_keryx()
+        elif args.action == "status":
+            result = job_status()
+        elif args.action == "read":
+            if not args.id:
+                parser.error("jobs read requires --id")
+            result = read_job(args.id)
+        elif args.action == "matches":
+            from .matching import review_matches
+
+            result = review_matches(args.limit, preview_draft=args.preview_draft)
+        else:
+            result = search_jobs(args.query, args.program, args.cycle, args.limit, args.offset)
+        print(json.dumps(result, indent=2))
+    elif args.command == "onboarding":
+        from .onboarding import approve, draft, onboarding_status, propose
+
+        if args.action == "show":
+            result = draft()
+        elif args.action == "status":
+            result = onboarding_status(args.section)
+        elif args.action == "propose":
+            if not all([args.section, args.file, args.expected_hash]):
+                parser.error("propose requires --section, --file, and --expected-hash")
+            result = propose(args.section, json.loads(args.file.read_text()), args.expected_hash)
+        else:
+            if not args.expected_hash:
+                parser.error("approve requires --expected-hash from the exact reviewed draft")
+            result = approve(args.expected_hash)
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
