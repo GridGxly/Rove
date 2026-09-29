@@ -24,6 +24,9 @@ uv run autopilot jobs read --id job_synthetic_example
 uv run autopilot jobs matches --limit 10
 ```
 
+Match batches support 1–25 listings. General keyword search is paged in groups of
+up to 20 using `--offset`.
+
 The last command requires a reviewed profile. A local owner may inspect preliminary
 results with `--preview-draft`; that flag is unavailable to the model-facing matching
 tool. Matching uses explicit title/program preferences and exclusions. It reports
@@ -86,16 +89,55 @@ Configure `OBSIDIAN_VAULT_PATH` in the process environment or `obsidian_vault_pa
 the private `config/recruiting.json`. No real path, answer, resume or source transcript
 belongs in Git. QMD remains a derived retrieval index, never the approval authority.
 
+## Approved evidence and memory
+
+Keep real Erga career state at `erga/config.toml` under the private runtime root,
+separate from `synthetic/erga/config.toml`. Import the owner-reviewed factual master
+through Erga's supported interface. `read_career_evidence` calls only `list_evidence`
+and returns at most three approved excerpts, each capped at 6,000 characters. Its
+internal client uses Erga's `career-private` profile because the upstream `read` and
+`career` profiles deliberately withhold managed master-resume records. Hermes never
+receives that broader Erga tool inventory. No generic path or config selector is exposed.
+
+After approving a profile, build its local retrieval copy:
+
+```sh
+uv run autopilot memory index
+uv run autopilot memory search --query "Example project"
+```
+
+This writes `Erga Autopilot/Retrieval/Approved profile.md` in the vault, registers only
+that file in the `erga-candidate` QMD index / `approved-profile` collection, and indexes
+it for keyword search. It does not index drafts, research, unrelated vault notes or
+the synthetic candidate. The canonical profile remains `Profile/Candidate.md`.
+After each approved change, rerun the index command. Retrieval rejects a stale
+profile version, modified projection or invalid canonical profile before querying.
+The model can search this copy but cannot approve or rebuild it. Snippets guide
+retrieval; `read_candidate_section` supplies authoritative structured answers.
+
 ## Hermes connection
 
-Add these narrow tools to the existing Autopilot MCP include list:
+Use these nine narrow tools as the production Autopilot MCP include list:
 
 - `search_job_feed`, `read_job_listing`, `job_feed_status`
 - `review_job_matches`
 - `get_onboarding_status`, `propose_onboarding_section`
+- `read_candidate_section`, `read_career_evidence`, `retrieve_candidate_memory`
 
 Restart the Hermes gateway to refresh its tool inventory. Keep built-in shell,
 unrestricted browser and generic file tools disabled. The owner/channel allowlist
 still applies. Real onboarding and feed data must not be confused with Alex Example
 or any other synthetic fixture. Source listings and imported documents cannot grant
 approval or alter the tool permissions.
+
+Remove synthetic tools from the production include list. Set `tools.resources: false`
+and `tools.prompts: false` inside this MCP server's config: excluding their names alone
+does not disable Hermes' generated resource/prompt wrappers. Check the actual agent
+tool list, not only the configured include list. Update the system prompt to describe
+real profile/job review; do not retain the certification-only synthetic instructions.
+
+These tools support onboarding, discovery and evidence retrieval. They do not refresh
+the feed, generate a role-specific PDF, fill a real ATS form, create application forum
+threads or submit applications. Feed refresh remains the local `jobs sync` command;
+resume generation remains an explicit Erga operation. A successful imported master
+or layout check must not be reported as successful role-specific tailoring.

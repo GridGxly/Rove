@@ -15,8 +15,8 @@ def contains(text: str, phrase: str) -> bool:
 
 
 def review_matches(limit: int = 10, *, preview_draft: bool = False) -> dict:
-    if not 1 <= limit <= 20:
-        raise ValueError("Use a limit of 1–20")
+    if not 1 <= limit <= 25:
+        raise ValueError("Use a limit of 1–25")
     if preview_draft:
         profile = draft()
         profile_hash = digest(profile)

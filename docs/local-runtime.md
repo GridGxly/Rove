@@ -55,14 +55,21 @@ uv run python scripts/hermes_small_context.py /path/to/hermes-agent
 
 Enable `HERMES_AUTOPILOT_16K=1` only for this certified local configuration. The script backs up the original file, is idempotent, and refuses an unrecognized upstream constant. An update can overwrite the patch: review and retest it after updating Hermes. The server still advertises and enforces its real 16K limit; it does not pretend to offer 64K. This patch does not change tool authorization.
 
-The MCP server command is the absolute path to this checkout's `.venv/bin/autopilot`, with argument `mcp` and the checkout as its working directory. Its eager allowlist is:
+The MCP server command is the absolute path to this checkout's `.venv/bin/autopilot`, with argument `mcp` and the checkout as its working directory. The historical certification allowlist was:
 
 - `prepare_synthetic_application`
 - `read_synthetic_evidence`
 - `retrieve_synthetic_memory`
 - `save_synthetic_answer_draft`
 
-Disable every built-in Hermes toolset for this profile; set each platform's toolsets to `mcp-erga-autopilot`. Set `tools.tool_search.enabled: off` so these four small schemas are present directly. Disable generic MCP resource/prompt wrappers. The tools discovered globally by Hermes are not necessarily the tools exposed to an individual agent; verify the agent's actual schema list.
+The production onboarding/job-review allowlist now uses the nine real tools in
+[Onboarding and jobs](onboarding-and-jobs.md#hermes-connection), replacing those four
+fixture tools. Disable every built-in Hermes toolset for this profile; set each
+platform's toolsets to `mcp-erga-autopilot`. Set `tools.tool_search.enabled: off` so
+the small schemas are present directly. Within the MCP server's `tools` config, set
+`resources: false` and `prompts: false`; a name exclusion alone does not suppress
+Hermes' generated wrappers. The tools discovered globally by Hermes are not necessarily
+the tools exposed to an individual agent; verify the agent's actual schema list.
 
 The Discord integration authorizes one numeric owner ID and the configured `agent-control` channel. It does not accept other bots or backfill channel history. Discord Message Content Intent is required. The lightweight Hermes launchd gateway starts at login and can restart after a crash; this does not load the 27B model at login. oMLX starts on demand. The upstream macOS service generator currently always writes `RunAtLoad`; manually editing that generated plist is not a durable way to change startup behavior.
 
@@ -70,11 +77,29 @@ The Discord integration authorizes one numeric owner ID and the configured `agen
 
 Erga is installed in its own managed tool environment. The adapter calls its supported MCP interface using an isolated synthetic configuration under the private runtime root, with `ERGA_MCP_TOOL_PROFILE=read`. It selects an approved synthetic evidence source and cannot select another database or write Erga facts.
 
+Real career evidence uses separate private Erga state and the bounded
+`read_career_evidence` adapter described in the onboarding guide. Managed masters
+are withheld by upstream's `read` profile, so that trusted adapter internally uses
+`career-private` while exposing only approved read excerpts to Hermes.
+
 Resume generation and validation use Erga's supported CLI and Tectonic. The fixture master contains only synthetic education and project facts. Erga may correctly return `meaningful_change: false` when no supported tailoring is available. Check `validation.passed`, not merely the CLI exit code: a failed layout validation can still return exit code zero. `resume tailor` appends section content; repeating an existing project through that command duplicates it. The verified fixture uses `resume tailor-job --job-text` and a local, validated artifact instead.
+
+The pinned `resume tailor-job --validate` CLI path does not forward the configured
+multi-line bullet settings to its render validator. For a master allowing two-line
+bullets, use Erga's supported `validate_tailored_resume` MCP operation on a private
+package artifact. That path forwards both settings and still enforces page count,
+page fill and stranded-tail checks. Inspect its `returncode`, `pdf` and `skipped`
+fields; a successful MCP transport alone is not a passing render. A base-master
+validation is separate from tailoring quality or application approval.
 
 A reviewed fixture PDF can be copied to `synthetic/erga-synthetic-resume.pdf` under the private runtime root, with its SHA-256 in `synthetic/resume-manifest.json`. The manifest cannot choose another filename. The browser fails closed if those PDF bytes change. Without a provisioned manifest, the standalone smoke test creates a synthetic text resume.
 
-QMD is installed under `~/.local/share/erga-autopilot/qmd`; only the synthetic vault subfolder is indexed in the named `erga-autopilot` index and `autopilot-synthetic` collection. The Node installation works with packaged SQLite/extension support, so a separate Homebrew SQLite installation was unnecessary on the tested machine.
+QMD is installed under `~/.local/share/erga-autopilot/qmd`. Certification uses the
+isolated `erga-autopilot` index and `autopilot-synthetic` collection. Real approved
+profile retrieval uses the separate `erga-candidate` index and `approved-profile`
+collection, rebuilt with `autopilot memory index`. The Node installation works with
+packaged SQLite/extension support, so a separate Homebrew SQLite installation was
+unnecessary on the tested machine.
 
 QMD helper models are embeddinggemma-300M Q8_0, qmd-query-expansion-1.7B Q4_K_M and qwen3-reranker-0.6B Q8_0, about 2.25GB in total. These GGUF helpers belong to QMD; the main Qwen model remains MLX. The adapter uses one short-lived process per query, never a resident QMD model server. Keyword search is the tool's default; semantic retrieval is also tested through the adapter. CPU offloading is forced for the helper process because the packaged Metal helper emitted compilation warnings on this Mac. Cached queries can be much faster than first use. An empty semantic result is a legitimate threshold result, not permission to invent evidence.
 

@@ -43,7 +43,12 @@ Real candidate onboarding and Keryx discovery use the same Python dependencies. 
 require a private Obsidian vault path and local state storage; Keryx refresh reads
 only the selected public GitHub source. See [Onboarding and jobs](onboarding-and-jobs.md).
 
-The certified synthetic setup also uses Tectonic 0.17.0 for local Erga resume compilation. Its pinned Hermes build needs an explicit 16K compatibility patch and a four-tool allowlist; stock Hermes in that build expects at least 64K. See the runtime page before updating it.
+The setup also uses Tectonic 0.17.0 for local Erga resume compilation. Its pinned
+Hermes build needs an explicit 16K compatibility patch; stock Hermes in that build
+expects at least 64K. Certification used four fixture tools; production profile and
+job review use nine real tools with generic MCP wrappers disabled. Real evidence
+requires a separate, reviewed Erga master, and approved profile changes require
+`autopilot memory index` to refresh QMD. See the runtime page before updating it.
 
 If QMD is disabled, the minimum Node.js version may be lower and should follow the current requirements of the remaining Node-based tools. The reference full setup uses Node.js 22+ because the current Hermes QMD skill requires it.
 

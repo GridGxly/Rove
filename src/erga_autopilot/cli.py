@@ -59,6 +59,9 @@ def main():
     onboard.add_argument("--section")
     onboard.add_argument("--file", type=Path)
     onboard.add_argument("--expected-hash")
+    memory = sub.add_parser("memory")
+    memory.add_argument("action", choices=["index", "search"])
+    memory.add_argument("--query", default="")
     args = parser.parse_args()
     if args.command == "model":
         if args.action == "status":
@@ -121,6 +124,15 @@ def main():
             result = review_matches(args.limit, preview_draft=args.preview_draft)
         else:
             result = search_jobs(args.query, args.program, args.cycle, args.limit, args.offset)
+        print(json.dumps(result, indent=2))
+    elif args.command == "memory":
+        from .memory import index_candidate_memory, search_candidate_memory
+
+        result = (
+            index_candidate_memory()
+            if args.action == "index"
+            else search_candidate_memory(args.query)
+        )
         print(json.dumps(result, indent=2))
     elif args.command == "onboarding":
         from .onboarding import approve, draft, onboarding_status, propose

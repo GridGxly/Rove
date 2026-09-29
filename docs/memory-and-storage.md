@@ -20,6 +20,13 @@ Autopilot logic
 
 Discord sits beside those layers as the remote control surface and human-readable application timeline.
 
+The current implementation validates the canonical candidate note, creates immutable
+approved snapshots, and exposes section reads and bounded Erga evidence reads.
+`autopilot memory index` creates a rebuildable retrieval copy of the approved profile
+inside the vault and indexes only that file in a separate QMD collection. Version and
+file-hash checks block stale or edited retrieval copies. Drafts and research are not
+included. See [Onboarding and jobs](onboarding-and-jobs.md) for the concrete workflow.
+
 ## Hermes hot memory
 
 Hermes keeps a small built-in memory for information that should be available at the start of a session.

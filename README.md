@@ -163,7 +163,7 @@ If you want the original local-first recruiting assistant without browser auto-a
 
 ## Status
 
-The local Discord/Hermes/oMLX stack, Erga evidence, QMD retrieval and synthetic prepare-only browser workflow have been verified. Real Keryx job intake and reviewed candidate onboarding are implemented; see [Onboarding and jobs](docs/onboarding-and-jobs.md). See [Local runtime](docs/local-runtime.md) for the tested configuration and [Runtime measurements](docs/runtime-benchmarks.md) for results and limits. Production ATS submission is not implemented yet.
+The local Discord/Hermes/oMLX stack, Erga evidence, QMD retrieval and synthetic prepare-only browser workflow have been verified. Real Keryx job intake, reviewed candidate onboarding, approved profile/evidence reads and version-checked QMD profile retrieval are implemented; see [Onboarding and jobs](docs/onboarding-and-jobs.md). The production Hermes tool list uses these real workflows. See [Local runtime](docs/local-runtime.md) for the tested configuration and [Runtime measurements](docs/runtime-benchmarks.md) for results and limits. Real ATS filling and submission are not implemented yet.
 
 The project is being built in stages: local runtime, model certification, Hermes/Obsidian memory, Erga integration, transactional state, Discord control, onboarding, job intake, resume/research workflows, prepare-only browser automation, controlled submission, recruiting lifecycle tracking, and finally restricted autopilot.
 
