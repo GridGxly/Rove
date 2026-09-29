@@ -122,7 +122,7 @@ Not sure where your machine lands? Read [Will this run on my machine?](docs/hard
 The current reference setup uses:
 
 - macOS on Apple Silicon;
-- Python 3.11+;
+- Python 3.12 through 3.14 for Autopilot;
 - [`uv`](https://docs.astral.sh/uv/);
 - Git;
 - Node.js 22+ for the full reference setup with QMD;
@@ -162,6 +162,8 @@ Then follow [docs/getting-started.md](docs/getting-started.md).
 If you want the original local-first recruiting assistant without browser auto-application behavior, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
 
 ## Status
+
+The local Discord/Hermes/oMLX stack, Erga evidence, QMD retrieval and synthetic prepare-only browser workflow have been verified. See [Local runtime](docs/local-runtime.md) for the tested configuration and [Runtime measurements](docs/runtime-benchmarks.md) for results and limits. Production ATS workflows and real applicant onboarding are not implemented yet.
 
 The project is being built in stages: local runtime, model certification, Hermes/Obsidian memory, Erga integration, transactional state, Discord control, onboarding, job intake, resume/research workflows, prepare-only browser automation, controlled submission, recruiting lifecycle tracking, and finally restricted autopilot.
 

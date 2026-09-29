@@ -31,14 +31,21 @@ def memory_snapshot() -> dict:
     page = int(page_match.group(1)) if page_match else None
     counts = dict(re.findall(r"^([^:\n]+):\s+(\d+)\.", stat, re.MULTILINE))
     processes = []
-    for p in psutil.process_iter(["pid", "name", "memory_info", "cpu_times"]):
+    for p in psutil.process_iter(["pid", "name", "exe", "memory_info", "cpu_times"]):
         try:
             name = p.info["name"] or ""
-            if any(x in name.lower() for x in ["omlx", "python", "chromium", "hermes"]):
+            is_browser = "ms-playwright" in (p.info["exe"] or "")
+            is_qmd = "node" in name.lower() and any("/qmd/" in arg for arg in p.cmdline())
+            if (
+                is_browser
+                or is_qmd
+                or any(x in name.lower() for x in ["omlx", "python", "chromium", "hermes"])
+            ):
                 processes.append(
                     {
                         "pid": p.pid,
                         "name": name,
+                        "kind": "browser" if is_browser else "qmd" if is_qmd else name,
                         "rss_bytes": p.info["memory_info"].rss,
                         "cpu_seconds": sum(p.info["cpu_times"][:2]),
                     }

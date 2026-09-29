@@ -2,6 +2,8 @@
 
 The local reasoning stack and synthetic prepare-only workflow are operational on the reference Mac. This is a certification runtime, not a production ATS implementation. Its four MCP tools cannot navigate arbitrary sites, execute shell commands, change approved facts, or submit applications.
 
+See [Runtime measurements](runtime-benchmarks.md) for measured throughput, cache behavior, full-stack memory pressure and acceptance results.
+
 ## Verified components
 
 | Component | Tested build |
@@ -38,6 +40,8 @@ The checkpoint does not include embedded `mtp.*` tensors. The correct path is `v
 The isolated 16K-budget comparison produced 512 tokens at 21.96 tokens/second with MTP versus 13.90 first and 14.20 repeated with 8-bit TurboQuant KV. The warm TTFTs were 6.74 and 8.33 seconds respectively. Logs verified actual 8-bit conversion of 15 cache layers. MTP remains selected; the benchmark restored TurboQuant to disabled.
 
 A green memory graph after a request does not prove pressure stayed green during inference. Record pressure, swap growth and responsiveness over the whole run. High Power mode and fan activity alone do not establish the cause of a memory-pressure change.
+
+A temporary 30-second idle TTL test confirmed an actual model unload that freed 17.87GB. The normal 600-second TTL was restored afterward; the next inference request reloads the weights.
 
 ## Hermes integration and compatibility patch
 
@@ -105,6 +109,8 @@ uv run autopilot gateway status
 ```
 
 Hermes starts the narrow Autopilot MCP process as needed. `uv run autopilot mcp` is the foreground MCP entry point; it expects a stdio client. `uv run autopilot smoke` runs the visible browser fixture directly.
+
+For overlapping memory measurements, `uv run autopilot smoke --hold-seconds 60` keeps the prepared browser open before closing it. The CLI accepts 0–120 seconds and reports the hold separately from mechanical work. The MCP tool uses the default zero-second hold.
 
 ## Verification and benchmarks
 

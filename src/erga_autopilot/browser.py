@@ -221,7 +221,9 @@ def prepare(page, url: str, profile: Profile, resume: Path, resume_hash: str) ->
     }
 
 
-def smoke() -> dict:
+def smoke(hold_seconds: int = 0) -> dict:
+    if not 0 <= hold_seconds <= 120:
+        raise ValueError("Browser measurement hold must be between 0 and 120 seconds")
     root = state_root() / "synthetic"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     resume, digest = synthetic_resume(root)
@@ -250,6 +252,8 @@ def smoke() -> dict:
                     browser_id, "known_fields_verified;unknown_sensitive_held;writing_pending"
                 )
                 db.finish_preparation(browser_id)
+                if hold_seconds:
+                    time.sleep(hold_seconds)
             finally:
                 context.close()
     finally:
@@ -264,7 +268,8 @@ def smoke() -> dict:
         {
             "profile_unchanged": True,
             "application_id": application_id,
-            "mechanical_seconds": time.perf_counter() - start,
+            "mechanical_seconds": time.perf_counter() - start - hold_seconds,
+            "browser_hold_seconds": hold_seconds,
             "authority": "synthetic approved fixture only",
         }
     )

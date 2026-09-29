@@ -39,7 +39,8 @@ def main():
     bench = sub.add_parser("benchmark")
     bench.add_argument("prompts", nargs="+", type=Path)
     sub.add_parser("mcp")
-    sub.add_parser("smoke")
+    smoke_parser = sub.add_parser("smoke")
+    smoke_parser.add_argument("--hold-seconds", type=int, default=0)
     for command in ["start", "stop", "status"]:
         sub.add_parser(command)
     gw = sub.add_parser("gateway")
@@ -88,7 +89,7 @@ def main():
     elif args.command == "smoke":
         from .browser import smoke
 
-        print(json.dumps(smoke(), indent=2))
+        print(json.dumps(smoke(hold_seconds=args.hold_seconds), indent=2))
 
 
 if __name__ == "__main__":
