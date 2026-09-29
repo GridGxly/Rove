@@ -242,3 +242,11 @@ The production bot should authorize commands with the configured numeric Discord
 Third-party source bots should only see the channels they need. They should not be able to read application archives, memory, recruiting events, or system logs.
 
 See [Security](../SECURITY.md), [How it works](how-it-works.md), and [Memory and storage](memory-and-storage.md) for the rest of the trust and storage model.
+
+## Implemented queue and source feed
+
+The [application workflow](application-workflow.md) maps an existing source channel
+(such as `jobs`) through private configuration, publishes matching Keryx updates, and
+queues preparation. Forum events are mirrored from SQLite. Owner-only `answer` and
+`resume` commands are handled by deterministic code, independently of model wording.
+Real final submission and recruiting-mail lifecycle updates are still unimplemented.

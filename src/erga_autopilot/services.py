@@ -1,0 +1,55 @@
+"""Install the local browser and deterministic feed services on macOS."""
+
+import os
+import plistlib
+import subprocess
+from pathlib import Path
+
+from .runtime import state_root
+
+
+def install():
+    executable = Path(__file__).resolve().parents[2] / ".venv/bin/autopilot"
+    if not executable.is_file():
+        raise ValueError("Install the project virtual environment first")
+    agents = Path.home() / "Library/LaunchAgents"
+    agents.mkdir(parents=True, exist_ok=True)
+    logs = state_root() / "logs"
+    logs.mkdir(parents=True, exist_ok=True, mode=0o700)
+    result = []
+    for name, command in [("browser", ["browser", "serve"]), ("feed", ["feed", "tick"])]:
+        label = "dev.erga-autopilot." + name
+        path = agents / (label + ".plist")
+        data = {
+            "Label": label,
+            "ProgramArguments": [str(executable), *command],
+            "WorkingDirectory": str(executable.parent.parent.parent),
+            "EnvironmentVariables": {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "AUTOPILOT_STATE_DIR": str(state_root()),
+            },
+            "StandardOutPath": str(logs / (name + ".out.log")),
+            "StandardErrorPath": str(logs / (name + ".err.log")),
+            "ProcessType": "Interactive" if name == "browser" else "Background",
+            "RunAtLoad": name == "feed",
+        }
+        if name == "feed":
+            data["StartInterval"] = 900
+        with open(path, "wb") as f:
+            plistlib.dump(data, f)
+        path.chmod(0o600)
+        domain = f"gui/{os.getuid()}"
+        subprocess.run(
+            ["launchctl", "bootout", domain + "/" + label], capture_output=True, check=False
+        )
+        subprocess.run(
+            ["launchctl", "bootstrap", domain, str(path)], capture_output=True, check=True
+        )
+        result.append(
+            {
+                "service": label,
+                "installed": True,
+                "interval_seconds": 900 if name == "feed" else None,
+            }
+        )
+    return result

@@ -251,3 +251,10 @@ Use SQLite when the question is:
 Use files when the answer needs to preserve exact bytes.
 
 Use Hermes hot memory only for the small amount of context that should be present at session start.
+
+## Application queue implementation
+
+The recruiting SQLite database now also holds canonical URL aliases, application queue
+records, forum bindings, delivery events, owner-message checkpoints, and field-bound
+answers. Exact observations, profile snapshots, resume PDFs, Erga results, and Qwen
+proposals live in private per-application directories. See [Application workflow](application-workflow.md).

@@ -379,3 +379,12 @@ Keep it general enough for any user to follow. Show public variable names, API n
 - [How it works](how-it-works.md)
 - [Security](../SECURITY.md)
 - [Prompt injection](prompt-injection.md)
+
+## Visible application workflow configuration
+
+The [application workflow](application-workflow.md) uses private feed/workflow channel
+mappings, a macOS launch agent for source refresh, a private Unix-socket browser
+service, and the installed Hermes Python for Qwen proposals. Discord needs permission
+to send messages and create posts in the configured existing forum. Channel management
+is unnecessary when mapping existing channels. No proxy, Camofox service, Docker stack,
+or cloud extraction provider is required by the default implementation.

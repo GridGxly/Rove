@@ -62,8 +62,50 @@ def main():
     memory = sub.add_parser("memory")
     memory.add_argument("action", choices=["index", "search"])
     memory.add_argument("--query", default="")
+    sub.add_parser("install-services")
+    live = sub.add_parser("browser")
+    live.add_argument("action", choices=["serve", "status", "open", "observe", "prepare"])
+    live.add_argument("--url")
+    live.add_argument("--run-id")
+    feed = sub.add_parser("feed")
+    feed.add_argument("action", choices=["tick", "seed"])
+    workflow = sub.add_parser("workflow")
+    workflow.add_argument("action", choices=["tick", "status", "enqueue"])
+    workflow.add_argument("--url")
     args = parser.parse_args()
-    if args.command == "model":
+    if args.command == "workflow":
+        from . import worker, workflow
+
+        if args.action == "tick":
+            result = worker.tick()
+        elif args.action == "enqueue":
+            if not args.url:
+                parser.error("enqueue requires --url")
+            result = workflow.enqueue(args.url)
+        else:
+            result = workflow.status()
+        print(json.dumps(result, indent=2))
+    elif args.command == "install-services":
+        from .services import install
+
+        print(json.dumps(install(), indent=2))
+    elif args.command == "browser":
+        from .live_browser import browser_call, serve
+
+        if args.action == "serve":
+            serve()
+        else:
+            params = {}
+            if args.url:
+                params["url"] = args.url
+            if args.run_id:
+                params["run_id"] = args.run_id
+            print(json.dumps(browser_call(args.action, **params), indent=2))
+    elif args.command == "feed":
+        from .discord_feed import tick
+
+        print(json.dumps(tick(seed=args.action == "seed"), indent=2))
+    elif args.command == "model":
         if args.action == "status":
             with client() as c:
                 r = c.get("/models")

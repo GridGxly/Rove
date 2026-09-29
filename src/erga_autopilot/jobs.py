@@ -195,6 +195,17 @@ def sync_keryx() -> dict:
         revision = response.json()["sha"]
         if not re.fullmatch(r"[a-f0-9]{40}", revision):
             raise ValueError("Invalid upstream revision")
+        current = job_status()
+        if (current.get("last_import") or {}).get("revision") == revision:
+            result = {
+                "source": REPOSITORY,
+                "revision": revision,
+                "changed_source": False,
+                "checked_at": datetime.now(UTC).isoformat(),
+                **current,
+            }
+            write_private(state_root() / "jobs/last-sync.json", result)
+            return result
         path = root / f"{revision}.json"
         if not path.exists():
             fd, temporary = tempfile.mkstemp(dir=root, prefix="download-")
@@ -219,6 +230,7 @@ def sync_keryx() -> dict:
             finally:
                 Path(temporary).unlink(missing_ok=True)
     result = ingest(path, revision)
+    result.update(changed_source=True, checked_at=datetime.now(UTC).isoformat())
     write_private(state_root() / "jobs/last-sync.json", result)
     return result
 
@@ -238,6 +250,26 @@ def job_status() -> dict:
         }
     finally:
         db.close()
+
+
+def lookup_job_link(url: str) -> dict:
+    """Lookup a complete public link, not a guessed vendor ID. Absence never blocks browsing."""
+    canonical = public_link(url.strip().strip("<>\"'"))
+    if not canonical:
+        raise ValueError("Expected a public HTTPS job link")
+    db = database()
+    try:
+        row = db.execute(
+            "SELECT id FROM jobs WHERE source=? AND url=?", (REPOSITORY, canonical)
+        ).fetchone()
+    finally:
+        db.close()
+    return {
+        "url": canonical,
+        "in_feed": bool(row),
+        "listing": read_job(row[0]) if row else None,
+        "next_action": "open the supplied link in the visible recruiting browser",
+    }
 
 
 def search_jobs(

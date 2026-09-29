@@ -36,8 +36,9 @@ or silently equate a preferred qualification with a requirement. Scores are dete
 discovery priorities, not probabilities of acceptance. Unimplemented criteria such as
 full compensation, industry and work-style analysis still require posting review.
 
-Refresh is currently an explicit local command. No scheduled Discord notification or
-application loop is enabled by importing the source. Erga's own optional Keryx cache
+Importing the source alone does not enable notifications or applications. The explicit
+[application workflow](application-workflow.md) configuration adds scheduled refresh,
+notification delivery, and queued preparation. Erga's own optional Keryx cache
 can remain disabled: Autopilot owns this intake catalog and avoids a second download.
 
 ## Resumable interview
@@ -136,8 +137,7 @@ does not disable Hermes' generated resource/prompt wrappers. Check the actual ag
 tool list, not only the configured include list. Update the system prompt to describe
 real profile/job review; do not retain the certification-only synthetic instructions.
 
-These tools support onboarding, discovery and evidence retrieval. They do not refresh
-the feed, generate a role-specific PDF, fill a real ATS form, create application forum
-threads or submit applications. Feed refresh remains the local `jobs sync` command;
-resume generation remains an explicit Erga operation. A successful imported master
-or layout check must not be reported as successful role-specific tailoring.
+The nine tools above support onboarding, discovery and evidence retrieval. Additional
+workflow tools are documented in [Application workflow](application-workflow.md);
+installations must explicitly include them and refresh the Hermes session. A successful
+imported master or layout check must not be reported as successful role-specific tailoring.

@@ -5,6 +5,7 @@ from mcp.server.mcpserver import MCPServer
 from .browser import smoke
 from .evidence import career_evidence, erga_evidence, search_synthetic_memory
 from .jobs import job_status, read_job, search_jobs
+from .live_browser import browser_call
 from .matching import review_matches
 from .memory import search_candidate_memory
 from .onboarding import SECTIONS, onboarding_status, propose, read_approved
@@ -151,6 +152,75 @@ def retrieve_candidate_memory(query: str) -> dict:
     never authority. Read the relevant candidate section before using an application answer.
     """
     return search_candidate_memory(query)
+
+
+@mcp.tool()
+def open_job_application(url: str) -> dict:
+    """Open any user-supplied public HTTPS job link in the visible recruiting browser.
+
+    Use this for pasted URLs, including Jobright links missing from Keryx. Do not guess
+    a Keryx ID from another site's ID. Reads current approved profile, not test history.
+    Returns page text, application-start links, fields and a run ID. Does not submit.
+    """
+    return browser_call("open", url=url)
+
+
+@mcp.tool()
+def inspect_application_browser() -> dict:
+    """Inspect the live visible recruiting page after manual action or before continuing."""
+    return browser_call("observe")
+
+
+@mcp.tool()
+def follow_application_link(run_id: str, observation_id: str, ref: str) -> dict:
+    """Follow one application-start link from the latest browser observation.
+
+    Only observed Apply/Start application controls are allowed. No arbitrary clicks,
+    login submission, CAPTCHA, terms acceptance or final application submission.
+    """
+    return browser_call("follow", run_id=run_id, observation_id=observation_id, ref=ref)
+
+
+@mcp.tool()
+def prepare_application_fields(run_id: str) -> dict:
+    """Fill known contact/link fields and upload the frozen approved base resume visibly.
+
+    Only use after the owner requests applying to this job on the verified employer/ATS
+    page. Unknown questions, writing, legal agreements and demographics remain for review.
+    Records exact values, profile/resume hashes and screenshots. Does not submit or claim
+    the base resume is tailored. Login or identity steps require manual takeover.
+    """
+    return browser_call("prepare", run_id=run_id)
+
+
+@mcp.tool()
+def refresh_job_feed() -> dict:
+    """Check the fixed Keryx GitHub source now and import changes. No applicant data sent."""
+    from .jobs import sync_keryx
+
+    return sync_keryx()
+
+
+@mcp.tool()
+def start_job_application(url: str) -> dict:
+    """Queue a user-requested job link for the complete visible preparation workflow.
+
+    Use this first when the owner posts a job link or asks to apply. Accepts public HTTPS
+    URLs even when missing from Keryx. The worker opens the employer page, creates its
+    application forum archive, prepares the Erga resume, fills known fields, and asks
+    unresolved questions in action-needed. Never invent a source ID or claim submission.
+    """
+    from .workflow import enqueue
+
+    return enqueue(url)
+
+
+@mcp.tool()
+def application_workflow_status() -> dict:
+    """Read actual queue/application status, forum bindings and failures; never guess progress."""
+    from .workflow import status
+
+    return status()
 
 
 def run():
