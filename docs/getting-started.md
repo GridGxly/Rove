@@ -193,7 +193,7 @@ Before using it on real applications, test the exact runtime on your machine for
 
 - tool-call formatting
 - structured output
-- 8K, 16K, 32K, and 64K contexts
+- 4K, 8K, and 16K contexts on the reference 48GB Mac; increase only after measuring headroom
 - memory pressure and swap
 - browser use while the model is loaded
 - vault/QMD retrieval while the model is loaded

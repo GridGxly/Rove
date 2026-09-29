@@ -46,7 +46,15 @@ def test_deduplication_checkpoint_and_submission_gate(tmp_path):
     again, _ = state.create("job-1", SYNTHETIC.model_dump())
     assert a == again
     state.checkpoint(b, "filled")
-    state.status(a, "NEEDS_USER")
+    state.finish_preparation(b)
+    assert (
+        state.db.execute("SELECT status FROM browser_runs WHERE id=?", (b,)).fetchone()[0]
+        == "NEEDS_USER"
+    )
+    assert (
+        state.db.execute("SELECT status FROM applications WHERE id=?", (a,)).fetchone()[0]
+        == "NEEDS_USER"
+    )
     with pytest.raises(ValueError):
         state.create("job-1", {"first_name": "Changed"})
     with pytest.raises(ValueError):

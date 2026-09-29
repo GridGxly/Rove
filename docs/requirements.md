@@ -39,6 +39,8 @@ A full local setup is expected to need:
 
 Autopilot dependencies are locked in `uv.lock`. See [Local runtime](local-runtime.md) for the tested oMLX and model revisions and certification commands.
 
+The certified synthetic setup also uses Tectonic 0.17.0 for local Erga resume compilation. Its pinned Hermes build needs an explicit 16K compatibility patch and a four-tool allowlist; stock Hermes in that build expects at least 64K. See the runtime page before updating it.
+
 If QMD is disabled, the minimum Node.js version may be lower and should follow the current requirements of the remaining Node-based tools. The reference full setup uses Node.js 22+ because the current Hermes QMD skill requires it.
 
 ## Local model
@@ -102,7 +104,7 @@ At the time this page was updated, the Hermes QMD skill required:
 - extension-capable SQLite on macOS rather than the system SQLite
 - local helper-model downloads on first setup
 
-On macOS, that may require a Homebrew SQLite installation specifically for QMD's extension support. This is separate from Autopilot's normal SQLite database access.
+On macOS, that may require a Homebrew SQLite installation specifically for QMD's extension support. QMD 2.8.3's packaged Node SQLite implementation worked on the tested machine without that additional install. This is separate from Autopilot's normal SQLite database access.
 
 The current Hermes documentation reports that QMD's first run downloads roughly 2GB of local helper models for embeddings, reranking, and query expansion. Treat that number as upstream information that may change; verify it during installation.
 
@@ -180,6 +182,7 @@ A full setup needs:
 - the owner's numeric Discord user ID stored locally
 - the guild/server ID stored locally
 - the IDs for the channels/forum/roles used by that installation stored locally
+- Message Content Intent enabled for the Hermes bot in the Discord Developer Portal
 
 The repository should refer to logical names in code and docs. Real IDs belong in local configuration.
 

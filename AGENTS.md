@@ -389,6 +389,8 @@ Keep changes focused. Avoid giant refactors mixed with unrelated work.
 
 Use small, readable commit messages in lower case. Describe what changed like a person would. Do not add assistant, model, generated-by, or tool credit to commits or docs.
 
+Before committing, check the effective Git author and committer against the owner's verified GitHub identity. Preserve an already configured identity; never substitute a guessed machine-local email or an agent identity. Use the owner's verified GitHub no-reply email when that is their configured preference.
+
 Do not merge or rewrite shared history unless the user explicitly asks.
 
 ## Keep documentation tied to the code

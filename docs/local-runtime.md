@@ -1,31 +1,96 @@
 # Local runtime
 
-The first runtime is under certification. A successful install or HTTP response is not an end-to-end acceptance result.
+The local reasoning stack and synthetic prepare-only workflow are operational on the reference Mac. This is a certification runtime, not a production ATS implementation. Its four MCP tools cannot navigate arbitrary sites, execute shell commands, change approved facts, or submit applications.
 
-The implemented `uv run autopilot smoke` fixture runs visible Chromium in a separate persistent profile, observes fields once, fills ten approved synthetic facts, verifies a frozen resume hash, and leaves work authorization and the writing question pending. It records a checkpoint in private SQLite and never submits. The production MCP server exposes only synthetic preparation, approved fixture evidence, and unapproved answer drafts. Real ATS navigation and submission are not implemented by these tools.
+## Verified components
 
-## Pinned components
+| Component | Tested build |
+| --- | --- |
+| oMLX | 0.6.4, official signed macOS app |
+| MLX | 0.32.0, bundled with oMLX; Metal inference verified |
+| Qwen | `orcarouter/Qwen3.8-27B-Uncensored-MLX` at `14963e70f886455cf93090ac95bdbf4c8730cbe1` |
+| Hermes | 0.21.5+4343.g226eeeb, source commit `226eeeb4c21ca6d9fb3880bf6aa3b9093f69530a` |
+| Erga | 0.1.0 at `c4164558d7ec450e893ddd5f793b2d870eab782c` |
+| QMD | 2.8.3, scoped local npm installation |
+| Obsidian | 1.13.7, existing private vault |
+| Tectonic | 0.17.0, local resume compilation |
+| Autopilot | Python 3.12, dependencies pinned in `uv.lock` |
 
-- oMLX 0.6.4 official signed macOS release, with bundled MLX 0.32.0 and native Metal kernels.
-- `orcarouter/Qwen3.8-27B-Uncensored-MLX`, revision `14963e70f886455cf93090ac95bdbf4c8730cbe1`.
-- Root weights: MLX affine 4-bit, group size 64, 16,054,541,599 bytes. Vision/norm/conv components retain their source precision.
-- Base: `Qwen/Qwen3.8-27B`; converter/abliteration publisher: OrcaRouter. Apache-2.0. Model last updated 2026-08-27.
-- The bundled Qwen tokenizer/chat template supports thinking and tools. These capabilities still require local runtime tests.
-- A separate MTP head is available. Acceleration stays disabled until a comparison proves it works with this backend and tool calls.
+The model's root weights are MLX affine 4-bit, group size 64, totaling 16,054,541,599 bytes. Vision, normalization and convolution components retain source precision. The separate MTP head is 849,400,337 bytes; the complete selected download with metadata is 16,950,465,457 bytes. The base is `Qwen/Qwen3.8-27B`; OrcaRouter published the converted/abliterated checkpoint under Apache-2.0, updated 2026-08-27. `trust_remote_code` stays false. Model weights are not modified.
 
-The similarly named OptiQ 4bit model uses substantial 8-bit mixed precision and a different registration path. The uniform 4-bit language-weight build above matches the requested memory budget more directly.
+Sources: [model](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX), [oMLX release](https://github.com/jundot/omlx/releases/tag/v0.6.4), [Hermes installation](https://hermes-agent.nousresearch.com/docs/getting-started/installation), [Erga](https://github.com/Adr1an04/erga-mcp), [QMD](https://github.com/tobi/qmd).
 
-Sources: [model card](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX), [oMLX release](https://github.com/jundot/omlx/releases/tag/v0.6.4), [Hermes installation](https://hermes-agent.nousresearch.com/docs/getting-started/installation).
+## oMLX settings
 
-## Local configuration
+Private settings live in `~/.omlx/settings.json` and `~/.omlx/model_settings.json`; weights live under `~/.omlx/models`, outside Git.
 
-oMLX stores private settings in `~/.omlx/settings.json`. Weights live under `~/.omlx/models`, outside Git. Initial settings are loopback `127.0.0.1:8000`, API authentication, 16,384 total context tokens, one active request, 600-second model idle TTL, 1GB hot cache and 20GB SSD cache. The server does not automatically start on app launch. Model pinning is off.
+- Authenticated API at `http://127.0.0.1:8000/v1`, never a LAN listener.
+- Served model name `Qwen3.8-27B-Uncensored-4bit`.
+- 16,384 total context tokens, maximum 2,048 output tokens, one active request.
+- Streaming, thinking enabled by default; benchmarks can explicitly disable thinking.
+- Model pinning off, idle TTL 600 seconds, server auto-start on app launch off.
+- Safe memory guard; Apple's default Metal limit remains unchanged.
+- Prefix/SSD caching enabled, 1GB hot cache and 20GB disk budget.
+- External VLM MTP enabled with the downloaded `mtp` folder and block size 4. Logs confirm drafter attachment, draft acceptance and emitted tokens.
 
-Hermes uses `model.provider: custom`, `model.base_url: http://127.0.0.1:8000/v1`, `model.default: Qwen3.8-27B-Uncensored-4bit`, `model.context_length: 16384`, and streaming. Its API credential is private. External-login adoption and telemetry sharing are disabled. This does not install or select Hermes' llama.cpp runtime.
+The checkpoint does not include embedded `mtp.*` tensors. The correct path is `vlm_mtp_enabled` with an external `qwen3_5_mtp` drafter, not the native `mtp_enabled` flag. TurboQuant KV compression and this VLM MTP path are mutually exclusive in oMLX 0.6.4. Grammar-constrained requests can fall back to ordinary decoding. Tool arguments, JSON output and reasoning were checked with the selected configuration.
 
-## Commands
+The isolated 16K-budget comparison produced 512 tokens at 21.96 tokens/second with MTP versus 13.90 first and 14.20 repeated with 8-bit TurboQuant KV. The warm TTFTs were 6.74 and 8.33 seconds respectively. Logs verified actual 8-bit conversion of 15 cache layers. MTP remains selected; the benchmark restored TurboQuant to disabled.
 
-From the checkout, run `uv sync` once. The following commands operate the official oMLX app-managed service:
+A green memory graph after a request does not prove pressure stayed green during inference. Record pressure, swap growth and responsiveness over the whole run. High Power mode and fan activity alone do not establish the cause of a memory-pressure change.
+
+## Hermes integration and compatibility patch
+
+Hermes uses `model.provider: custom`, `model.base_url: http://127.0.0.1:8000/v1`, `model.default: Qwen3.8-27B-Uncensored-4bit`, and `model.context_length: 16384`. Its custom-provider request and stale timeouts are 900 seconds. Credentials live in private local configuration and are never passed in process arguments. External-login adoption and telemetry sharing are disabled. Compression uses the same local model; no cloud fallback is configured.
+
+**The pinned Hermes build normally requires a 64K model context.** The narrowly scoped runtime uses an experimental, opt-in patch to that capacity heuristic:
+
+```sh
+uv run python scripts/hermes_small_context.py /path/to/hermes-agent
+```
+
+Enable `HERMES_AUTOPILOT_16K=1` only for this certified local configuration. The script backs up the original file, is idempotent, and refuses an unrecognized upstream constant. An update can overwrite the patch: review and retest it after updating Hermes. The server still advertises and enforces its real 16K limit; it does not pretend to offer 64K. This patch does not change tool authorization.
+
+The MCP server command is the absolute path to this checkout's `.venv/bin/autopilot`, with argument `mcp` and the checkout as its working directory. Its eager allowlist is:
+
+- `prepare_synthetic_application`
+- `read_synthetic_evidence`
+- `retrieve_synthetic_memory`
+- `save_synthetic_answer_draft`
+
+Disable every built-in Hermes toolset for this profile; set each platform's toolsets to `mcp-erga-autopilot`. Set `tools.tool_search.enabled: off` so these four small schemas are present directly. Disable generic MCP resource/prompt wrappers. The tools discovered globally by Hermes are not necessarily the tools exposed to an individual agent; verify the agent's actual schema list.
+
+The Discord integration authorizes one numeric owner ID and the configured `agent-control` channel. It does not accept other bots or backfill channel history. Discord Message Content Intent is required. The lightweight Hermes launchd gateway starts at login and can restart after a crash; this does not load the 27B model at login. oMLX starts on demand. The upstream macOS service generator currently always writes `RunAtLoad`; manually editing that generated plist is not a durable way to change startup behavior.
+
+## Erga and QMD
+
+Erga is installed in its own managed tool environment. The adapter calls its supported MCP interface using an isolated synthetic configuration under the private runtime root, with `ERGA_MCP_TOOL_PROFILE=read`. It selects an approved synthetic evidence source and cannot select another database or write Erga facts.
+
+Resume generation and validation use Erga's supported CLI and Tectonic. The fixture master contains only synthetic education and project facts. Erga may correctly return `meaningful_change: false` when no supported tailoring is available. Check `validation.passed`, not merely the CLI exit code: a failed layout validation can still return exit code zero. `resume tailor` appends section content; repeating an existing project through that command duplicates it. The verified fixture uses `resume tailor-job --job-text` and a local, validated artifact instead.
+
+A reviewed fixture PDF can be copied to `synthetic/erga-synthetic-resume.pdf` under the private runtime root, with its SHA-256 in `synthetic/resume-manifest.json`. The manifest cannot choose another filename. The browser fails closed if those PDF bytes change. Without a provisioned manifest, the standalone smoke test creates a synthetic text resume.
+
+QMD is installed under `~/.local/share/erga-autopilot/qmd`; only the synthetic vault subfolder is indexed in the named `erga-autopilot` index and `autopilot-synthetic` collection. The Node installation works with packaged SQLite/extension support, so a separate Homebrew SQLite installation was unnecessary on the tested machine.
+
+QMD helper models are embeddinggemma-300M Q8_0, qmd-query-expansion-1.7B Q4_K_M and qwen3-reranker-0.6B Q8_0, about 2.25GB in total. These GGUF helpers belong to QMD; the main Qwen model remains MLX. The adapter uses one short-lived process per query, never a resident QMD model server. Keyword search is the tool's default; semantic retrieval is also tested through the adapter. CPU offloading is forced for the helper process because the packaged Metal helper emitted compilation warnings on this Mac. Cached queries can be much faster than first use. An empty semantic result is a legitimate threshold result, not permission to invent evidence.
+
+Retrieved snippets are explicitly untrusted and cannot approve facts, credentials, uploads, or submission. A high-ranked injection note remains untrusted. No vault-wide content is loaded into every prompt.
+
+## Operations
+
+From the checkout:
+
+```sh
+uv sync
+uv run playwright install chromium
+uv run autopilot start
+uv run autopilot status
+uv run autopilot stop
+```
+
+`start` starts the official oMLX app-managed service, waits for its model inventory, and starts the Hermes gateway. Weights load on the first inference request. `stop` drains/stops Hermes before stopping oMLX.
+
+Individual components:
 
 ```sh
 uv run autopilot model start
@@ -33,14 +98,30 @@ uv run autopilot model stop
 uv run autopilot model restart
 uv run autopilot model status
 uv run autopilot model logs
+uv run autopilot gateway start
+uv run autopilot gateway stop
+uv run autopilot gateway restart
+uv run autopilot gateway status
 ```
 
-Benchmark prompt files are arrays of OpenAI-format messages. Keep real prompt contents and results outside Git:
+Hermes starts the narrow Autopilot MCP process as needed. `uv run autopilot mcp` is the foreground MCP entry point; it expects a stdio client. `uv run autopilot smoke` runs the visible browser fixture directly.
+
+## Verification and benchmarks
 
 ```sh
-uv run autopilot benchmark /path/to/synthetic-4k.json /path/to/synthetic-8k.json /path/to/synthetic-16k.json
+uv run pytest -q
+uv run ruff check src tests scripts
+uv run python scripts/check_staged.py
+uv run autopilot smoke
+uv run autopilot benchmark /private/synthetic-4k.json /private/synthetic-8k.json /private/synthetic-16k.json
 ```
 
-The benchmark records streaming TTFT, API token counts and server timings, observed sustained decode rate, latency, and sampled macOS counters. Null values mean unmeasured. `psutil_used_bytes` is not Activity Monitor's Memory Used; the report must distinguish them. GPU utilization is system-wide, not exclusive to inference. Cache hits are checked against API-reported cached token counts; the first/repeat labels alone do not establish cache behavior.
+Prompt files contain arrays of OpenAI-format messages. Keep raw requests, output, measurements and screenshots outside Git. The 16K test must reserve space for generation; 15,872 input tokens plus 512 output tokens reaches 16,384.
 
-Do not connect real applicant data until the prepare-only browser and authority tests pass. Discord credentials stay in private local configuration, never in examples or reports.
+`scripts/benchmark_hermes.py` runs in the pinned Hermes managed Python environment with `--hermes-checkout /path/to/hermes-agent`. It records the actual request and replays the identical payload directly. Actual tool names, token counts, cache hits, API-call count, streaming timings and memory samples are saved privately. The direct replay is normally warmer: compare cache counts and queue activity before attributing a TTFT difference to Hermes. Each request uses the same model and decoding parameters. The measurement instrumentation exists only inside the benchmark process.
+
+With incoming gateway work paused, `uv run python scripts/benchmark_kv.py /private/synthetic-16k.json` compares the current MTP path and 8-bit TurboQuant KV, then restores the original settings even on failure. Resume the gateway afterward.
+
+The browser fixture verifies ten known fields, a frozen upload, unknown-sensitive and writing holds, post-batch dynamic-field detection, and zero submissions. SQLite deduplicates applications, records runs/checkpoints, and completes run/application state atomically. Submission attempts and forged submitted/approved states are rejected. Tests also cover changed resume bytes, hostile labels, unapproved dynamic answers, and external-network denial.
+
+Synthetic Discord certification used three Qwen calls and all four MCP tools. Routine field filling used zero model calls. The answer remained an unapproved draft. This verifies the local stack, not real ATS accounts, CAPTCHA/MFA handling, unattended submission, applicant onboarding, or optional Zoho mail integration.

@@ -128,6 +128,30 @@ def verify_upload(path: Path, approved_path: Path, expected_hash: str) -> None:
         raise PermissionError("Frozen resume artifact changed")
 
 
+def synthetic_resume(root: Path) -> tuple[Path, str]:
+    """Use a previously reviewed Erga PDF when provisioned, otherwise a text fixture.
+
+    The manifest cannot select a file or path. A changed provisioned PDF fails
+    closed instead of silently substituting a different resume.
+    """
+    manifest = root / "resume-manifest.json"
+    if manifest.exists():
+        resume = root / "erga-synthetic-resume.pdf"
+        digest = json.loads(manifest.read_text())["sha256"]
+        verify_upload(resume, resume, digest)
+        return resume, digest
+    resume = root / "synthetic-resume.txt"
+    resume.write_text("SYNTHETIC FIXTURE — Alex Example\nExample University, Computer Science\n")
+    resume.chmod(0o600)
+    return resume, hashlib.sha256(resume.read_bytes()).hexdigest()
+
+
+def observe_fields(page) -> list[dict]:
+    return page.locator("input,textarea,select").evaluate_all("""els => els.map(e => ({
+      id:e.id,label:(e.labels?.[0]?.textContent||'').trim(),kind:e.type,
+      value:e.value,visible:!!(e.offsetWidth||e.offsetHeight),disabled:e.disabled}))""")
+
+
 def prepare(page, url: str, profile: Profile, resume: Path, resume_hash: str) -> dict:
     expected = urlsplit(url)
     if expected.hostname != "127.0.0.1" or expected.path != "/application":
@@ -144,9 +168,7 @@ def prepare(page, url: str, profile: Profile, resume: Path, resume_hash: str) ->
     page.goto(url, wait_until="domcontentloaded")
     if page.url != url:
         raise PermissionError("Unexpected navigation")
-    observed = page.locator("input,textarea,select").evaluate_all("""els => els.map(e => ({
-      id:e.id,label:(e.labels?.[0]?.textContent||'').trim(),kind:e.type,
-      value:e.value,visible:!!(e.offsetWidth||e.offsetHeight),disabled:e.disabled}))""")
+    observed = observe_fields(page)
     filled, pending = {}, []
     for field in observed:
         if not field["visible"] or field["disabled"]:
@@ -165,6 +187,20 @@ def prepare(page, url: str, profile: Profile, resume: Path, resume_hash: str) ->
     if page.url != url:
         raise PermissionError("Destination changed before upload")
     page.get_by_label("Resume upload", exact=True).set_input_files(resume)
+    # Re-observe after the batch: newly revealed fields are held for review.
+    initial_ids = {f["id"] for f in observed if f["visible"] and not f["disabled"]}
+    for field in observe_fields(page):
+        if field["visible"] and not field["disabled"] and field["id"] not in initial_ids:
+            if field["value"]:
+                raise ValueError("Unexpected dynamic field already contains an answer")
+            pending.append(
+                {
+                    "label": field["label"],
+                    "state": "needs_user",
+                    "value": None,
+                    "source": "dynamic field; review required",
+                }
+            )
     for label, value in filled.items():
         if page.get_by_label(label, exact=True).input_value() != value["value"]:
             raise ValueError("Post-fill verification failed")
@@ -179,7 +215,8 @@ def prepare(page, url: str, profile: Profile, resume: Path, resume_hash: str) ->
         "submissions": 0,
         "routine_model_calls": 0,
         "resume_hash": resume_hash,
-        "observations": 1,
+        "observations": 2,
+        "resume_format": resume.suffix,
         "verified": True,
     }
 
@@ -187,10 +224,7 @@ def prepare(page, url: str, profile: Profile, resume: Path, resume_hash: str) ->
 def smoke() -> dict:
     root = state_root() / "synthetic"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    resume = root / "synthetic-resume.txt"
-    resume.write_text("SYNTHETIC FIXTURE — Alex Example\nExample University, Computer Science\n")
-    resume.chmod(0o600)
-    digest = hashlib.sha256(resume.read_bytes()).hexdigest()
+    resume, digest = synthetic_resume(root)
     profile = SYNTHETIC.model_dump()
     frozen = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()
     db = State(root / "workflow.sqlite3")
@@ -215,7 +249,7 @@ def smoke() -> dict:
                 db.checkpoint(
                     browser_id, "known_fields_verified;unknown_sensitive_held;writing_pending"
                 )
-                db.status(application_id, "NEEDS_USER")
+                db.finish_preparation(browser_id)
             finally:
                 context.close()
     finally:

@@ -62,3 +62,14 @@ class State:
     def begin_submission(self, *_args, **_kwargs):
         # No submission implementation is enabled until the separate acceptance gates pass.
         raise PermissionError("Prepare-only runtime: submission is disabled")
+
+    def finish_preparation(self, browser_id: str):
+        """Complete a verified prepare-only run and its application atomically."""
+        with self.db:
+            row = self.db.execute(
+                "SELECT application_id FROM browser_runs WHERE id=?", (browser_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown browser run")
+            self.db.execute("UPDATE browser_runs SET status='NEEDS_USER' WHERE id=?", (browser_id,))
+            self.db.execute("UPDATE applications SET status='NEEDS_USER' WHERE id=?", (row[0],))
