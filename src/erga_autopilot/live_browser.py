@@ -254,6 +254,17 @@ class RecruitingBrowser:
     def save(self):
         write_private(state_root() / f"applications/{self.run['id']}/run.json", self.run)
 
+    def settle(self, timeout: int = 10000):
+        """Bounded wait for a rendered page: single-page job boards paint after load."""
+        try:
+            self.page.wait_for_function(
+                "() => !!document.querySelector('input:not([type=hidden]),select,textarea')"
+                " || document.body.innerText.trim().length > 200",
+                timeout=timeout,
+            )
+        except PlaywrightError:
+            pass
+
     def observe(self) -> dict:
         if self.page is None or self.page.is_closed():
             raise ValueError("No live job page. Open a link first.")
@@ -346,6 +357,7 @@ class RecruitingBrowser:
         try:
             self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
             self.page.locator("body").wait_for()
+            self.settle()
         except PlaywrightError as error:
             self.run["navigation_error"] = type(error).__name__
         result = self.observe()
@@ -388,6 +400,7 @@ class RecruitingBrowser:
             self.page = fresh[-1]
             self.pages[run_id] = self.page
         self.page.wait_for_load_state("domcontentloaded", timeout=30000)
+        self.settle()
         result = self.observe()
         workflow.record(
             run_id, "application_link", {"clicked": item["label"], "url": result["url"]}

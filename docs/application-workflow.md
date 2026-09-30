@@ -8,11 +8,13 @@ reconciliation and unattended submission are not implemented.
 ## Intake and visibility
 
 `autopilot feed tick` checks the fixed Keryx source. An unchanged revision does not
-redownload the snapshot. Changed matching internships enter a deduplicated notification
-outbox and application queue. `autopilot feed seed` publishes the first 25 matches in
-small grouped messages. All recruiting terms are included when the approved profile
-selects any term. The installation maps the logical source channel to an existing
-Discord channel in private `config/feed.json`.
+redownload the snapshot. New matching internships enter a deduplicated notification
+outbox and application queue; each job is announced once, and later Keryx metadata
+changes to a known job do not re-post it. Each tick publishes at most 25 matches in
+small grouped messages, so a large backlog drains over several ticks. `autopilot feed
+seed` publishes the first 25 matches. All recruiting terms are included when the
+approved profile selects any term. The installation maps the logical source channel to
+an existing Discord channel in private `config/feed.json`.
 
 `start_job_application(url)` accepts owner-requested public HTTPS links independently
 of the feed. A Jobright identifier is never treated as a Keryx identifier. Verified
@@ -110,6 +112,12 @@ in `UNKNOWN_SUBMISSION`. Nothing retries. The owner checks the visible browser a
 employer email, then replies `reconcile ... applied` or `reconcile ... not-submitted`;
 the latter returns the application to review and allows one new attempt after a fresh
 package hash is approved.
+
+Public Greenhouse boards run an invisible reCAPTCHA assessment on submit. A low score
+makes the board reject the post and ask for an emailed security code or a retry. Autopilot
+never solves a CAPTCHA or enters a code: that outcome is recorded as an unknown
+submission, the owner completes the step in the visible browser if they choose, and then
+reconciles the result.
 
 ## Local configuration
 

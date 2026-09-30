@@ -233,3 +233,88 @@ def test_empty_command_channel_keeps_first_future_command(state, monkeypatch):
     monkeypatch.setattr(worker, "apply_command", lambda command, message: captured.append(command))
     worker.poll_commands()
     assert captured == [{"kind": "resume", "application_id": "abcdef012345"}]
+
+
+def test_feed_announces_each_job_once_and_supersedes_stale_duplicates(state, monkeypatch):
+    (state / "config").mkdir(exist_ok=True)
+    (state / "config/feed.json").write_text(json.dumps({"enabled": True, "channel_id": "jobs"}))
+    monkeypatch.setattr(discord_feed, "sync_keryx", lambda: {"changed_source": True})
+    monkeypatch.setattr(
+        discord_feed,
+        "read_approved",
+        lambda: {
+            "profile": {
+                "preferences": {
+                    "title_keywords": ["software"],
+                    "excluded_title_keywords": [],
+                    "excluded_companies": [],
+                }
+            }
+        },
+    )
+    sent = []
+    monkeypatch.setattr(
+        discord_feed, "discord", lambda *a, **k: sent.append(a) or {"id": str(len(sent))}
+    )
+    job = {
+        "id": "job_once",
+        "company": "Example Labs",
+        "title": "Software Intern",
+        "program": "internship",
+        "location": "Remote",
+        "url": "https://jobs.example.com/once",
+        "cycle": "summer-2027",
+    }
+    with discord_feed.feed_db() as db:
+        db.execute("INSERT INTO feed_cursor VALUES(1,0)")
+        for revision in ("a" * 40, "b" * 40):
+            db.execute(
+                "INSERT OR REPLACE INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "GodlyDonuts/keryx",
+                    job["id"],
+                    job["company"],
+                    job["title"],
+                    job["location"],
+                    "internship",
+                    job["cycle"],
+                    "open",
+                    1,
+                    job["url"],
+                    None,
+                    json.dumps(job),
+                    "h" + revision[:5],
+                    revision,
+                    "t",
+                    "t",
+                ),
+            )
+            db.execute(
+                "INSERT INTO job_events(source,job_id,revision,event,created_at) VALUES(?,?,?,?,?)",
+                (
+                    "GodlyDonuts/keryx",
+                    job["id"],
+                    revision,
+                    "new" if revision[0] == "a" else "changed",
+                    "t",
+                ),
+            )
+    first = discord_feed.tick()
+    assert first["sent"] == 1 and first["pending"] == 0
+    with discord_feed.feed_db() as db:
+        db.execute(
+            "INSERT INTO feed_outbox(key,job_id,payload) VALUES('stale',?,?)",
+            (job["id"], json.dumps(job)),
+        )
+        db.execute(
+            "INSERT INTO job_events(source,job_id,revision,event,created_at) VALUES(?,?,?,?,?)",
+            ("GodlyDonuts/keryx", job["id"], "c" * 40, "changed", "t"),
+        )
+    second = discord_feed.tick()
+    assert second["sent"] == 0 and second["pending"] == 0
+    with discord_feed.feed_db() as db:
+        assert (
+            db.execute("SELECT status FROM feed_outbox WHERE key='stale'").fetchone()[0]
+            == "superseded"
+        )
+    assert len(sent) == 1

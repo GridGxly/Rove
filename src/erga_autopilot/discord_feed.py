@@ -93,6 +93,14 @@ def tick(seed: bool = False) -> dict:
         with db:
             row = db.execute("SELECT event_id FROM feed_cursor WHERE id=1").fetchone()
             maximum = db.execute("SELECT COALESCE(MAX(id),0) FROM job_events").fetchone()[0]
+            # A job is announced once. Keryx rewrites metadata for thousands of
+            # listings per revision; those changes must not re-post known jobs.
+            announced = {
+                r[0]
+                for r in db.execute(
+                    "SELECT DISTINCT job_id FROM feed_outbox WHERE status IN ('sent','sending','pending')"
+                )
+            }
             if row:
                 events = db.execute(
                     """SELECT j.metadata,j.revision FROM job_events e JOIN jobs j
@@ -103,13 +111,19 @@ def tick(seed: bool = False) -> dict:
                 jobs = []
                 for event in events:
                     job = json.loads(event["metadata"])
-                    if candidate_match(job, prefs):
-                        job["source_revision"] = event["revision"]
-                        jobs.append(job)
+                    if job["id"] in announced or not candidate_match(job, prefs):
+                        continue
+                    job["source_revision"] = event["revision"]
+                    jobs.append(job)
+                    announced.add(job["id"])
                 queue_jobs(db, jobs)
             if seed:
-                queue_jobs(db, initial)
+                queue_jobs(db, [job for job in initial if job["id"] not in announced])
             db.execute("INSERT OR REPLACE INTO feed_cursor VALUES(1,?)", (maximum,))
+            db.execute(
+                """UPDATE feed_outbox SET status='superseded' WHERE status='pending'
+                AND job_id IN (SELECT job_id FROM feed_outbox WHERE status='sent')"""
+            )
         pending = db.execute("""SELECT o.* FROM feed_outbox o JOIN jobs j ON j.id=o.job_id
             WHERE o.status='pending' AND j.active=1 LIMIT 25""").fetchall()
         for offset in range(0, len(pending), 3):

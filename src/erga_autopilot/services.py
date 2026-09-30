@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .runtime import state_root
 
+SERVICE_PATH = str(Path.home() / ".local/bin") + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 
 def install():
     executable = Path(__file__).resolve().parents[2] / ".venv/bin/autopilot"
@@ -29,7 +31,10 @@ def install():
             "ProgramArguments": [str(executable), *command],
             "WorkingDirectory": str(executable.parent.parent.parent),
             "EnvironmentVariables": {
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                # A fixed PATH keeps the plist byte-identical across installs; a PATH copied
+                # from the installing shell forced a reload (and a browser restart) whenever
+                # the shell differed. Every tool the services run is addressed absolutely.
+                "PATH": SERVICE_PATH,
                 "AUTOPILOT_STATE_DIR": str(state_root()),
             },
             "StandardOutPath": str(logs / (name + ".out.log")),
