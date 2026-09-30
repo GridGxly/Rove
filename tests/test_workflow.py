@@ -1057,3 +1057,43 @@ def test_auto_policy_uses_qwen_drafts_and_queues_exactly_one_submission(state, m
             ).fetchone()[0]
             == 1
         )
+
+
+def test_self_identification_questions_take_the_forms_decline_option():
+    from erga_autopilot.live_browser import decline_self_identification, resolve_choice
+
+    options = ["Male", "Female", "Non-binary", "I don't wish to answer"]
+    assert decline_self_identification("Gender", options) == "I don't wish to answer"
+    assert decline_self_identification("Are you a protected veteran?", ["Yes", "No"]) is None
+    assert decline_self_identification("Preferred pronouns", ["He", "Decline"]) is None
+    profile = {"identity": {}, "education": {"schools": []}, "eligibility": {}, "preferences": {}}
+    choice = resolve_choice(
+        "Race / Ethnicity", [{"label": o} for o in ["Asian", "Decline To Self Identify"]], profile
+    )
+    assert choice == ("Decline To Self Identify", "policy.decline_self_identification")
+
+
+def test_a_site_that_says_already_applied_stops_before_anything_is_sent(state, monkeypatch):
+    from erga_autopilot import worker
+
+    page = {
+        "url": "https://jobs.example.com/form",
+        "observation_id": "obs-1",
+        "fields": [],
+        "text": "You have already applied to this job.",
+        "ats_markers": {"already_applied": True, "greenhouse_confirmation": False},
+        "application_links": [],
+    }
+    monkeypatch.setattr(worker, "browser_call", lambda action, **kw: page)
+    owner_channels(monkeypatch)
+    app = workflow.enqueue(
+        "https://jobs.example.com/dup", source="keryx", title="Example — Intern"
+    )["application_id"]
+    result = worker.process(app)
+    assert result["status"] == "MANUAL_TAKEOVER"
+    with workflow.db() as conn:
+        row = conn.execute(
+            "SELECT data FROM application_events WHERE application_id=? AND kind='needs_action'",
+            (app,),
+        ).fetchone()
+    assert f"reconcile {app} applied" in row["data"] and "already" in row["data"]

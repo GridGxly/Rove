@@ -187,6 +187,43 @@ stays `UNKNOWN_SUBMISSION` until the owner reconciles; nothing retries.
 Public Greenhouse boards run an invisible reCAPTCHA on submit. A challenge or an emailed
 security code is recorded as an unknown submission for the owner to finish and reconcile.
 
+`generic_v1` covers employer sites without an ATS contract. List it last in
+`submit_adapters`: the first listed adapter that matches the page wins, so Greenhouse
+boards keep their stricter contract. It clicks the one observed final control and waits,
+within the same bound, until the page leaves, the form disappears, or a success or
+validation message shows that was not there before the click. It then reads the page
+once and compares it with the observation taken before the click. The attempt is
+`APPLIED` only when all three hold:
+
+- at least one new confirmation signal: the URL path or query newly matches the `url`
+  pattern below; the page text newly matches the `sentence` pattern; or a visible
+  `[role=alert]`, `[role=status]`, `.confirmation`, or `.success` element newly matches
+  the `sentence` pattern
+- the form left: no fields and no final control, or a different URL
+- no new validation message: visible text in `[role=alert]`, `.error`, or the message
+  beside an `[aria-invalid=true]` field that matches the `error` pattern and differs from
+  what was there before the click
+
+The patterns, all case-insensitive:
+
+```text
+url       confirmation|thank|success|submitted|complete|received
+sentence  thank you for (applying|your (application|interest))
+          |application (has been |was )?(submitted|received|complete)
+          |we('ve| have) received your application
+          |successfully (submitted|applied)
+error     required|invalid|error|could not|try again
+```
+
+Wording or URL tokens already present before the click never count, so a careers page
+that opens with "thank you for your interest" cannot confirm itself, and a thank-you
+sentence under a form that is still open is not a confirmation. A new validation
+message means the form rejected the attempt: the tab stays open and the application is
+`UNKNOWN_SUBMISSION` with the message in the reason. Anything else within the bound is
+`UNKNOWN_SUBMISSION` as well. POST responses to the page's host are kept in the receipt
+as evidence; they confirm nothing on their own. The receipt carries the same fields as a
+Greenhouse receipt, so cards and the Erga confirmation work unchanged.
+
 ### Unattended sending as an owner policy
 
 Two private `config/workflow.json` keys turn the review step into an after-the-fact one:
@@ -195,8 +232,9 @@ Two private `config/workflow.json` keys turn the review step into an after-the-f
   The draft cards stay in the thread; an `answer` reply before sending still overrides.
 - `auto_submit`: a complete package is sent once, on the tick that prepared it, through
   the enabled adapter for that site. The thread records "auto-submit is on · sending
-  once", then the result card. `max_submissions_per_day` (default 10) paces unattended
-  sending; an application the owner resumed or pasted is never capped.
+  once", then the result card. `max_submissions_per_day` (default 10) and
+  `min_minutes_between_submissions` (default 8) pace unattended sending the way one
+  person would apply; an application the owner resumed or pasted is never capped.
 
 What still stops and asks: a required question only the owner can answer, an
 eligibility conflict on a feed job, a sign-in or account wall, a blocked site, a
@@ -260,7 +298,9 @@ and `refresh_job_feed`. None of them fills, approves, or submits.
 
 ## Limits
 
-One submission adapter (public Greenhouse boards). Multi-page support advances only on
+Two submission adapters: `greenhouse_v1`, with a request-level contract for public
+Greenhouse boards, and `generic_v1`, which reads only the page and confirms nothing
+without new confirmation wording. Multi-page support advances only on
 Next/Continue controls after a complete page. Account creation covers email, password,
 terms checkbox and known name fields; anything else on a registration page is a hold.
 No CAPTCHA solving, no proxies, no recruiting-mail tracking, no unattended submission.

@@ -457,9 +457,13 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         fields = [("Package", f"`{short_hash(data.get('package_hash'))}`", True)]
         if data.get("confirmation_url"):
             fields.append(("Confirmation page", data["confirmation_url"], False))
-        failed_checks = [k for k, v in checks.items() if k != "confirmed" and not v]
-        if failed_checks:
-            fields.append(("Checks that did not pass", ", ".join(failed_checks), False))
+        signals = [
+            k.replace("confirmation_", "").replace("_", " ")
+            for k, v in checks.items()
+            if k.startswith("confirmation") and v
+        ]
+        if signals:
+            fields.append(("Confirmed by", ", ".join(signals), False))
         return [
             embed("Applied ✅", brief(data.get("reason", ""), 300), color="applied", fields=fields)
         ]

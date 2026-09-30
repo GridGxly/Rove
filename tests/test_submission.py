@@ -6,7 +6,7 @@ import pytest
 
 from erga_autopilot import submission, worker, workflow
 from erga_autopilot.onboarding import approve, digest, draft, propose, read_approved
-from erga_autopilot.submission import GreenhouseV1, package_digest
+from erga_autopilot.submission import GenericV1, GreenhouseV1, package_digest
 
 URL = "https://job-boards.greenhouse.io/example/jobs/123"
 FINAL = [{"ref": "0", "label": "Submit application"}]
@@ -117,6 +117,71 @@ def test_greenhouse_confirmation_requires_every_signal():
     assert checks["post_rejected"] and not checks["confirmed"]
     assert not GreenhouseV1.matches("https://job-boards.greenhouse.io/example")
     assert not GreenhouseV1.matches("https://attacker.example/example/jobs/123")
+
+
+def generic_page(url, text="", fields=(), status="", errors=""):
+    return {
+        "url": url,
+        "fields": list(fields),
+        "final_controls": [],
+        "text": text,
+        "ats_markers": {"status_region": status, "form_error": errors},
+    }
+
+
+def test_generic_adapter_is_last_and_confirms_only_from_new_signals(monkeypatch):
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {
+            "enabled": False,
+            "submission_enabled": True,
+            "submit_adapters": ["greenhouse_v1", "generic_v1"],
+        },
+    )
+    form_url = "https://careers.example.com/jobs/42/complete-application"
+    assert submission.enabled_adapter(URL) is GreenhouseV1
+    assert submission.enabled_adapter(form_url) is GenericV1
+    assert not GenericV1.matches("http://careers.example.com/jobs/42")
+    # The careers page already thanks the visitor and notes required fields before any click.
+    before = generic_page(
+        form_url,
+        "Thank you for your interest in Example. * Required fields",
+        fields=[field("a", "Email", "alex@example.invalid")],
+    )
+
+    def confirmed(after, responses=()):
+        return GenericV1.confirmed(form_url, after, list(responses), before=before)
+
+    # Each signal alone confirms once the form has left.
+    assert confirmed(generic_page(form_url + "/thanks", "All set"))["confirmed"]
+    inline = generic_page(form_url, "Thank you for your interest. Application submitted.")
+    assert confirmed(inline)["confirmed"] and not confirmed(inline)["url_changed"]
+    region = generic_page(form_url, "Thank you for your interest.", status="Application received")
+    assert confirmed(region)["confirmation_region"] and confirmed(region)["confirmed"]
+    # Wording and URL tokens present before the click never count.
+    assert not confirmed(generic_page(form_url, "Thank you for your interest in Example."))[
+        "confirmed"
+    ]
+    step = generic_page(
+        form_url + "?step=2", "Thank you for your interest.", fields=[field("b", "Phone", "")]
+    )
+    assert not confirmed(step)["confirmation_url"] and not confirmed(step)["confirmed"]
+    # A thank-you sentence under a form that is still open is not a confirmation.
+    under = generic_page(form_url, "Application submitted", fields=[field("a", "Email", "x")])
+    assert confirmed(under)["confirmation_text"] and not confirmed(under)["confirmed"]
+    # A new validation message outranks every success signal, and names itself.
+    error = generic_page(
+        form_url + "?submitted=1", "Application submitted", errors="Email is required"
+    )
+    checks = confirmed(error, [{"host": "careers.example.com", "path": "/x", "status": 200}])
+    assert checks["confirmation_url"] and checks["url_changed"] and checks["post_accepted"]
+    assert not checks["no_form_error"] and not checks["confirmed"]
+    assert "Email is required" in GenericV1.reason(checks, error)
+    # The same note that was already there is not a new rejection.
+    before["ats_markers"]["form_error"] = "* Required fields"
+    stale = generic_page(form_url + "/thanks", "Done", errors="* Required fields")
+    assert confirmed(stale)["no_form_error"] and confirmed(stale)["confirmed"]
 
 
 def test_preflight_accepts_only_the_reviewed_unchanged_form(state):

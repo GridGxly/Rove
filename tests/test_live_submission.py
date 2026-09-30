@@ -86,6 +86,22 @@ document.body.insertAdjacentHTML('beforeend','<form id="application-form"><label
 </script>"""
 CONFIRMATION = b"""<!doctype html><title>Thanks</title><div class="confirmation">
 <div class="confirmation__content"><h1>Thank you for applying to Acme.</h1></div></div>"""
+# An employer's own site: no ATS contract, a plain thank-you page at a URL that does not
+# look like a confirmation, and an inline validation message when the server says no.
+GENERIC_FORM = b"""<!doctype html><title>Acme Careers</title><form id="application-form">
+<div><label for="f">First name</label><input id="f" name="first" required></div>
+<div><label for="e">Email</label><input id="e" name="email" required aria-describedby="error"></div>
+<div><label for="r">Resume</label><input id="r" name="resume" type="file"></div>
+<button type="submit">Submit application</button></form><p id="error" role="alert"></p>
+<script>document.querySelector('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const r = await fetch(location.pathname, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+  if (r.ok) { location.assign(location.pathname + '/done'); }
+  else { document.querySelector('#e').setAttribute('aria-invalid', 'true');
+         document.querySelector('#error').textContent = 'Email address is invalid. Please correct it and try again.'; }
+});</script>"""
+GENERIC_CONFIRMATION = b"""<!doctype html><title>Acme Careers</title>
+<p>Thank you for applying to Acme. We received your application.</p>"""
 
 
 class Board(BaseHTTPRequestHandler):
@@ -95,6 +111,10 @@ class Board(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.endswith("/confirmation"):
             body = CONFIRMATION
+        elif self.path.endswith("/done"):
+            body = GENERIC_CONFIRMATION
+        elif self.path.endswith(("/jobs/15", "/jobs/16")):
+            body = GENERIC_FORM
         elif self.path.endswith("/jobs/9"):
             body = ASHBY_FORM
         elif self.path.endswith("/jobs/13"):
@@ -127,6 +147,25 @@ class SyntheticV1(submission.GreenhouseV1):
     name = "synthetic_v1"
     board_hosts = ("127.0.0.1",)
     submit_host = "127.0.0.1"
+
+
+class LocalGenericV1(submission.GenericV1):
+    schemes = ("http", "https")  # the synthetic board is plain http on loopback
+
+
+def generic_only(monkeypatch):
+    """The private config lists only the catch-all adapter, under its real name."""
+    monkeypatch.setitem(submission.ADAPTERS, "generic_v1", LocalGenericV1)
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {
+            "enabled": False,
+            "submission_enabled": True,
+            "submit_adapters": ["generic_v1"],
+            "human_pacing": False,
+        },
+    )
 
 
 @pytest.fixture
@@ -366,3 +405,62 @@ def test_late_rendered_forms_wait_out_the_spinner_and_decline_cookies(board):
     opened = runtime.open(f"{base}/acme/jobs/14")
     assert {f["label"] for f in opened["fields"]} == {"First name", "Email", "Resume"}
     assert runtime.page.evaluate("document.documentElement.dataset.consent") == "rejected"
+
+
+def test_generic_adapter_confirms_a_plain_thank_you_page(board, monkeypatch):
+    runtime, base, state = board
+    generic_only(monkeypatch)
+    run_id, package_hash = prepared(runtime, base, state, 15)
+    worker.apply_command(
+        {"kind": "submit", "application_id": run_id, "package_hash": package_hash}, "msg-1"
+    )
+    result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert result["status"] == "APPLIED" and result["adapter"] == "generic_v1", result
+    checks = result["checks"]
+    assert checks["confirmed"] and checks["confirmation_text"] and checks["no_form_error"]
+    assert checks["url_changed"] and checks["form_gone"] and checks["post_accepted"]
+    # "/done" is not a confirmation-looking URL; the thank-you sentence carried it.
+    assert not checks["confirmation_url"] and not checks["confirmation_region"]
+    assert result["confirmation_url"].endswith("/acme/jobs/15/done")
+    assert Board.posts == ["/acme/jobs/15"]
+    assert run_id not in runtime.pages and workflow.get(run_id)["status"] == "APPLIED"
+    receipt = json.loads((state / "applications" / run_id / "receipt.json").read_text())
+    assert receipt["adapter"] == "generic_v1"
+    assert "Thank you for applying" in receipt["confirmation_text"]
+    assert receipt["responses"] == [{"host": "127.0.0.1", "path": "/acme/jobs/15", "status": 200}]
+    with pytest.raises((PermissionError, ValueError)):
+        submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert Board.posts == ["/acme/jobs/15"]
+
+
+def test_generic_adapter_treats_an_inline_form_error_as_unknown(board, monkeypatch):
+    runtime, base, state = board
+    generic_only(monkeypatch)
+    Board.reject.add("/acme/jobs/16")
+    run_id, package_hash = prepared(runtime, base, state, 16)
+    worker.apply_command(
+        {"kind": "submit", "application_id": run_id, "package_hash": package_hash}, "msg-1"
+    )
+    result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert result["status"] == "UNKNOWN_SUBMISSION", result
+    checks = result["checks"]
+    assert not checks["confirmed"] and not checks["no_form_error"]
+    assert not checks["url_changed"] and not checks["form_gone"] and checks["post_rejected"]
+    assert "validation error" in result["reason"]
+    assert "Email address is invalid" in result["reason"]
+    # The tab stays open on the form for the owner to look at; nothing was closed.
+    assert run_id in runtime.pages and runtime.page.url.endswith("/acme/jobs/16")
+    assert workflow.get(run_id)["status"] == "UNKNOWN_SUBMISSION"
+    with workflow.db() as conn:
+        states = [
+            json.loads(r[0])["to"]
+            for r in conn.execute(
+                "SELECT data FROM application_events WHERE application_id=? AND kind='lifecycle'",
+                (run_id,),
+            )
+        ]
+    assert "APPLIED" not in states and "UNKNOWN_SUBMISSION" in states
+    assert not (state / "applications" / run_id / "receipt.json").read_text().count('"APPLIED"')
+    with pytest.raises(PermissionError):
+        submission.claim_attempt(run_id, package_hash, "msg-1")
+    assert Board.posts == ["/acme/jobs/16"]

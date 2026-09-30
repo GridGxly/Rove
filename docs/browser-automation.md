@@ -98,6 +98,8 @@ Prefer:
 - nearby form or dialog context
 - current URL and document identity
 - limited visible text relevant to the current form
+- visible status and validation messages, so a submission result can be read without a
+  screenshot
 - stable code-owned references for observed elements during that page state
 
 Avoid sending full markup, scripts, giant accessibility trees, or screenshots on every step when structured DOM state is enough.
@@ -304,6 +306,18 @@ Record the submission attempt before or atomically with the irreversible action 
 If the result is ambiguous after Submit, move to unknown-submission state. Do not blindly retry.
 
 A model saying `DONE` is never independent proof that submission succeeded.
+
+Confirmation comes from a versioned adapter that reads evidence after the click, never
+from the click itself. `greenhouse_v1` needs the board's own contract: an accepted POST
+to the job's path, the confirmation URL, the confirmation block, and no form left.
+`generic_v1` is the catch-all for employer sites without such a contract and is listed
+last so specific adapters win. It has no request to watch, so it compares the page with
+the observation taken before the click: it needs a confirmation signal that was not there
+before (a confirmation-looking URL, a thank-you sentence, or a success region) and a form
+that left (no fields, or a new URL). A new validation message turns the attempt into an
+unknown submission with that message as the reason, and so does anything else within the
+wait bound. The exact patterns are in
+[application-workflow.md](application-workflow.md#submission).
 
 ## Performance and reliability metrics
 

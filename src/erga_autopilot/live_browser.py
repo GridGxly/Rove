@@ -237,6 +237,30 @@ def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
+SELF_ID_LABEL = re.compile(
+    r"gender|race|ethnicit|hispanic|latino|veteran|disabilit|sexual orientation|"
+    r"self.?identif|protected veteran",
+    re.IGNORECASE,
+)
+DECLINE_OPTION = re.compile(
+    r"decline|prefer not|don.?t wish|do not wish|not to (answer|disclose|self)|"
+    r"choose not|rather not",
+    re.IGNORECASE,
+)
+
+
+def decline_self_identification(label: str, option_labels: list[str]) -> str | None:
+    """Voluntary self-identification is answered with the form's own decline option.
+
+    Declining cannot affect candidacy; it is the standard practice, never an inference
+    about the applicant. A form without a decline option stays with the owner.
+    """
+    if not SELF_ID_LABEL.search(label or ""):
+        return None
+    matches = [o for o in option_labels if DECLINE_OPTION.search(str(o))]
+    return str(matches[0]) if len(matches) == 1 else None
+
+
 def resolve_choice(label: str, options: list[dict], profile: dict) -> tuple[str | None, str | None]:
     """Pick exactly one option from an approved fact; never a guess among options."""
     labels = [o["label"] for o in options]
@@ -254,11 +278,30 @@ def resolve_choice(label: str, options: list[dict], profile: dict) -> tuple[str 
     matches = [x for x in labels if normalized(x) in candidates]
     if len(matches) == 1:
         return matches[0], source
+    declined = decline_self_identification(label, labels)
+    if declined:
+        return declined, "policy.decline_self_identification"
     return None, None
 
 
-OBSERVE = r"""() => {
+# Visible status and validation messages, read the same way by the observation below and
+# by the generic submission wait in submission.py. Both scripts define `visible` first.
+# An invalid field has no text of its own, so its described-by message or its parent's
+# text stands in for it.
+STATUS_SELECTOR = "[role=alert],[role=status],.confirmation,.success"
+ERROR_SELECTOR = "[role=alert],.error,[aria-invalid=true]"
+MESSAGES_JS = (
+    "sel=>[...new Set([...document.querySelectorAll(sel)].filter(visible).map(e=>"
+    "e.matches('input,select,textarea')?((e.getAttribute('aria-describedby')||'').split(' ')"
+    ".map(id=>document.getElementById(id)?.innerText||'').join(' ').trim()"
+    "||e.parentElement?.innerText||''):e.innerText).map(t=>t.trim()).filter(Boolean))]"
+    ".join('\\n').slice(0,2000)"
+)
+
+OBSERVE = (
+    r"""() => {
  const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden' && e.getAttribute('aria-hidden')!=='true';
+ const messages=__MESSAGES__;
  const owns=(l,e)=>!l.htmlFor||!document.getElementById(l.htmlFor)||document.getElementById(l.htmlFor)===e;
  const nearest=e=>{let p=e.parentElement;for(let d=0;p&&d<4;d++,p=p.parentElement){const ls=[...p.querySelectorAll('label')].filter(l=>!l.contains(e)&&owns(l,e));if(ls.length)return ls[0].innerText.trim();}return '';};
  const label=e=>[...(e.labels||[])].map(x=>x.innerText).join(' ').trim() || e.getAttribute('aria-label') ||
@@ -292,8 +335,13 @@ OBSERVE = r"""() => {
  });
  return {title:document.title,text:document.body.innerText.slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
  final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit application|submit my application|send application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-autopilot-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};}),
- ats_markers:{greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content')}};
-}"""
+ ats_markers:{already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
+ greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content'),
+  status_region:messages('__STATUS__'),form_error:messages('__ERROR__')}};
+}""".replace("__MESSAGES__", MESSAGES_JS)
+    .replace("__STATUS__", STATUS_SELECTOR)
+    .replace("__ERROR__", ERROR_SELECTOR)
+)
 
 # Ordinary form submission is blocked in the recruiting browser unless trusted
 # submission code arms this flag for one observed click. It stops accidental
@@ -1325,6 +1373,10 @@ class RecruitingBrowser:
                 except PlaywrightError:
                     pass
                 locator.press("Escape")
+            if value is None and choices:
+                declined = decline_self_identification(field["label"], choices)
+                if declined:
+                    value, source = declined, "policy.decline_self_identification"
             if field["role"] == "combobox" and value is not None:
                 if self.select_combobox(locator, field, value, approved["profile"]):
                     filled.append(

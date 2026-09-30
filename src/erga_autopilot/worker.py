@@ -184,6 +184,16 @@ def process(application_id: str) -> dict:
                         "Blocked by the employer's site",
                         commands=[f"reconcile {application_id} applied", f"defer {application_id}"],
                     )
+            if page.get("ats_markers", {}).get("already_applied"):
+                return held(
+                    application_id,
+                    "MANUAL_TAKEOVER",
+                    "The site says an application from you already exists for this job. "
+                    "Nothing was sent. If that is right, mark it applied; otherwise apply in "
+                    "your own browser.",
+                    "The site says you already applied",
+                    commands=[f"reconcile {application_id} applied", f"defer {application_id}"],
+                )
             if page.get("closed"):
                 workflow.transition(
                     application_id,
