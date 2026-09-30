@@ -155,6 +155,13 @@ decisions, drafts, job fit, the filled form, submission results, and failures. S
 are shown in words ("your profile", "your reply", "your evidence", "the posting"),
 never as internal keys.
 
+Optional fields with no approved fact and no Qwen draft are left blank and noted in one
+line; only required questions reach the owner. A phone-type field defaults to Mobile and
+the form card shows that source as a default. Country selects match the approved country
+under its common spellings, and an observed select keeps up to 300 options so long lists
+such as countries are not cut off. "(Optional)" and "(Required)" in a label are ignored
+when a field is matched to a profile fact.
+
 ## Submission
 
 Submission runs only from an authenticated `submit` command whose hash matches the
