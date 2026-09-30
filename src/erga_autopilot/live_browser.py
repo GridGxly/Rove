@@ -56,6 +56,8 @@ def same_value(expected: str, actual: str) -> bool:
     if expected == actual or " ".join(expected.split()) == " ".join(actual.split()):
         return True
     digits_expected, digits_actual = re.sub(r"\D", "", expected), re.sub(r"\D", "", actual)
+    if len(digits_expected) >= 10 and len(digits_actual) >= 10:
+        return digits_expected[-10:] == digits_actual[-10:]
     return len(digits_expected) >= 7 and digits_actual.endswith(digits_expected)
 
 
@@ -356,7 +358,7 @@ OBSERVE = (
    const t=f.querySelector('legend')||[...f.querySelectorAll('label')].find(l=>owns(l,e)&&l.control!==e);return t?t.innerText.trim():'';};
  const fields=[...document.querySelectorAll('input,textarea,select')].filter(e=>visible(e)||e.type==='file').map((e,i)=>{
    e.setAttribute('data-autopilot-field',String(i));
-   return {ref:String(i),label:label(e),group:groupOf(e),name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),
+   return {ref:String(i),label:label(e),group:groupOf(e),name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||null,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
     required:e.required || e.getAttribute('aria-required')==='true' || requiredBy(e),disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
@@ -1063,6 +1065,15 @@ class RecruitingBrowser:
         try:
             options.first.wait_for(state="visible", timeout=4000)
         except PlaywrightError:
+            if place:
+                # A custom suggestion list without ARIA roles: take the first suggestion and
+                # accept it only when the committed text still names our place.
+                locator.press("ArrowDown")
+                locator.press("Enter")
+                committed = normalized(locator.input_value())
+                city = normalized(str(profile["identity"].get("city") or ""))
+                if city and city in committed:
+                    return True
             locator.press("Escape")
             return False
         wanted = {normalized(value)}
@@ -1318,6 +1329,13 @@ class RecruitingBrowser:
     def _fill_page(self, run_id: str, before: dict, approved: dict, answers: dict):
         """Fill one page of a form from approved facts; returns (filled, pending)."""
         directory = state_root() / f"applications/{run_id}"
+        overrides = directory / "required-overrides.json"
+        if overrides.exists():
+            # The site named these as required when it rejected the form: treat them so.
+            wanted = {normalized(x) for x in json.loads(overrides.read_text())}
+            for field in before["fields"]:
+                if normalized(field["label"]) in wanted:
+                    field["required"] = True
         pending = []
         filled = []
         grouped = {f["name"] for f in before["fields"] if f["kind"] == "radio_group"}
@@ -1436,7 +1454,22 @@ class RecruitingBrowser:
                 value, source = owner_answer["value"], owner_answer["source"]
             else:
                 value, source = resolve_known(field["label"], approved["profile"])
+            if (
+                value is not None
+                and re.search(r"phone|mobile", field["label"], re.IGNORECASE)
+                and not re.search(r"country code", field["label"], re.IGNORECASE)
+            ):
+                value = phone_variants(value)[0]
             choices = [o["label"] for o in field["options"]]
+            if field["kind"] in ("text", "search") and (
+                field.get("autocomplete") in ("list", "both")
+                or re.search(
+                    r"start typing|type to search|search",
+                    field.get("placeholder") or "",
+                    re.IGNORECASE,
+                )
+            ):
+                field = {**field, "role": "combobox"}
             if field["role"] == "combobox" and value is None:
                 locator.click()
                 locator.press("ArrowDown")
@@ -1530,12 +1563,15 @@ class RecruitingBrowser:
                     {"label": field["label"], "value": value, "source": source, "key": field["key"]}
                 )
                 continue
-            if re.search(r"phone|mobile", field["label"], re.IGNORECASE) and not re.search(
-                r"country code", field["label"], re.IGNORECASE
-            ):
-                value = phone_variants(value)[0]
             self.type_value(locator, value)
-            if not same_value(value, locator.input_value()):
+            kept = locator.input_value()
+            if not same_value(value, kept) and kept and value.startswith(kept):
+                # The field silently keeps only its first N characters: fit the text to it.
+                value = workflow.brief(value, len(kept))
+                self.type_value(locator, value)
+                kept = locator.input_value()
+                source = f"{source} (shortened to {len(kept)} characters)"
+            if not same_value(value, kept):
                 raise ValueError(f"Field verification failed: {field['label'][:80]}")
             filled.append(
                 {"label": field["label"], "value": value, "source": source, "key": field["key"]}

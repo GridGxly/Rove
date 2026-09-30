@@ -588,6 +588,12 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
         ):
             # The form stayed open and named its own validation error: nothing was sent.
             result.update(status="NOT_SUBMITTED", reason=adapter.reason(checks, after))
+            labels = re.findall(
+                r"required field:?\s*([^\n.;]+)", str(result["reason"]), re.IGNORECASE
+            )
+            if labels:
+                # The site knows which fields it requires: the next preparation treats them so.
+                write_private(directory / "required-overrides.json", [x.strip() for x in labels])
         else:
             result["reason"] = adapter.reason(checks, after)
     except Exception as error:  # noqa: BLE001 -- any uncertainty after the claim must stay durable

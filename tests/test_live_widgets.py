@@ -68,3 +68,14 @@ def test_block_pages_are_recognized_and_never_treated_as_forms(tmp_path, monkeyp
         gone = runtime.observe()
         assert gone["closed"] and not gone["blocked"]
         browser.close()
+
+
+def test_same_value_accepts_a_phone_in_any_national_or_international_form():
+    from erga_autopilot.live_browser import same_value
+
+    assert same_value("2025550123", "+1 (202) 555-0123")
+    assert same_value("+1 202-555-0123", "2025550123")
+    assert same_value("12025550123", "202-555-0123")
+    assert not same_value("2025550123", "8632589846")
+    assert same_value("Ralph", "Ralph ")
+    assert not same_value("Ralph", "Ralp")
