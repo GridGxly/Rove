@@ -4,6 +4,7 @@ Only trusted local/owner intake or the configured feed policy may enqueue work.
 Preparing is distinct from submission; external text cannot authorize either.
 """
 
+import contextlib
 import hashlib
 import json
 import uuid
@@ -137,6 +138,15 @@ def transition(application_id: str, status: str, trigger: str, detail: str = "",
     )
     flush_events(application_id)
     apply_tags(application_id, STATE_TAGS.get(status, ["Preparing"]))
+    sync_note(application_id)
+
+
+def sync_note(application_id: str):
+    """Refresh the application's Obsidian note; a missing vault never blocks the workflow."""
+    from .vault import sync_application
+
+    with contextlib.suppress(Exception):  # the vault is a readable mirror, not the record
+        sync_application(application_id)
 
 
 def owner_override(application_id: str, kind: str) -> bool:
@@ -521,6 +531,27 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
                 color="info",
             )
         ]
+    if kind == "account_created":
+        return [
+            embed(
+                "Account created",
+                f"{data.get('host', '')} · {data.get('username', '')}\nPassword stored encrypted on this Mac; never posted here.",
+                color="preparing",
+                fields=[("Filled", ", ".join(data.get("filled", []))[:1000] or "—", False)],
+            )
+        ]
+    if kind in {"signed_in", "sign_in_failed"}:
+        return [
+            embed(
+                "Signed in" if kind == "signed_in" else "Sign-in failed",
+                f"{data.get('host', '')} · {data.get('username', '')}",
+                color="preparing" if kind == "signed_in" else "problem",
+            )
+        ]
+    if kind == "posting_closed":
+        return [
+            embed("Posting closed", f"{data.get('source', '')} reports it closed", color="info")
+        ]
     if kind == "browser_access_blocked":
         return [
             embed(
@@ -677,6 +708,7 @@ def action_needed(
             },
         )
     apply_tags(application_id, STATE_TAGS.get(item["status"], ["Preparing", "Needs Action"]))
+    sync_note(application_id)
 
 
 def shortlist(application_id: str, reason: str, items=(), commands=()):

@@ -426,3 +426,70 @@ def test_closed_keryx_posting_parks_the_queued_application(state, monkeypatch):
         )
     assert discord_feed.close_withdrawn_postings("c" * 40) == 1
     assert workflow.get(application_id)["status"] == "DEFERRED"
+
+
+def test_application_note_is_written_to_the_vault(state, monkeypatch, tmp_path):
+    from erga_autopilot.vault import note_path, sync_application
+
+    application_id = workflow.enqueue("https://jobs.example.com/note", title="Example — Intern")[
+        "application_id"
+    ]
+    directory = state / "applications" / application_id
+    directory.mkdir(parents=True)
+    (directory / "package.json").write_text(
+        json.dumps(
+            {
+                "filled": [
+                    {"label": "First name", "value": "Alex", "source": "identity.legal_first_name"}
+                ],
+                "pending": [{"label": "Why us?", "key": "abcdef012345"}],
+                "resume_sha256": "abc",
+            }
+        )
+    )
+    (directory / "answer-proposals.json").write_text(
+        json.dumps(
+            {
+                "answers": [
+                    {
+                        "key": "abcdef012345",
+                        "kind": "proposal",
+                        "value": "Because.",
+                        "approve_command": "use x",
+                        "unslop": "clean",
+                    }
+                ]
+            }
+        )
+    )
+    workflow.transition(application_id, "NEEDS_USER", "test hold")
+    path = note_path(workflow.get(application_id))
+    assert path.is_file() and path.parent.name == "Applications"
+    text = path.read_text()
+    assert (
+        "status: NEEDS_USER" in text
+        and "| First name | Alex |" in text
+        and "Qwen draft: Because." in text
+    )
+    assert "QUEUED → NEEDS_USER" in text
+    assert sync_application(application_id) == path
+
+
+def test_account_command_parses_and_resumes_a_held_application(state):
+    from erga_autopilot.worker import apply_command, parse_command
+
+    application_id = workflow.enqueue("https://jobs.example.com/acct")["application_id"]
+    command = parse_command(
+        {"author": {"id": "owner"}, "content": f"account {application_id} create"},
+        "owner",
+        "control",
+        {"control"},
+    )
+    assert command == {"kind": "account", "application_id": application_id}
+    with pytest.raises(PermissionError):
+        apply_command(command, "m1")
+    workflow.set_state(application_id, "NEEDS_USER")
+    apply_command(command, "m2")
+    assert workflow.get(application_id)["status"] == "QUEUED" and workflow.owner_override(
+        application_id, "account"
+    )

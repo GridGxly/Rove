@@ -218,11 +218,17 @@ OBSERVE = r"""() => {
     required:!!(c.parentElement&&[...c.parentElement.querySelectorAll('label')].some(l=>/required/i.test(l.className)||/\*\s*$/.test(l.innerText))),disabled:false,readonly:false,checked:false,
     value:buttons.find(b=>b.getAttribute('aria-pressed')==='true')?.innerText.trim()||'',options:buttons.map(b=>({label:b.innerText.trim(),value:b.getAttribute('data-option')||b.innerText.trim()}))};});
  fields.push(...choices);
+ const auth=[...document.querySelectorAll('button,input[type=submit],a[href],[role="button"]')].filter(visible).filter(e=>
+   /^(create (an )?account|create (my )?profile|sign ?up|register|sign ?in|log ?in)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{
+   e.setAttribute('data-autopilot-auth',String(i));const t=(e.innerText||e.value||'').trim();return {ref:String(i),label:t,intent:/sign ?in|log ?in/i.test(t)?'login':'register'};});
+ const nav=[...document.querySelectorAll('button,input[type=submit],[role="button"]')].filter(visible).filter(e=>
+   /^(next|continue|save (and|&) continue|next step)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{
+   e.setAttribute('data-autopilot-nav',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};});
  const links=[...document.querySelectorAll('a[href],button,[role="button"]')].filter(visible).filter(e=>
    /^(apply( now| for this (job|position))?|apply on (the )?(employer|company) (site|website)|apply for this job|start application|continue application)$/i.test(e.innerText.trim())).map((e,i)=>{
    e.setAttribute('data-autopilot-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
  });
- return {title:document.title,text:document.body.innerText.slice(0,15000),fields,application_links:links,
+ return {title:document.title,text:document.body.innerText.slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
  final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit application|submit my application|send application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-autopilot-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};}),
  ats_markers:{greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content')}};
 }"""
@@ -659,17 +665,22 @@ class RecruitingBrowser:
             data["fields"].append(group)
         for field in data["fields"]:
             field["key"] = workflow.field_key(field)
+        passwords = [f for f in data["fields"] if f["kind"] == "password"]
+        intents = {c["intent"] for c in data.get("auth_controls", [])}
+        if passwords:
+            data["auth_page"] = (
+                "register" if len(passwords) >= 2 or "register" in intents else "login"
+            )
         # Secrets/identity steps are kept out of saved screenshots and model context.
-        if any(
-            f["kind"] == "password"
-            or re.search(
+        if passwords or any(
+            re.search(
                 r"social security|passport|bank account|verification code",
                 f["label"],
                 re.IGNORECASE,
             )
             for f in data["fields"]
         ):
-            data["text"] = "Authentication or sensitive identity step requires manual takeover."
+            data["text"] = data["text"][:1500]
             data["fields"] = [{k: v for k, v in f.items() if k != "value"} for f in data["fields"]]
             data["manual_takeover_required"] = True
         else:
@@ -913,6 +924,123 @@ class RecruitingBrowser:
         except PlaywrightError:
             return False
         return True
+
+    def _auth_control(self, observation: dict, intent: str):
+        control = next(
+            (c for c in observation.get("auth_controls", []) if c["intent"] == intent), None
+        )
+        if control is None:
+            raise ValueError(f"No {intent} control is visible on this page")
+        return self.page.locator(f'[data-autopilot-auth="{int(control["ref"])}"]'), control
+
+    def register(self, run_id: str) -> dict:
+        """Create the employer account the owner approved: email, generated password, nothing else."""
+        from . import credentials
+
+        self.check(run_id)
+        with self.guarded(self.page):
+            before = self.observe()
+            if before.get("auth_page") != "register":
+                raise ValueError("This page is not an account-creation form")
+            if (
+                not approved_ats(before["url"])
+                and job_scope(before["url"])[0] != urlsplit(self.run["target_url"]).hostname
+            ):
+                raise PermissionError("Account creation is limited to the verified employer site")
+            profile = json.loads(
+                (state_root() / f"applications/{run_id}/profile.json").read_text()
+            )["profile"]
+            email = profile["identity"]["email"]
+            host = credentials.account_host(before["url"])
+            existing = credentials.lookup(host)
+            password = existing["password"] if existing else credentials.generate_password()
+            filled = []
+            for field in before["fields"]:
+                if (
+                    field["disabled"]
+                    or field.get("readonly")
+                    or field["kind"] in {"file", "hidden"}
+                ):
+                    continue
+                locator = self.page.locator(f'[data-autopilot-field="{int(field["ref"])}"]')
+                label = normalized(field["label"] + " " + field["name"])
+                if field["kind"] == "password":
+                    locator.fill(password)
+                    filled.append("password" if "confirm" not in label else "password confirmation")
+                elif field["kind"] == "email" or "email" in label:
+                    locator.fill(email)
+                    filled.append(field["label"] or "email")
+                elif field["kind"] == "checkbox" and re.search(
+                    r"terms|privacy|agree|consent", label
+                ):
+                    locator.check()
+                    filled.append("accepted: " + (field["label"] or "terms")[:80])
+                elif field["kind"] in {"text", "tel"}:
+                    value, _source = resolve_known(field["label"], profile)
+                    if value:
+                        self.type_value(locator, value)
+                        filled.append(field["label"])
+                pace(0.2, 0.6)
+            locator, control = self._auth_control(before, "register")
+            self.click(locator)
+            try:
+                self.page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except PlaywrightError:
+                pass
+            self.settle()
+            after = self.observe()
+            credentials.store(host, email, password, run_id)
+            workflow.record(
+                run_id,
+                "account_created",
+                {
+                    "host": host,
+                    "username": email,
+                    "filled": filled,
+                    "clicked": control["label"],
+                    "storage": "encrypted local credential store",
+                },
+            )
+            workflow.flush_events(run_id)
+            return after
+
+    def login(self, run_id: str) -> dict:
+        """Sign in with a stored account for this host; never with anything typed by the model."""
+        from . import credentials
+
+        self.check(run_id)
+        with self.guarded(self.page):
+            before = self.observe()
+            if before.get("auth_page") != "login":
+                raise ValueError("This page is not a sign-in form")
+            host = credentials.account_host(before["url"])
+            account = credentials.lookup(host)
+            if not account:
+                raise PermissionError("No stored account for this site")
+            for field in before["fields"]:
+                if field["disabled"] or field["kind"] in {"file", "hidden"}:
+                    continue
+                locator = self.page.locator(f'[data-autopilot-field="{int(field["ref"])}"]')
+                label = normalized(field["label"] + " " + field["name"])
+                if field["kind"] == "password":
+                    locator.fill(account["password"])
+                elif field["kind"] == "email" or re.search(r"email|user ?name", label):
+                    locator.fill(account["username"])
+            locator, control = self._auth_control(before, "login")
+            self.click(locator)
+            try:
+                self.page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except PlaywrightError:
+                pass
+            self.settle()
+            after = self.observe()
+            workflow.record(
+                run_id,
+                "signed_in" if after.get("auth_page") != "login" else "sign_in_failed",
+                {"host": host, "username": account["username"], "clicked": control["label"]},
+            )
+            workflow.flush_events(run_id)
+            return after
 
     def prepare(self, run_id: str) -> dict:
         self.check(run_id)
@@ -1252,6 +1380,10 @@ def serve():
                     result = browser.prepare(request["run_id"])
                 elif action == "close":
                     result = browser.close_run(request["run_id"])
+                elif action == "register":
+                    result = browser.register(request["run_id"])
+                elif action == "login":
+                    result = browser.login(request["run_id"])
                 elif action == "reopen":
                     result = browser.reopen(request["run_id"])
                 elif action == "submit":

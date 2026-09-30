@@ -95,9 +95,51 @@ def process(application_id: str) -> dict:
                     page.get("closed_marker") or "",
                 )
                 return {"application_id": application_id, "status": "DEFERRED", "submitted": False}
+            if page.get("auth_page") == "login":
+                from . import credentials
+
+                if credentials.lookup(credentials.account_host(page["url"])):
+                    phase = "sign_in"
+                    page = browser_call("login", run_id=application_id)
+                    if page.get("auth_page") == "login":
+                        reason = "Signing in with the stored account did not work. Finish the sign-in in the recruiting browser, then resume."
+                        headline = "Sign-in needs you"
+                        break
+                    continue
+                reason = (
+                    "This board wants an existing account and I have none stored for it. "
+                    "Sign in yourself in the recruiting browser, then resume."
+                )
+                headline = "Sign-in needs you"
+                break
+            if page.get("auth_page") == "register":
+                if workflow.owner_override(application_id, "account"):
+                    phase = "account_creation"
+                    page = browser_call("register", run_id=application_id)
+                    if not page.get("fields") and re.search(
+                        r"verif|confirm your email|check your (email|inbox)|activate",
+                        page.get("text", ""),
+                        re.IGNORECASE,
+                    ):
+                        reason = (
+                            "The account was created with your application email; the site "
+                            "wants the email verified. Open the link it sent in the recruiting "
+                            "browser, then resume."
+                        )
+                        headline = "Verify the account email"
+                        break
+                    continue
+                reason = (
+                    "This board needs an account before the application. I can create one "
+                    "with your application email and a generated password stored encrypted "
+                    "on this Mac. Your policy asks first."
+                )
+                commands = [f"account {application_id} create", f"defer {application_id}"]
+                headline = "Account needed"
+                break
             if page.get("manual_takeover_required"):
                 reason = (
-                    "Login or identity verification needs you in the recruiting browser. "
+                    "An identity or verification step needs you in the recruiting browser. "
                     "Finish it there, then resume."
                 )
                 headline = "Manual step in the browser"
@@ -225,6 +267,9 @@ def parse_command(message: dict, owner: str, channel: str, allowed: set[str]) ->
     match = re.fullmatch(r"(resume|defer|proceed) ([a-f0-9]{12})", text, re.IGNORECASE)
     if match:
         return {"kind": match[1].lower(), "application_id": match[2].lower()}
+    match = re.fullmatch(r"account ([a-f0-9]{12}) create", text, re.IGNORECASE)
+    if match:
+        return {"kind": "account", "application_id": match[1].lower()}
     match = re.fullmatch(r"submit ([a-f0-9]{12}) ([a-f0-9]{64})", text, re.IGNORECASE)
     if match:
         return {
@@ -281,7 +326,7 @@ def apply_command(command: dict, message_id: str):
             raise PermissionError(
                 "Submission needs the exact package hash of a reviewed, ready application"
             )
-        if command["kind"] == "proceed" and item["status"] != "NEEDS_USER":
+        if command["kind"] in {"proceed", "account"} and item["status"] != "NEEDS_USER":
             raise PermissionError("Only a held application can be told to proceed")
         if command["kind"] == "use":
             from .onboarding import read_approved
@@ -344,7 +389,7 @@ def apply_command(command: dict, message_id: str):
         {k: v for k, v in command.items() if k != "application_id"},
     )
     workflow.flush_events(application_id)
-    if command["kind"] in {"resume", "proceed"}:
+    if command["kind"] in {"resume", "proceed", "account"}:
         workflow.set_state(application_id, "QUEUED")
     elif command["kind"] == "defer":
         workflow.set_state(application_id, "DEFERRED")
@@ -477,7 +522,7 @@ def next_queued(max_waiting: int):
         # applications wait; otherwise the queue holds until the owner answers.
         resumed = conn.execute(
             "SELECT q.id FROM application_queue q JOIN owner_commands c ON c.application_id=q.id "
-            "WHERE q.status='QUEUED' AND c.kind IN ('resume','proceed') AND c.status='applied' "
+            "WHERE q.status='QUEUED' AND c.kind IN ('resume','proceed','account') AND c.status='applied' "
             "ORDER BY c.created_at DESC LIMIT 1"
         ).fetchone()
         if resumed:

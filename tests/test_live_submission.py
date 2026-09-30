@@ -55,6 +55,17 @@ ASHBY_FORM = (
 box.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed','false'));b.setAttribute('aria-pressed','true');
 box.querySelector('input').checked=b.dataset.option==='yes';})));</script>"""
 ).encode()
+REGISTER = b"""<!doctype html><title>Create Account</title><h1>Create an account to apply</h1>
+<form id="signup"><label for="e">Email</label><input id="e" type="email" name="email" required>
+<label for="p">Password</label><input id="p" type="password" name="password" required>
+<label for="c">Confirm Password</label><input id="c" type="password" name="confirm" required>
+<input id="t" type="checkbox" name="terms"><label for="t">I agree to the terms</label>
+<button type="button" id="go">Create Account</button></form>
+<script>document.getElementById('go').onclick=()=>{document.body.innerHTML='<h1>Verify your email</h1><p>We sent a link to confirm your email address.</p>'}</script>"""
+LOGIN = b"""<!doctype html><title>Sign in</title><form id="login"><label for="e">Email</label><input id="e" type="email" name="email">
+<label for="p">Password</label><input id="p" type="password" name="password">
+<button type="button" id="go">Sign in</button></form>
+<script>document.getElementById('go').onclick=()=>{document.body.innerHTML='<label for="f">First name</label><input id="f"><button>Submit application</button>'}</script>"""
 CONFIRMATION = b"""<!doctype html><title>Thanks</title><div class="confirmation">
 <div class="confirmation__content"><h1>Thank you for applying to Acme.</h1></div></div>"""
 
@@ -68,6 +79,10 @@ class Board(BaseHTTPRequestHandler):
             body = CONFIRMATION
         elif self.path.endswith("/jobs/9"):
             body = ASHBY_FORM
+        elif self.path.endswith("/jobs/11"):
+            body = REGISTER
+        elif self.path.endswith("/jobs/12"):
+            body = LOGIN
         else:
             body = FORM
         self.send_response(200)
@@ -269,3 +284,37 @@ def test_unassociated_labels_radio_groups_and_button_choices_resolve_from_approv
     again = runtime.prepare(run_id)
     assert {f["label"]: f.get("value") for f in again["filled"]}[nyc["label"]] == "Yes"
     assert runtime.page.locator("input[name=q3]").is_checked()
+
+
+def test_account_creation_and_sign_in_use_the_encrypted_store_and_never_leak(board):
+    from erga_autopilot import credentials
+
+    runtime, base, state = board
+    opened = runtime.open(f"{base}/acme/jobs/11")
+    assert opened["auth_page"] == "register" and opened["manual_takeover_required"]
+    assert all("value" not in f for f in opened["fields"])
+    run_id = opened["run_id"]
+    after = runtime.register(run_id)
+    assert "Verify your email" in after["text"]
+    account = credentials.lookup("127.0.0.1")
+    assert account["username"] == "alex@example.invalid" and len(account["password"]) == 20
+    assert (state / "credentials/key").stat().st_mode & 0o777 == 0o600
+    with workflow.db() as conn:
+        rows = [
+            json.loads(r[0])
+            for r in conn.execute(
+                "SELECT data FROM application_events WHERE kind='account_created'"
+            )
+        ]
+    assert (
+        rows
+        and account["password"] not in json.dumps(rows)
+        and "accepted: I agree to the terms" in rows[0]["filled"]
+    )
+    signin = runtime.open(f"{base}/acme/jobs/12")
+    assert signin["auth_page"] == "login"
+    landed = runtime.login(signin["run_id"])
+    assert landed.get("auth_page") is None and any(
+        f["label"] == "First name" for f in landed["fields"]
+    )
+    assert runtime.page.evaluate("document.body.innerText").find(account["password"]) == -1
