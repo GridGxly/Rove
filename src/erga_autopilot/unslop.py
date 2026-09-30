@@ -13,8 +13,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import workflow
-
 # Digest of the Unslop taboo catalog for the drafting prompt.
 RULES = (
     "Write like a careful person, not a press release: no throat-clearing openers "
@@ -79,6 +77,10 @@ CLEANUP_PROMPT = (
 
 
 def scanner_dir() -> Path | None:
+    # Imported lazily: the Hermes-managed Python that runs the prompts lacks PyYAML,
+    # which the workflow module's import chain needs.
+    from . import workflow
+
     configured = workflow.config().get("unslop_path")
     if not configured:
         return None
