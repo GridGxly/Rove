@@ -192,7 +192,15 @@ def generate(directory: Path, context: dict, basename: str, attempts: int = 2) -
             env=dict(os.environ, PYTHONPATH=str(repository / "src"), HERMES_AUTOPILOT_16K="1"),
         )
         if run.returncode != 0:
-            failure = f"harness exit {run.returncode}: " + run.stderr.strip()[-400:]
+            # Keep the last meaningful line only; owner cards never carry file paths.
+            lines = [
+                line.strip()
+                for line in run.stderr.strip().splitlines()
+                if line.strip() and not line.lstrip().startswith(("File ", "Traceback", "^"))
+            ]
+            failure = (
+                f"harness exit {run.returncode}: " + (lines[-1] if lines else "no output")[:200]
+            )
             continue
         generated = json.loads((directory / f"{basename}-result.json").read_text())
         try:
