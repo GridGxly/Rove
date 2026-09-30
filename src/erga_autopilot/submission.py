@@ -360,7 +360,9 @@ def submit(browser, application_id: str, package_hash: str, owner_message_id: st
     }
     try:
         # The code-owned preparation guard is armed for this one observed click only.
-        browser.page.evaluate("() => { window.__ergaSubmitArmed = true }")
+        browser.page.evaluate(
+            "() => document.documentElement.setAttribute('data-erga-submit-armed', '1')"
+        )
         browser.click(locator)
         try:
             browser.page.wait_for_url(
@@ -393,7 +395,9 @@ def submit(browser, application_id: str, package_hash: str, owner_message_id: st
         result["reason"] = "No independent confirmation: " + type(error).__name__
     finally:
         try:
-            browser.page.evaluate("() => { window.__ergaSubmitArmed = false }")
+            browser.page.evaluate(
+                "() => document.documentElement.removeAttribute('data-erga-submit-armed')"
+            )
         except PlaywrightError:
             pass
         browser.page.remove_listener("response", observe_response)

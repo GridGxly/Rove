@@ -98,7 +98,8 @@ def fixture_html() -> bytes:
         + '<label for="resume">Resume upload</label><input id="resume" type="file">'
         f'<label for="why">{WRITING_QUESTION}</label><textarea id="why"></textarea>'
         '<button type="submit">Submit application</button></form>'
-        '<script>window.submissions=0;document.querySelector("form").onsubmit=e=>{e.preventDefault();window.submissions++}</script>'
+        '<script>document.querySelector("form").onsubmit=e=>{e.preventDefault();'
+        "document.documentElement.dataset.submissions=String((+document.documentElement.dataset.submissions||0)+1)}</script>"
         "</body></html>"
     ).encode()
 
@@ -207,7 +208,8 @@ def prepare(page, url: str, profile: Profile, resume: Path, resume_hash: str) ->
     for question in pending:
         if page.get_by_label(question["label"], exact=True).input_value():
             raise ValueError("An unapproved answer was filled")
-    if page.evaluate("window.submissions") != 0:
+    # Read the counter from the DOM: script worlds are isolated, the document is shared.
+    if int(page.evaluate("document.documentElement.dataset.submissions || '0'")) != 0:
         raise ValueError("Unexpected submission")
     return {
         "filled": filled,

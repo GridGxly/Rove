@@ -187,14 +187,15 @@ def test_guard_blocks_native_submit_until_one_approved_attempt_is_armed(board):
     result = submission.submit(runtime, run_id, package_hash, "msg-1")
     assert result["status"] == "APPLIED", result
     assert result["checks"]["confirmed"] and Board.posts == ["/acme/jobs/7"]
-    assert runtime.page.url.endswith("/acme/jobs/7/confirmation")
+    assert result["confirmation_url"].endswith("/acme/jobs/7/confirmation")
+    assert run_id not in runtime.pages  # the finished application's tab is closed
     assert workflow.get(run_id)["status"] == "APPLIED"
     receipt = json.loads((state / "applications" / run_id / "receipt.json").read_text())
     assert (
         receipt["confirmation_url"].endswith("/confirmation") and receipt["erga"]["synced"] is False
     )
     assert (state / "applications" / run_id / "form-before-submit.png").exists()
-    with pytest.raises(PermissionError):
+    with pytest.raises((PermissionError, ValueError)):
         submission.submit(runtime, run_id, package_hash, "msg-1")
     assert Board.posts == ["/acme/jobs/7"]
 

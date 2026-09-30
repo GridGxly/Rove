@@ -230,9 +230,11 @@ OBSERVE = r"""() => {
 # submission code arms this flag for one observed click. It stops accidental
 # native/React submits during preparation; it is not a network-level guarantee
 # against page scripts that post on their own.
+# The arm flag lives on the DOM, which every JavaScript world shares; Patchright
+# evaluates scripts in an isolated world, so a window variable would never be seen.
 PREPARE_GUARD = (
-    "window.__ergaSubmitArmed=false;"
-    "document.addEventListener('submit',e=>{if(!window.__ergaSubmitArmed){"
+    "document.addEventListener('submit',e=>{"
+    "if(document.documentElement.getAttribute('data-erga-submit-armed')!=='1'){"
     "e.preventDefault();e.stopImmediatePropagation();}},true)"
 )
 
