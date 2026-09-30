@@ -17,7 +17,11 @@ def install():
     logs = state_root() / "logs"
     logs.mkdir(parents=True, exist_ok=True, mode=0o700)
     result = []
-    for name, command in [("browser", ["browser", "serve"]), ("feed", ["feed", "tick"])]:
+    for name, command in [
+        ("browser", ["browser", "serve"]),
+        ("feed", ["feed", "tick"]),
+        ("workflow", ["workflow", "tick"]),
+    ]:
         label = "dev.erga-autopilot." + name
         path = agents / (label + ".plist")
         data = {
@@ -31,25 +35,35 @@ def install():
             "StandardOutPath": str(logs / (name + ".out.log")),
             "StandardErrorPath": str(logs / (name + ".err.log")),
             "ProcessType": "Interactive" if name == "browser" else "Background",
-            "RunAtLoad": name == "feed",
+            "RunAtLoad": name != "browser",
         }
-        if name == "feed":
-            data["StartInterval"] = 900
-        with open(path, "wb") as f:
-            plistlib.dump(data, f)
-        path.chmod(0o600)
+        if name != "browser":
+            data["StartInterval"] = 900 if name == "feed" else 30
         domain = f"gui/{os.getuid()}"
-        subprocess.run(
-            ["launchctl", "bootout", domain + "/" + label], capture_output=True, check=False
+        unchanged = path.exists() and plistlib.loads(path.read_bytes()) == data
+        loaded = (
+            subprocess.run(
+                ["launchctl", "print", domain + "/" + label], capture_output=True, check=False
+            ).returncode
+            == 0
         )
-        subprocess.run(
-            ["launchctl", "bootstrap", domain, str(path)], capture_output=True, check=True
-        )
+        if not unchanged or not loaded:
+            with open(path, "wb") as f:
+                plistlib.dump(data, f)
+            path.chmod(0o600)
+            if loaded:
+                subprocess.run(
+                    ["launchctl", "bootout", domain + "/" + label], capture_output=True, check=True
+                )
+            subprocess.run(
+                ["launchctl", "bootstrap", domain, str(path)], capture_output=True, check=True
+            )
         result.append(
             {
                 "service": label,
                 "installed": True,
-                "interval_seconds": 900 if name == "feed" else None,
+                "unchanged": unchanged and loaded,
+                "interval_seconds": (900 if name == "feed" else 30) if name != "browser" else None,
             }
         )
     return result

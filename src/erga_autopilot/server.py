@@ -196,9 +196,9 @@ def prepare_application_fields(run_id: str) -> dict:
 @mcp.tool()
 def refresh_job_feed() -> dict:
     """Check the fixed Keryx GitHub source now and import changes. No applicant data sent."""
-    from .jobs import sync_keryx
+    from .discord_feed import tick
 
-    return sync_keryx()
+    return tick()
 
 
 @mcp.tool()

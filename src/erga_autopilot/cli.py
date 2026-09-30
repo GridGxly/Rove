@@ -70,8 +70,9 @@ def main():
     feed = sub.add_parser("feed")
     feed.add_argument("action", choices=["tick", "seed"])
     workflow = sub.add_parser("workflow")
-    workflow.add_argument("action", choices=["tick", "status", "enqueue"])
+    workflow.add_argument("action", choices=["tick", "status", "enqueue", "resume", "defer"])
     workflow.add_argument("--url")
+    workflow.add_argument("--id")
     args = parser.parse_args()
     if args.command == "workflow":
         from . import worker, workflow
@@ -82,6 +83,17 @@ def main():
             if not args.url:
                 parser.error("enqueue requires --url")
             result = workflow.enqueue(args.url)
+        elif args.action in {"resume", "defer"}:
+            # Local owner operation, equivalent to the Discord command of the same name.
+            if not args.id:
+                parser.error(f"{args.action} requires --id")
+            from datetime import UTC, datetime
+
+            worker.apply_command(
+                {"kind": args.action, "application_id": args.id},
+                f"local-owner:{args.action}:{datetime.now(UTC).isoformat()}",
+            )
+            result = workflow.get(args.id)
         else:
             result = workflow.status()
         print(json.dumps(result, indent=2))

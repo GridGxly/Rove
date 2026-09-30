@@ -52,6 +52,31 @@ def now():
     return datetime.now(UTC).isoformat()
 
 
+STATES = {
+    "QUEUED",
+    "PREPARING",
+    "NEEDS_USER",
+    "READY_FOR_REVIEW",
+    "SUBMITTING",
+    "APPLIED",
+    "UNKNOWN_SUBMISSION",
+    "MANUAL_TAKEOVER",
+    "DEFERRED",
+}
+# Lifecycle tag is the quick status; overlays mark work the owner must do.
+STATE_TAGS = {
+    "QUEUED": ["Preparing"],
+    "PREPARING": ["Preparing"],
+    "DEFERRED": ["Preparing"],
+    "NEEDS_USER": ["Preparing", "Needs Action"],
+    "READY_FOR_REVIEW": ["Preparing", "Needs Action"],
+    "MANUAL_TAKEOVER": ["Preparing", "Needs Action"],
+    "SUBMITTING": ["Preparing"],
+    "UNKNOWN_SUBMISSION": ["Preparing", "Needs Action"],
+    "APPLIED": ["Applied"],
+}
+
+
 def resolve_alias(url: str) -> str:
     with db() as conn:
         row = conn.execute(
@@ -74,6 +99,8 @@ def set_state(application_id: str, status: str, **values):
     allowed = {"run_id", "thread_id", "package_hash", "error", "title"}
     if values.keys() - allowed:
         raise ValueError("Invalid state fields")
+    if status not in STATES:
+        raise ValueError("Unknown application state")
     with db() as conn:
         conn.execute(
             "UPDATE application_queue SET status=?,updated_at=?"
@@ -81,6 +108,42 @@ def set_state(application_id: str, status: str, **values):
             + " WHERE id=?",
             [status, now(), *values.values(), application_id],
         )
+
+
+def apply_tags(application_id: str, names: list[str]):
+    """Best-effort forum tag update; the timeline entry, not the tag, is the record."""
+    settings = config()
+    tags = settings.get("tags", {})
+    thread = get(application_id)["thread_id"]
+    wanted = [tags[name] for name in names if name in tags]
+    if not settings.get("enabled") or not thread or not wanted:
+        return
+    try:
+        discord("PATCH", f"/channels/{thread}", {"applied_tags": wanted})
+    except Exception as error:  # noqa: BLE001 -- a tag is cosmetic; the event stays durable
+        record(application_id, "discord_tag_failed", {"tags": names, "error": type(error).__name__})
+
+
+def transition(application_id: str, status: str, trigger: str, detail: str = "", **values):
+    """A lifecycle change always leaves a timeline entry explaining why."""
+    previous = get(application_id)["status"]
+    set_state(application_id, status, **values)
+    record(
+        application_id,
+        "lifecycle",
+        {"from": previous, "to": status, "trigger": trigger, "detail": detail[:1200]},
+    )
+    flush_events(application_id)
+    apply_tags(application_id, STATE_TAGS.get(status, ["Preparing"]))
+
+
+def owner_override(application_id: str, kind: str) -> bool:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM owner_commands WHERE application_id=? AND kind=? AND status='applied'",
+            (application_id, kind),
+        ).fetchone()
+    return bool(row)
 
 
 def enqueue(url: str, *, source: str = "owner_link", title: str = "") -> dict:
@@ -170,6 +233,10 @@ def ensure_forum(application_id: str) -> str | None:
     set_state(application_id, item["status"], thread_id=thread["id"])
     with db() as conn:
         conn.execute(
+            "INSERT OR IGNORE INTO workflow_checkpoints VALUES(?,?)", (thread["id"], thread["id"])
+        )
+    with db() as conn:
+        conn.execute(
             "UPDATE application_events SET delivery='sent' WHERE application_id=? AND kind='forum_creation_attempt'",
             (application_id,),
         )
@@ -187,11 +254,71 @@ def event_text(kind: str, data: dict) -> str:
                 f"Needs answer: {field['label']} · `{field.get('key', '')}`\n{field.get('reason', '')}"
             )
         return "\n\n".join(parts)
+    if kind == "qwen_job_review":
+        parts = [
+            f"**Qwen job-fit review** · decision: {data.get('decision')}"
+            + (
+                f" (Qwen said {data['qwen_decision']}; code re-checked exact facts)"
+                if data.get("qwen_decision") and data["qwen_decision"] != data.get("decision")
+                else ""
+            ),
+            str(data.get("rationale", ""))[:1200],
+        ]
+        for item in data.get("requirements", []):
+            parts.append(
+                f"{item.get('status', '?')} · {item.get('kind')} · {item.get('requirement', '')[:200]}"
+                + (f"\n{item['note']}" if item.get("note") else "")
+                + f"\nchecked by: {item.get('checked_by', 'qwen')}"
+            )
+        for unknown in data.get("unknowns", []):
+            parts.append("unknown: " + str(unknown)[:300])
+        return "\n\n".join(parts)
+    if kind == "qwen_answer_proposal":
+        return (
+            "**Qwen draft** · question `"
+            + data.get("key", "")
+            + "`\n"
+            + data.get("value", "")
+            + "\nSources: "
+            + ", ".join(data.get("sources", []))
+            + "\n"
+            + data.get("explanation", "")
+            + "\nApprove exactly this text with: `"
+            + data.get("approve_command", "")
+            + "`"
+        )
+    if kind == "qwen_question":
+        return (
+            f"**Qwen needs you** · question `{data.get('key', '')}`\n{data.get('explanation', '')}"
+        )
+    if kind == "lifecycle":
+        return (
+            f"**Status {data.get('from')} → {data.get('to')}**\n"
+            f"Trigger: {data.get('trigger')}\n{data.get('detail', '')}"
+        )
+    if kind in {"submission_confirmed", "submission_unknown"}:
+        checks = data.get("checks", {})
+        parts = [
+            "**Submission confirmed**"
+            if kind == "submission_confirmed"
+            else "**Submission outcome unknown**",
+            f"Package: {data.get('package_hash')}",
+            f"Attempted: {data.get('attempted_at')}",
+        ]
+        if data.get("confirmation_url"):
+            parts.append(f"Confirmation page: {data['confirmation_url']}")
+        if checks:
+            parts.append("Checks: " + ", ".join(f"{k}={v}" for k, v in checks.items()))
+        if data.get("reason"):
+            parts.append(str(data["reason"]))
+        if data.get("erga"):
+            parts.append("Erga: " + str(data["erga"])[:300])
+        return "\n".join(parts)
     return (
         "**"
         + kind.replace("_", " ").capitalize()
         + "**\n"
-        + "\n".join(f"{key}: {value}" for key, value in data.items())
+        + "\n".join(f"{key}: {str(value)[:600]}" for key, value in data.items())
     )
 
 
@@ -242,14 +369,26 @@ def action_needed(application_id: str, reason: str):
                 "flags": 4,
             },
         )
-        tags = settings.get("tags", {})
-        thread = get(application_id)["thread_id"]
-        if thread and tags.get("Needs Action"):
-            discord(
-                "PATCH",
-                f"/channels/{thread}",
-                {"applied_tags": [tags[t] for t in ("Preparing", "Needs Action") if t in tags]},
-            )
+    status = get(application_id)["status"]
+    apply_tags(application_id, STATE_TAGS.get(status, ["Preparing", "Needs Action"]))
+
+
+def shortlist(application_id: str, reason: str):
+    """A borderline job goes to the owner's shortlist with the reasons, once."""
+    settings = config()
+    item = get(application_id)
+    record(application_id, "shortlisted", {"reason": reason})
+    flush_events(application_id)
+    if settings.get("enabled") and settings.get("shortlist_channel_id"):
+        discord(
+            "POST",
+            f"/channels/{settings['shortlist_channel_id']}/messages",
+            {
+                "content": f"**Your call · {item['title'][:120]}**\n{item['url']}\n{reason[:1400]}\n{forum_url(application_id) or ''}",
+                "allowed_mentions": {"parse": []},
+                "flags": 4,
+            },
+        )
 
 
 def status() -> dict:
@@ -274,7 +413,12 @@ def approved_answers(application_id: str) -> dict:
     return {
         r["field_key"]: {
             "value": r["value"],
-            "source": "owner Discord message " + r["owner_message_id"],
+            "source": (
+                "owner setup reply "
+                if r["owner_message_id"].startswith("codex-owner-reply:")
+                else "owner Discord message "
+            )
+            + r["owner_message_id"],
         }
         for r in rows
     }

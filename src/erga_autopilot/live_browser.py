@@ -46,6 +46,25 @@ def approved_ats(url: str) -> bool:
     return any(host == suffix or host.endswith("." + suffix) for suffix in ATS_HOSTS)
 
 
+def job_scope(url: str) -> tuple:
+    """Tenant AND job binding: an ATS hostname alone is never employer approval."""
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    parts = parsed.path.strip("/").split("/")
+    if (
+        host in {"job-boards.greenhouse.io", "boards.greenhouse.io"}
+        and len(parts) >= 3
+        and parts[1] == "jobs"
+        and parts[2].isdigit()
+    ):
+        return ("greenhouse", parts[0], parts[2])
+    if host == "jobs.lever.co" and len(parts) >= 2:
+        return (host, *parts[:2])
+    if host == "jobs.ashbyhq.com" and len(parts) >= 2:
+        return (host, *parts[:2])
+    return (host, parsed.path.rstrip("/"))
+
+
 def validate_destination(url: str) -> str:
     safe = public_link(url)
     if not safe:
@@ -162,6 +181,7 @@ OBSERVE = r"""() => {
    e.setAttribute('data-autopilot-field',String(i));
    return {ref:String(i),label:label(e),name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||null,
+    selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
     required:e.required || e.getAttribute('aria-required')==='true',disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
     value:(['password','hidden','file'].includes(e.type)?null:e.value),
     options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,100):[]};
@@ -171,12 +191,24 @@ OBSERVE = r"""() => {
    e.setAttribute('data-autopilot-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
  });
  return {title:document.title,text:document.body.innerText.slice(0,15000),fields,application_links:links,
- final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit application|submit my application|send application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-autopilot-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};})};
+ final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit application|submit my application|send application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-autopilot-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};}),
+ ats_markers:{greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content')}};
 }"""
+
+# Ordinary form submission is blocked in the recruiting browser unless trusted
+# submission code arms this flag for one observed click. It stops accidental
+# native/React submits during preparation; it is not a network-level guarantee
+# against page scripts that post on their own.
+PREPARE_GUARD = (
+    "window.__ergaSubmitArmed=false;"
+    "document.addEventListener('submit',e=>{if(!window.__ergaSubmitArmed){"
+    "e.preventDefault();e.stopImmediatePropagation();}},true)"
+)
 
 
 class RecruitingBrowser:
-    def __init__(self):
+    def __init__(self, headless: bool = False):
+        self.headless = headless
         self.playwright = None
         self.context = None
         self.page = None
@@ -209,7 +241,7 @@ class RecruitingBrowser:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.context = self.playwright.chromium.launch_persistent_context(
             str(directory),
-            headless=False,
+            headless=self.headless,
             viewport=None,
             service_workers="block",
             args=["--start-maximized", "--disable-background-networking"],
@@ -217,9 +249,7 @@ class RecruitingBrowser:
         )
         self.context.route("**/*", self._route)
         self.context.set_default_timeout(12000)
-        self.context.add_init_script(
-            "document.addEventListener('submit',e=>{e.preventDefault();e.stopImmediatePropagation()},true)"
-        )
+        self.context.add_init_script(PREPARE_GUARD)
 
     def save(self):
         write_private(state_root() / f"applications/{self.run['id']}/run.json", self.run)
@@ -227,7 +257,6 @@ class RecruitingBrowser:
     def observe(self) -> dict:
         if self.page is None or self.page.is_closed():
             raise ValueError("No live job page. Open a link first.")
-        self.page.bring_to_front()
         data = self.page.evaluate(OBSERVE)
         data.update(
             url=self.page.url,
@@ -284,6 +313,7 @@ class RecruitingBrowser:
         self.run = {
             "id": run_id,
             "source_url": existing["source_url"],
+            "target_url": target,
             "profile_hash": approved["profile_hash"],
             "status": "BROWSING",
             "filled": [],
@@ -302,6 +332,13 @@ class RecruitingBrowser:
         else:
             write_private(prior_profile, approved)
         self.page = self.context.new_page()
+        manifest_path = directory / "resume-manifest.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text())
+            self.run.update(
+                resume_sha256=manifest.get("resume_sha256"),
+                resume_is_tailored=manifest.get("tailored", False),
+            )
         self.runs[run_id], self.pages[run_id] = self.run, self.page
         workflow.set_state(run_id, "PREPARING", run_id=run_id)
         workflow.ensure_forum(run_id)
@@ -320,10 +357,10 @@ class RecruitingBrowser:
 
     def follow(self, run_id: str, observation_id: str, ref: str) -> dict:
         self.check(run_id)
-        if self.page.url != self.observation["url"]:
-            raise ValueError("Page URL changed; inspect again")
         if not self.observation or observation_id != self.observation["observation_id"]:
             raise ValueError("Page observation changed; inspect again before following a link")
+        if self.page.url != self.observation["url"]:
+            raise ValueError("Page URL changed; inspect again")
         item = next((x for x in self.observation["application_links"] if x["ref"] == ref), None)
         if not item:
             raise PermissionError("Only an observed application-start link may be followed")
@@ -349,6 +386,7 @@ class RecruitingBrowser:
         fresh = [p for p in self.context.pages if p not in old_pages]
         if fresh:
             self.page = fresh[-1]
+            self.pages[run_id] = self.page
         self.page.wait_for_load_state("domcontentloaded", timeout=30000)
         result = self.observe()
         workflow.record(
@@ -367,14 +405,17 @@ class RecruitingBrowser:
 
     def select_combobox(self, locator, field, value, profile) -> bool:
         """Select a unique visible exact option; text input alone is not selection."""
-        locator.fill(value)
+        locator.click()
+        if normalized(field["label"]) == "location city":
+            locator.fill(value)
+        else:
+            locator.press("ArrowDown")
         options = self.page.get_by_role("option")
         try:
-            options.first.wait_for(state="visible", timeout=5000)
+            options.first.wait_for(state="visible", timeout=4000)
         except PlaywrightError:
             locator.press("Escape")
             return False
-        texts = options.all_text_contents()
         wanted = {normalized(value)}
         if normalized(field["label"]) == "country":
             wanted |= {normalized(value + " +1"), normalized(value + " (+1)")}
@@ -387,24 +428,81 @@ class RecruitingBrowser:
                     )
                 )
             }
+        texts = options.all_text_contents()
         matches = [i for i, text in enumerate(texts) if normalized(text) in wanted]
+        if not matches:
+            locator.fill(value)
+            try:
+                options.filter(has_text=value).first.wait_for(timeout=5000)
+            except PlaywrightError:
+                locator.press("Escape")
+                return False
+            texts = options.all_text_contents()
+            matches = [i for i, text in enumerate(texts) if normalized(text) in wanted]
         if len(matches) != 1:
             locator.press("Escape")
             return False
         expected = texts[matches[0]]
         options.nth(matches[0]).click()
-        # Generic React-select labels stay in the nearest input container after selection.
-        container = locator.locator("xpath=../..")
-        return normalized(expected) in normalized(container.inner_text())
+        # Refocusing emits React Select's current selected country (its visual
+        # single-value label contains only a dial code shared by many countries).
+        locator.press("Tab")
+        locator.click()
+        if normalized(field["label"]) == "country":
+            try:
+                self.page.wait_for_function(
+                    "({ref,value})=>{const e=document.querySelector('[data-autopilot-field=\"'+ref+'\"]');return e?.closest('.select__container')?.querySelector('[aria-live]')?.textContent.includes('option '+value+', selected.')}",
+                    arg={"ref": field["ref"], "value": value},
+                    timeout=3000,
+                )
+            except PlaywrightError:
+                pass
+            announcement = locator.evaluate(
+                "e=>e.closest('.select__container')?.querySelector('[aria-live]')?.textContent||''"
+            )
+            if normalized("option " + value + " selected") in normalized(announcement):
+                locator.press("Escape")
+                return True
+        # The selected native ARIA option proves commitment; typing into a search
+        # input or seeing a shared country dial code does not.
+        locator.click()
+        locator.press("ArrowDown")
+        selected = self.page.get_by_role("option", name=expected, exact=True)
+        try:
+            selected.wait_for(state="visible", timeout=3000)
+            verified = (
+                selected.get_attribute("aria-selected") == "true"
+                or "select__option--is-selected" in (selected.get_attribute("class") or "").split()
+            )
+        except PlaywrightError:
+            verified = False
+        # React Select exposes some committed values only in its selected-value
+        # label or accessible live announcement, not aria-selected on options.
+        evidence = locator.evaluate(
+            "e=>{const c=e.closest('.select__container'); return {value:c?.querySelector('.select__single-value')?.innerText||'', announcement:c?.querySelector('[aria-live]')?.textContent||''}}"
+        )
+        verified = verified or normalized(evidence["value"]) == normalized(expected)
+        if normalized(field["label"]) == "country":
+            verified = verified or normalized("option " + value + " selected") in normalized(
+                evidence["announcement"]
+            )
+        write_private(
+            state_root() / f"applications/{self.run['id']}/dropdown-{field['key']}.json",
+            {"expected": expected, "selected_evidence": evidence, "verified": verified},
+        )
+        locator.press("Escape")
+        return verified
 
     def prepare(self, run_id: str) -> dict:
         self.check(run_id)
         before = self.observe()
-        if not approved_ats(before["url"]):
+        if not approved_ats(before["url"]) or job_scope(before["url"]) != job_scope(
+            self.run.get("target_url", workflow.get(run_id)["url"])
+        ):
             return {
                 **before,
                 "status": "NEEDS_EMPLOYER_LINK",
-                "reason": "Open the verified employer/ATS application before entering candidate data.",
+                "reason": "The form must match the verified employer and job destination before entering candidate data. A shared ATS hostname is insufficient.",
             }
         directory = state_root() / f"applications/{run_id}"
         approved = json.loads((directory / "profile.json").read_text())
@@ -467,7 +565,15 @@ class RecruitingBrowser:
                     self.save()
                 if hashlib.sha256(resume.read_bytes()).hexdigest() != self.run["resume_sha256"]:
                     raise PermissionError("Frozen resume changed")
+                upload_control = locator.element_handle()
                 locator.set_input_files(str(resume))
+                if (
+                    upload_control.evaluate(
+                        "e=>e.files.length===1 && e.files[0].name==='resume.pdf'"
+                    )
+                    is not True
+                ):
+                    raise ValueError("Resume attachment verification failed")
                 filled.append(
                     {
                         "label": field["label"],
@@ -485,6 +591,17 @@ class RecruitingBrowser:
                 value, source = owner_answer["value"], owner_answer["source"]
             else:
                 value, source = resolve_known(field["label"], approved["profile"])
+            choices = [o["label"] for o in field["options"]]
+            if field["role"] == "combobox" and value is None:
+                locator.click()
+                locator.press("ArrowDown")
+                try:
+                    options = self.page.get_by_role("option")
+                    options.first.wait_for(state="visible", timeout=3000)
+                    choices = options.all_text_contents()[:300]
+                except PlaywrightError:
+                    pass
+                locator.press("Escape")
             if field["role"] == "combobox" and value is not None:
                 if self.select_combobox(locator, field, value, approved["profile"]):
                     filled.append(
@@ -545,7 +662,7 @@ class RecruitingBrowser:
                         "label": field["label"] or field["name"],
                         "required": field["required"],
                         "key": field["key"],
-                        "options": [o["label"] for o in field["options"]],
+                        "options": choices,
                         "reason": "Needs reviewed answer or supported control adapter",
                     }
                 )
@@ -554,6 +671,8 @@ class RecruitingBrowser:
                 pending.append(
                     {
                         "label": field["label"],
+                        "key": field["key"],
+                        "required": field["required"],
                         "reason": "Existing value differs; preserved for review",
                     }
                 )
@@ -647,6 +766,17 @@ def serve():
                     )
                 elif action == "prepare":
                     result = browser.prepare(request["run_id"])
+                elif action == "submit":
+                    # Only the worker calls this, with an authenticated owner approval
+                    # for one exact package; the model has no submit tool.
+                    from .submission import submit
+
+                    result = submit(
+                        browser,
+                        request["run_id"],
+                        request["package_hash"],
+                        request["owner_message_id"],
+                    )
                 elif action == "status":
                     result = {
                         "daemon_running": True,

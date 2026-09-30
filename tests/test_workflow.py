@@ -130,3 +130,106 @@ def test_browser_dns_and_label_boundaries(state, monkeypatch):
     assert workflow.field_key(
         {"label": "First name", "name": "first", "kind": "text"}
     ) != workflow.field_key({"label": "Citizenship", "name": "first", "kind": "text"})
+
+
+def test_qwen_review_cannot_omit_or_invent_question_keys():
+    from erga_autopilot.reasoning import parse_review
+
+    key = "abcdef012345"
+    proposal = {
+        "key": key,
+        "kind": "proposal",
+        "value": "Synthetic draft",
+        "sources": ["approved story"],
+        "explanation": "Evidence",
+    }
+    assert (
+        parse_review(json.dumps({"answers": [proposal]}), {key})["answers"][0]["value"]
+        == "Synthetic draft"
+    )
+    with pytest.raises(ValueError, match="omitted"):
+        parse_review('{"answers":[]}', {key})
+    with pytest.raises(ValueError, match="unknown"):
+        parse_review(json.dumps({"answers": [proposal]}), {"123456abcdef"})
+    with pytest.raises(ValueError, match="unknown fact"):
+        parse_review(json.dumps({"answers": [{**proposal, "kind": "needs_user"}]}), {key})
+
+
+def test_owner_draft_approval_binds_exact_version(state):
+    from erga_autopilot.onboarding import read_approved
+
+    app = workflow.enqueue("https://jobs.example.com/1")["application_id"]
+    directory = state / "applications" / app
+    directory.mkdir(parents=True)
+    field = {
+        "key": "abcdef012345",
+        "kind": "textarea",
+        "label": "Favorite project?",
+        "required": True,
+    }
+    (directory / "observation.json").write_text(json.dumps({"fields": [field]}))
+    (directory / "answer-proposals.json").write_text(
+        json.dumps(
+            {
+                "profile_hash": read_approved()["profile_hash"],
+                "answers": [
+                    {
+                        "key": field["key"],
+                        "kind": "proposal",
+                        "proposal_hash": "a" * 64,
+                        "value": "My synthetic project.",
+                    }
+                ],
+            }
+        )
+    )
+    command = parse_command(
+        {"author": {"id": "owner"}, "content": f"use {app} {field['key']} " + "a" * 64},
+        "owner",
+        "control",
+        {"control"},
+    )
+    with pytest.raises(PermissionError, match="Draft changed"):
+        apply_command({**command, "proposal_hash": "b" * 64}, "111")
+    assert workflow.approved_answers(app) == {}
+    apply_command(command, "112")
+    assert workflow.approved_answers(app)[field["key"]]["value"] == "My synthetic project."
+    apply_command({**command, "proposal_hash": "b" * 64}, "112")
+    assert workflow.approved_answers(app)[field["key"]]["value"] == "My synthetic project."
+
+
+def test_same_ats_different_employer_or_job_is_not_same_scope():
+    from erga_autopilot.live_browser import job_scope
+
+    expected = job_scope("https://job-boards.greenhouse.io/example/jobs/123")
+    assert expected == job_scope("https://boards.greenhouse.io/example/jobs/123?source=feed")
+    assert expected != job_scope("https://job-boards.greenhouse.io/attacker/jobs/123")
+    assert expected != job_scope("https://job-boards.greenhouse.io/example/jobs/999")
+
+
+def test_empty_command_channel_keeps_first_future_command(state, monkeypatch):
+    from erga_autopilot import worker
+
+    monkeypatch.setattr(workflow, "config", lambda: {"control_channel_id": "control"})
+    monkeypatch.setattr(worker, "private_env", lambda: {"DISCORD_OWNER_USER_ID": "owner"})
+    monkeypatch.setattr(worker, "discord", lambda *a: [])
+    worker.poll_commands()
+    with workflow.db() as conn:
+        checkpoint = conn.execute(
+            "SELECT message_id FROM workflow_checkpoints WHERE channel_id=?", ("control",)
+        ).fetchone()[0]
+    captured = []
+    monkeypatch.setattr(
+        worker,
+        "discord",
+        lambda *a: [
+            {
+                "id": str(int(checkpoint) + 1),
+                "author": {"id": "owner"},
+                "content": "resume abcdef012345",
+            }
+        ],
+    )
+    monkeypatch.setattr(worker, "apply_command", lambda command, message: captured.append(command))
+    worker.poll_commands()
+    assert captured == [{"kind": "resume", "application_id": "abcdef012345"}]
