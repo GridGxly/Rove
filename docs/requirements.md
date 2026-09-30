@@ -45,8 +45,8 @@ only the selected public GitHub source. See [Onboarding and jobs](onboarding-and
 
 The setup also uses Tectonic 0.17.0 for local Erga resume compilation. Its pinned
 Hermes build needs an explicit 16K compatibility patch; stock Hermes in that build
-expects at least 64K. Certification used four fixture tools; production profile and
-job review use nine real tools with generic MCP wrappers disabled. Real evidence
+expects at least 64K. Certification used four fixture tools; production uses thirteen
+real tools with generic MCP wrappers disabled. Real evidence
 requires a separate, reviewed Erga master, and approved profile changes require
 `autopilot memory index` to refresh QMD. See the runtime page before updating it.
 
@@ -388,3 +388,8 @@ service, and the installed Hermes Python for Qwen proposals. Discord needs permi
 to send messages and create posts in the configured existing forum. Channel management
 is unnecessary when mapping existing channels. No proxy, Camofox service, Docker stack,
 or cloud extraction provider is required by the default implementation.
+
+Final submission is off until the private workflow configuration sets
+`submission_enabled` and lists an adapter in `submit_adapters`. The only adapter today is
+`greenhouse_v1` for public Greenhouse job boards. Every submission also needs the owner's
+`submit` command for the exact package hash; there is no unattended mode.

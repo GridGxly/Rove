@@ -295,6 +295,8 @@ Move the application into an unknown-submission state and inspect confirmation s
 
 Retry only after the first attempt is shown not to have succeeded.
 
+The current implementation records the attempt in SQLite before the click, accepts only an authenticated owner `submit` command for the exact package hash, and marks `APPLIED` only when a versioned ATS adapter sees its full confirmation contract. The recruiting browser installs a submit-event guard that blocks ordinary form submission during preparation and is armed for one approved click; it is a safeguard against accidental submits, not a network-level guarantee against page scripts. Owners resolve an unknown attempt with `reconcile`; code never infers the outcome.
+
 ## Logging
 
 Detailed audit logs are useful, but secrets must be filtered before anything is written.

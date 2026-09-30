@@ -118,12 +118,17 @@ retrieval; `read_candidate_section` supplies authoritative structured answers.
 
 ## Hermes connection
 
-Use these nine narrow tools as the production Autopilot MCP include list:
+The production Autopilot MCP include list has thirteen narrow tools. Nine cover
+onboarding, discovery and evidence:
 
 - `search_job_feed`, `read_job_listing`, `job_feed_status`
 - `review_job_matches`
 - `get_onboarding_status`, `propose_onboarding_section`
 - `read_candidate_section`, `read_career_evidence`, `retrieve_candidate_memory`
+
+Four connect the [application workflow](application-workflow.md):
+`start_job_application`, `application_workflow_status`, `inspect_application_browser`,
+and `refresh_job_feed`.
 
 Restart the Hermes gateway to refresh its tool inventory. Keep built-in shell,
 unrestricted browser and generic file tools disabled. The owner/channel allowlist
@@ -137,7 +142,6 @@ does not disable Hermes' generated resource/prompt wrappers. Check the actual ag
 tool list, not only the configured include list. Update the system prompt to describe
 real profile/job review; do not retain the certification-only synthetic instructions.
 
-The nine tools above support onboarding, discovery and evidence retrieval. Additional
-workflow tools are documented in [Application workflow](application-workflow.md);
-installations must explicitly include them and refresh the Hermes session. A successful
-imported master or layout check must not be reported as successful role-specific tailoring.
+None of the thirteen tools fills a form, approves a fact, or submits; the queue worker
+and the owner's Discord commands own those steps. A successful imported master or
+layout check must not be reported as successful role-specific tailoring.

@@ -62,7 +62,7 @@ The MCP server command is the absolute path to this checkout's `.venv/bin/autopi
 - `retrieve_synthetic_memory`
 - `save_synthetic_answer_draft`
 
-The production onboarding/job-review allowlist now uses the nine real tools in
+The production allowlist now uses the thirteen real tools in
 [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection), replacing those four
 fixture tools. Disable every built-in Hermes toolset for this profile; set each
 platform's toolsets to `mcp-erga-autopilot`. Set `tools.tool_search.enabled: off` so
@@ -160,5 +160,14 @@ Synthetic Discord certification used three Qwen calls and all four certification
 ## Application preparation extension
 
 See [Application workflow](application-workflow.md) for the visible browser, feed
-service, durable queue, forum archive and bounded Qwen/Hermes answer proposals.
-These replace the earlier discovery-only scope when explicitly configured.
+service, durable queue, forum archive, bounded Qwen/Hermes job-fit reviews and answer
+proposals, and owner-approved submission. These replace the earlier discovery-only scope
+when explicitly configured.
+
+The worker invokes Qwen through `scripts/recruiting_reasoning.py` in the installed Hermes
+Python. Each call is one non-streamed request with no tools, a 2,048-token output ceiling,
+and `max_iterations=2` so Hermes can continue a response that hit the ceiling once. The
+caller accepts only a completed text turn; a harness stop such as
+`max_iterations_reached` or a dropped connection is retried once and then recorded as a
+failure, never parsed as a draft. Stopping oMLX while a request is in flight produces
+exactly that failure.

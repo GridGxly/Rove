@@ -247,6 +247,9 @@ See [Security](../SECURITY.md), [How it works](how-it-works.md), and [Memory and
 
 The [application workflow](application-workflow.md) maps an existing source channel
 (such as `jobs`) through private configuration, publishes matching Keryx updates, and
-queues preparation. Forum events are mirrored from SQLite. Owner-only `answer` and
-`resume` commands are handled by deterministic code, independently of model wording.
-Real final submission and recruiting-mail lifecycle updates are still unimplemented.
+queues preparation. Forum events are mirrored from SQLite, including Qwen job-fit
+reviews, drafts with their exact approval commands, lifecycle transitions with their
+trigger, submit attempts, and receipts. Owner-only `answer`, `use`, `resume`, `defer`,
+`proceed`, `submit`, and `reconcile` commands are handled by deterministic code,
+independently of model wording. A job-fit hold is also posted to `shortlist` with its
+reasons. Recruiting-mail lifecycle updates are still unimplemented.
