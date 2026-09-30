@@ -318,3 +318,30 @@ def test_feed_announces_each_job_once_and_supersedes_stale_duplicates(state, mon
             == "superseded"
         )
     assert len(sent) == 1
+
+
+def test_failed_erga_intake_keeps_the_approved_base_resume_with_a_warning(
+    state, monkeypatch, tmp_path
+):
+    from erga_autopilot import resumes
+    from erga_autopilot.onboarding import read_approved
+
+    pdf = tmp_path / "approved.pdf"
+    pdf.write_bytes(b"%PDF-1.4 approved base")
+    propose("evidence", {"resume_path": str(pdf)}, digest(draft()))
+    approve(digest(draft()))
+    assert read_approved()["profile"]["evidence"]["resume_path"] == str(pdf)
+    application_id = workflow.enqueue("https://jobs.example.com/3")["application_id"]
+    (state / "applications" / application_id).mkdir(parents=True)
+
+    async def failing(name, arguments):
+        raise RuntimeError("Erga could not complete this operation; inspect its private result")
+
+    monkeypatch.setattr(resumes, "erga_call", failing)
+    manifest = resumes.prepare_resume(application_id, "https://jobs.example.com/3")
+    assert manifest["ready"] and not manifest["tailored"] and "intake failed" in manifest["warning"]
+    directory = state / "applications" / application_id
+    assert (directory / "resume.pdf").read_bytes() == pdf.read_bytes()
+    assert (directory / "erga-error.json").exists() and not (
+        directory / "erga-result.json"
+    ).exists()

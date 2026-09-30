@@ -42,15 +42,46 @@ async def erga_call(name: str, arguments: dict) -> dict:
     return result.get("structuredContent", {})
 
 
+def base_resume_manifest(directory: Path, url: str, warning: str, erga_id=None) -> dict:
+    source = Path(read_approved()["profile"]["evidence"]["resume_path"]).resolve()
+    if not source.is_file() or source.suffix.lower() != ".pdf":
+        return {"ready": False, "reason": "No validated generated or approved base PDF"}
+    target = directory / "resume.pdf"
+    shutil.copyfile(source, target)
+    target.chmod(0o600)
+    manifest = {
+        "ready": True,
+        "tailored": False,
+        "source": "approved factual base resume",
+        "resume_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        "warning": warning,
+        "job_url": url,
+        "application_id": erga_id,
+        "tailoring_review_required": True,
+    }
+    write_private(directory / "resume-manifest.json", manifest)
+    return manifest
+
+
 def prepare_resume(application_id: str, url: str) -> dict:
     directory = state_root() / "applications" / application_id
     saved = directory / "erga-result.json"
     if saved.exists():
         result = json.loads(saved.read_text())
     else:
-        result = asyncio.run(
-            erga_call("intake_job_url", {"job_url": url, "application_slug": application_id})
-        )
+        try:
+            result = asyncio.run(
+                erga_call("intake_job_url", {"job_url": url, "application_slug": application_id})
+            )
+        except RuntimeError as error:
+            # Erga could not build a role-specific proposal at all (for example the
+            # minimum approved content did not fit its one-page layout). That is a
+            # tailoring failure, not a reason to stop: keep the approved factual base
+            # PDF, say so, and preserve the failure for review.
+            write_private(directory / "erga-error.json", {"error": str(error), "job_url": url})
+            return base_resume_manifest(
+                directory, url, "Erga job intake failed; using the approved base PDF for review."
+            )
         write_private(saved, result)
     data = result.get("result", result)
     if not isinstance(data, dict):
@@ -82,24 +113,12 @@ def prepare_resume(application_id: str, url: str) -> dict:
     if not paths:
         # Failed tailoring never silently becomes a valid generated resume. Preserve
         # the approved factual base and expose the failure in the review package.
-        source = Path(read_approved()["profile"]["evidence"]["resume_path"]).resolve()
-        if not source.is_file() or source.suffix.lower() != ".pdf":
-            return {"ready": False, "reason": "No validated generated or approved base PDF"}
-        target = directory / "resume.pdf"
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
-        manifest = {
-            "ready": True,
-            "tailored": False,
-            "source": "approved factual base resume",
-            "resume_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
-            "warning": "Erga tailoring did not pass layout validation; using the approved base PDF for review.",
-            "job_url": url,
-            "application_id": data.get("application_id"),
-            "tailoring_review_required": True,
-        }
-        write_private(directory / "resume-manifest.json", manifest)
-        return manifest
+        return base_resume_manifest(
+            directory,
+            url,
+            "Erga tailoring did not pass layout validation; using the approved base PDF for review.",
+            data.get("application_id"),
+        )
     source = paths[0]
     tex = source.with_suffix(".tex")
     if not tex.is_file():
