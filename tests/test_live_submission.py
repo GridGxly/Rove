@@ -66,6 +66,11 @@ LOGIN = b"""<!doctype html><title>Sign in</title><form id="login"><label for="e"
 <label for="p">Password</label><input id="p" type="password" name="password">
 <button type="button" id="go">Sign in</button></form>
 <script>document.getElementById('go').onclick=()=>{document.body.innerHTML='<label for="f">First name</label><input id="f"><button>Submit application</button>'}</script>"""
+TWO_STEP = b"""<!doctype html><title>Two steps</title><form id="s1">
+<label for="n">First name</label><input id="n" name="first" required>
+<label for="e">Email</label><input id="e" name="email" type="email" required>
+<button type="button" id="next">Continue</button></form>
+<script>document.getElementById('next').onclick=()=>{document.body.innerHTML='<form><label for="l">Last name</label><input id="l" name="last" required><button type="button">Submit Application</button></form>'}</script>"""
 CONFIRMATION = b"""<!doctype html><title>Thanks</title><div class="confirmation">
 <div class="confirmation__content"><h1>Thank you for applying to Acme.</h1></div></div>"""
 
@@ -79,6 +84,8 @@ class Board(BaseHTTPRequestHandler):
             body = CONFIRMATION
         elif self.path.endswith("/jobs/9"):
             body = ASHBY_FORM
+        elif self.path.endswith("/jobs/13"):
+            body = TWO_STEP
         elif self.path.endswith("/jobs/11"):
             body = REGISTER
         elif self.path.endswith("/jobs/12"):
@@ -318,3 +325,22 @@ def test_account_creation_and_sign_in_use_the_encrypted_store_and_never_leak(boa
         f["label"] == "First name" for f in landed["fields"]
     )
     assert runtime.page.evaluate("document.body.innerText").find(account["password"]) == -1
+
+
+def test_multi_page_forms_are_filled_step_by_step_until_the_final_control(board):
+    runtime, base, _state = board
+    opened = runtime.open(f"{base}/acme/jobs/13")
+    assert [c["label"] for c in opened["nav_controls"]] == ["Continue"]
+    run_id = opened["run_id"]
+    result = runtime.prepare(run_id)
+    assert {f["label"] for f in result["filled"]} == {"First name", "Email", "Last name"}
+    assert result["pending"] == [] and result["final_controls"][0]["label"] == "Submit Application"
+    assert len(result["pages"]) == 2 and result["status"] == "READY_FOR_REVIEW"
+    with workflow.db() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM application_events WHERE application_id=? AND kind='form_step'",
+                (run_id,),
+            ).fetchone()[0]
+            == 1
+        )

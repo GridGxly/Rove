@@ -1047,36 +1047,30 @@ class RecruitingBrowser:
         with self.guarded(self.page):
             return self._prepare(run_id)
 
-    def _prepare(self, run_id: str) -> dict:
-        before = self.observe()
-        if not approved_ats(before["url"]) or job_scope(before["url"]) != job_scope(
-            self.run.get("target_url", workflow.get(run_id)["url"])
-        ):
-            return {
-                **before,
-                "status": "NEEDS_EMPLOYER_LINK",
-                "reason": "The form must match the verified employer and job destination before entering candidate data. A shared ATS hostname is insufficient.",
-            }
-        directory = state_root() / f"applications/{run_id}"
-        approved = json.loads((directory / "profile.json").read_text())
-        from .onboarding import digest
+    def _verify_batch(self, result: dict, filled: list):
+        after = {f["key"]: f for f in result["fields"]}
+        for entry in filled:
+            if entry.get("key"):
+                field = after.get(entry["key"])
+                if field is None:
+                    raise ValueError("Filled field disappeared; re-inspect before continuing")
+                if (
+                    field["kind"] in ("text", "email", "tel", "url", "textarea")
+                    and entry.get("control") != "combobox"
+                    and field["value"] != entry["value"]
+                ):
+                    raise ValueError("Post-batch verification mismatch")
+                if (
+                    entry.get("control") in {"radio_group", "choice"}
+                    and field.get("value") != entry["value"]
+                ):
+                    raise ValueError("Post-batch verification mismatch")
 
-        if digest(approved["profile"]) != self.run["profile_hash"]:
-            raise PermissionError("Frozen profile bytes changed")
-        if read_approved()["profile_hash"] != approved["profile_hash"]:
-            raise ValueError("Approved profile changed; reopen the job to freeze the new version")
-        if before.get("manual_takeover_required"):
-            return {**before, "status": "MANUAL_LOGIN_REQUIRED"}
-        if not before["fields"]:
-            return {
-                **before,
-                "status": "APPLICATION_FORM_NOT_OPEN",
-                "reason": "Follow the application-start link first.",
-            }
-        self.run["status"] = "PREPARING"
+    def _fill_page(self, run_id: str, before: dict, approved: dict, answers: dict):
+        """Fill one page of a form from approved facts; returns (filled, pending)."""
+        directory = state_root() / f"applications/{run_id}"
         pending = []
         filled = []
-        answers = workflow.approved_answers(run_id)
         grouped = {f["name"] for f in before["fields"] if f["kind"] == "radio_group"}
         for field in before["fields"]:
             if field["disabled"] or field["readonly"]:
@@ -1285,37 +1279,72 @@ class RecruitingBrowser:
             filled.append(
                 {"label": field["label"], "value": value, "source": source, "key": field["key"]}
             )
-        self.run.update(status="NEEDS_REVIEW", filled=filled, pending=pending)
-        self.save()
-        result = self.observe()
-        after = {f["key"]: f for f in result["fields"]}
-        for entry in filled:
-            if entry.get("key"):
-                field = after.get(entry["key"])
-                if field is None:
-                    raise ValueError("Filled field disappeared; re-inspect before continuing")
-                if (
-                    field["kind"] in ("text", "email", "tel", "url", "textarea")
-                    and entry.get("control") != "combobox"
-                    and field["value"] != entry["value"]
-                ):
-                    raise ValueError("Post-batch verification mismatch")
-                if (
-                    entry.get("control") in {"radio_group", "choice"}
-                    and field.get("value") != entry["value"]
-                ):
-                    raise ValueError("Post-batch verification mismatch")
-        seen = {f["key"] for f in before["fields"]}
-        pending.extend(
-            {
-                "label": f["label"],
-                "key": f["key"],
-                "required": f["required"],
-                "reason": "New field appeared after filling",
+        return filled, pending
+
+    def _prepare(self, run_id: str) -> dict:
+        before = self.observe()
+        if not approved_ats(before["url"]) or job_scope(before["url"]) != job_scope(
+            self.run.get("target_url", workflow.get(run_id)["url"])
+        ):
+            return {
+                **before,
+                "status": "NEEDS_EMPLOYER_LINK",
+                "reason": "The form must match the verified employer and job destination before entering candidate data. A shared ATS hostname is insufficient.",
             }
-            for f in result["fields"]
-            if f["key"] not in seen
-        )
+        directory = state_root() / f"applications/{run_id}"
+        approved = json.loads((directory / "profile.json").read_text())
+        from .onboarding import digest
+
+        if digest(approved["profile"]) != self.run["profile_hash"]:
+            raise PermissionError("Frozen profile bytes changed")
+        if read_approved()["profile_hash"] != approved["profile_hash"]:
+            raise ValueError("Approved profile changed; reopen the job to freeze the new version")
+        if before.get("manual_takeover_required"):
+            return {**before, "status": "MANUAL_LOGIN_REQUIRED"}
+        if not before["fields"]:
+            return {
+                **before,
+                "status": "APPLICATION_FORM_NOT_OPEN",
+                "reason": "Follow the application-start link first.",
+            }
+        self.run["status"] = "PREPARING"
+        answers = workflow.approved_answers(run_id)
+        filled, pending, pages = [], [], []
+        result = before
+        for _step in range(4):
+            pages.append(before["url"])
+            page_filled, page_pending = self._fill_page(run_id, before, approved, answers)
+            filled.extend(page_filled)
+            pending.extend(page_pending)
+            self.run.update(status="NEEDS_REVIEW", filled=filled, pending=pending)
+            self.save()
+            result = self.observe()
+            self._verify_batch(result, page_filled)
+            seen = {f["key"] for f in before["fields"]}
+            pending.extend(
+                {
+                    "label": f["label"],
+                    "key": f["key"],
+                    "required": f["required"],
+                    "reason": "New field appeared after filling",
+                }
+                for f in result["fields"]
+                if f["key"] not in seen
+            )
+            nav = result.get("nav_controls", [])
+            if pending or result.get("final_controls") or not nav:
+                break
+            # A complete step of a multi-page form: continue once, then keep filling.
+            self.click(self.page.locator(f'[data-autopilot-nav="{int(nav[0]["ref"])}"]'))
+            self.settle()
+            before = self.observe()
+            workflow.record(run_id, "form_step", {"clicked": nav[0]["label"], "url": before["url"]})
+            if (
+                not before["fields"]
+                or before["url"] in pages
+                and before["fields"] == result["fields"]
+            ):
+                break
         self.run["pending"] = pending
         self.save()
         package = {
@@ -1327,6 +1356,7 @@ class RecruitingBrowser:
             "pending": pending,
             "form_state": result["fields"],
             "final_controls": result.get("final_controls", []),
+            "pages": pages,
             "submission_enabled": False,
             "resume_is_tailored": self.run.get("resume_is_tailored", False),
         }
