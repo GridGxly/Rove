@@ -53,9 +53,27 @@ def public_link(url: str | None) -> str | None:
                 return None
         except ValueError:
             pass
-        return urlunsplit(("https", p.netloc.lower(), p.path, p.query, ""))
+        return urlunsplit(("https", p.netloc.lower(), p.path, strip_tracking(p.query), ""))
     except ValueError:
         return None
+
+
+TRACKING_PARAMS = re.compile(
+    r"^(utm_.*|gh_src|lever-source|ref|refid|src|source|fbclid|gclid|mc_cid|mc_eid)$",
+    re.IGNORECASE,
+)
+
+
+def strip_tracking(query: str) -> str:
+    """The same posting reached through two tracking links is one application."""
+    if not query:
+        return query
+    kept = [
+        pair
+        for pair in query.split("&")
+        if pair and not TRACKING_PARAMS.match(pair.split("=", 1)[0])
+    ]
+    return "&".join(kept)
 
 
 def database() -> sqlite3.Connection:

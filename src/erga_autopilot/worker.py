@@ -24,20 +24,34 @@ class PhaseError(Exception):
         self.error = error
 
 
-def fit_hold_reason(application_id: str, fit: dict) -> str:
-    lines = [f"Job-fit review says **{fit['decision']}**: {fit['rationale'][:700]}"]
+def fit_hold(application_id: str, fit: dict) -> dict:
+    items = []
     for item in fit.get("requirements", []):
         if item["status"] != "satisfied":
-            lines.append(
-                f"• {item['status']} · {item['requirement'][:160]}"
+            items.append(
+                f"{item['status']} · {item['requirement'][:140]}"
                 + (f" ({item['note']})" if item.get("note") else "")
             )
-    for unknown in fit.get("unknowns", []):
-        lines.append("• unknown · " + unknown[:200])
-    lines.append(
-        f"Reply `proceed {application_id}` to prepare it anyway, or `defer {application_id}` to park it."
+    label = {"fit": "fit", "not_fit": "not a fit", "needs_review": "your call"}.get(
+        fit["decision"], fit["decision"]
     )
-    return "\n".join(lines)
+    return {
+        "summary": f"Job-fit review: {label}. " + fit["rationale"][:500],
+        "items": items,
+        "commands": [f"proceed {application_id}", f"defer {application_id}"],
+    }
+
+
+def held(application_id: str, status: str, reason: str, headline: str, **extra) -> dict:
+    """End a run in a state the owner must act on, with one clear card."""
+    workflow.set_state(application_id, status)
+    workflow.action_needed(application_id, reason, headline=headline, **extra)
+    return {
+        "application_id": application_id,
+        "status": status,
+        "reason": reason,
+        "submitted": False,
+    }
 
 
 def process(application_id: str) -> dict:
@@ -47,6 +61,9 @@ def process(application_id: str) -> dict:
     phase = "open"
     final_state = "NEEDS_USER"
     posting_text = ""
+    questions: list = []
+    commands: list = [f"resume {application_id}", f"defer {application_id}"]
+    headline = "Browser needs a look"
     try:
         page = browser_call("open", url=item["url"])
         for _ in range(6):
@@ -62,26 +79,28 @@ def process(application_id: str) -> dict:
                 )
                 page = browser_call("reopen", run_id=application_id)
                 if page.get("blocked"):
-                    reason = "The employer's site blocked the recruiting browser twice. Nothing was submitted. If you want this one, apply in your own browser and tell me."
-                    workflow.set_state(application_id, "MANUAL_TAKEOVER")
-                    workflow.action_needed(
+                    return held(
                         application_id,
-                        reason,
+                        "MANUAL_TAKEOVER",
+                        "The employer's site blocked the recruiting browser twice. Nothing was "
+                        "submitted. If you want this one, apply in your own browser and tell me.",
+                        "Blocked by the employer's site",
                         commands=[f"reconcile {application_id} applied", f"defer {application_id}"],
-                        headline="Blocked by the employer's site",
                     )
-                    return {
-                        "application_id": application_id,
-                        "status": "MANUAL_TAKEOVER",
-                        "reason": reason,
-                        "submitted": False,
-                    }
+            if page.get("closed"):
+                workflow.transition(
+                    application_id,
+                    "DEFERRED",
+                    "posting says it no longer accepts applications",
+                    page.get("closed_marker") or "",
+                )
+                return {"application_id": application_id, "status": "DEFERRED", "submitted": False}
             if page.get("manual_takeover_required"):
                 reason = (
-                    "Login or identity verification needs you in the visible browser. Complete it, then reply `resume "
-                    + application_id
-                    + "`."
+                    "Login or identity verification needs you in the recruiting browser. "
+                    "Finish it there, then resume."
                 )
+                headline = "Manual step in the browser"
                 break
             if page.get("fields") and any(
                 f["kind"] == "file"
@@ -96,8 +115,15 @@ def process(application_id: str) -> dict:
                 if fit["decision"] != "fit" and not workflow.owner_override(
                     application_id, "proceed"
                 ):
-                    reason = fit_hold_reason(application_id, fit)
-                    workflow.shortlist(application_id, reason)
+                    hold = fit_hold(application_id, fit)
+                    workflow.shortlist(
+                        application_id, hold["summary"], hold["items"], hold["commands"]
+                    )
+                    reason, commands, headline = (
+                        hold["summary"],
+                        hold["commands"],
+                        "Your call on fit",
+                    )
                     break
                 phase = "resume"
                 directory = state_root() / "applications" / application_id
@@ -110,9 +136,8 @@ def process(application_id: str) -> dict:
                     workflow.flush_events(application_id)
                     resume = prepare_resume(application_id, item["url"])
                     if not resume["ready"]:
-                        reason = (
-                            resume["reason"] + ". Resume preparation needs review before upload."
-                        )
+                        reason = resume["reason"] + ". The resume needs review before upload."
+                        headline = "Resume needs review"
                         break
                     workflow.record(
                         application_id,
@@ -131,27 +156,44 @@ def process(application_id: str) -> dict:
                     phase = "answer_drafting"
                     proposals = review_application(application_id, page)
                     page["qwen_review"] = proposals
-                    reason = "\n".join(
-                        f"• {f['label']} (`{f.get('key', '')}`)" for f in pending[:10]
+                    drafted = sum(
+                        1 for a in proposals.get("answers", []) if a["kind"] == "proposal"
                     )
-                    reason += f"\nQwen's drafts and exact `use` approval commands are in the application forum. For missing facts reply `answer {application_id} FIELD_KEY = your answer`; `skip` is only for optional fields. Then `resume {application_id}`. To park this application and process another, reply `defer {application_id}`."
+                    reason = (
+                        f"{len(pending)} question{'s' if len(pending) != 1 else ''} left. "
+                        f"Qwen drafted {drafted}; each draft card has its own approve command. "
+                        "Answer the rest, then resume."
+                    )
+                    questions = pending[:10]
+                    commands = [
+                        f"use {application_id} FIELD_KEY PROPOSAL_HASH",
+                        f"answer {application_id} FIELD_KEY = your answer",
+                        f"resume {application_id}",
+                        f"defer {application_id}",
+                    ]
+                    headline = "Answers needed"
                 elif page.get("package_hash"):
                     final_state = "READY_FOR_REVIEW"
                     reason = (
-                        f"Ready for your review. Check the visible form and the exact resume; the forum lists every value. "
-                        f"Package `{page['package_hash']}`. To send it once, reply `submit {application_id} {page['package_hash']}`. "
-                        f"To change an answer first, reply `answer {application_id} FIELD_KEY = value` then `resume {application_id}`."
+                        "Every field is filled and verified against approved facts. Check the "
+                        "form and the resume in the recruiting browser, then send it once."
                     )
+                    commands = [
+                        f"submit {application_id} {page['package_hash']}",
+                        f"answer {application_id} FIELD_KEY = value",
+                        f"resume {application_id}",
+                    ]
+                    headline = "Ready to submit"
                 else:
                     reason = page.get("reason", page.get("status", "Browser requires review"))
                 break
             links = page.get("application_links", [])
             if not links:
                 reason = (
-                    "No supported application-start control is visible. The page is open for your inspection; use `resume "
-                    + application_id
-                    + "` after reaching the form."
+                    "No Apply control was found on this page. Open the recruiting browser, "
+                    "reach the form yourself, then resume."
                 )
+                headline = "Apply control not found"
                 break
             phase = "follow_application_link"
             page = browser_call(
@@ -161,14 +203,15 @@ def process(application_id: str) -> dict:
                 ref=links[0]["ref"],
             )
         else:
-            reason = "Application navigation reached its bounded step limit. Inspect the visible page before resuming."
+            reason = "Navigation hit its step limit before reaching a form. Inspect the recruiting browser before resuming."
+            headline = "Navigation stopped"
     except Exception as error:
         raise PhaseError(phase, error) from error
     result = {"application_id": application_id, "page": page, "reason": reason, "submitted": False}
     workflow.save_result(application_id, result)
-    workflow.set_state(application_id, final_state)
-    workflow.action_needed(application_id, reason)
-    return {"application_id": application_id, "status": final_state, "reason": reason}
+    return held(
+        application_id, final_state, reason, headline, questions=questions, commands=commands
+    )
 
 
 def parse_command(message: dict, owner: str, channel: str, allowed: set[str]) -> dict | None:
@@ -478,6 +521,15 @@ def tick() -> dict:
         try:
             result = process(queued)
         except PhaseError as failure:
+            from .reasoning import ModelUnavailable
+
+            if isinstance(failure.error, ModelUnavailable):
+                # An outage of the local model is not the application's problem: wait.
+                workflow.set_state(queued, "QUEUED", error="model_unavailable")
+                workflow.record(queued, "model_unavailable", {"phase": failure.phase})
+                result = {"application_id": queued, "status": "QUEUED", "waiting": "model"}
+                write_private(state_root() / "workflow-status.json", result)
+                return result
             workflow.set_state(queued, "NEEDS_USER", error=str(failure))
             write_private(
                 state_root() / f"applications/{queued}/error.json",

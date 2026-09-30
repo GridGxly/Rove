@@ -80,11 +80,46 @@ def queue_jobs(db, records):
         )
 
 
+def close_withdrawn_postings(revision: str) -> int:
+    """A queued application whose Keryx posting closed is parked, not prepared."""
+    from . import workflow
+
+    db = database()
+    try:
+        closed = [
+            r[0]
+            for r in db.execute(
+                "SELECT url FROM jobs WHERE active=0 AND revision=? AND url IS NOT NULL",
+                (revision,),
+            )
+        ]
+    finally:
+        db.close()
+    parked = 0
+    for url in closed:
+        with workflow.db() as conn:
+            rows = conn.execute(
+                "SELECT id,status FROM application_queue WHERE url=? AND status IN "
+                "('QUEUED','NEEDS_USER','READY_FOR_REVIEW')",
+                (url,),
+            ).fetchall()
+        for row in rows:
+            if row["status"] == "QUEUED":
+                workflow.transition(row["id"], "DEFERRED", "posting closed in the Keryx feed")
+                parked += 1
+            else:
+                workflow.record(row["id"], "posting_closed", {"source": "Keryx", "url": url})
+                workflow.flush_events(row["id"])
+    return parked
+
+
 def tick(seed: bool = False) -> dict:
     config = json.loads((state_root() / "config/feed.json").read_text())
     if not config.get("enabled"):
         return {"enabled": False}
     result = sync_keryx()
+    if result.get("changed_source") and result.get("revision"):
+        close_withdrawn_postings(result["revision"])
     prefs = read_approved()["profile"]["preferences"]
     db = feed_db()
     sent = 0

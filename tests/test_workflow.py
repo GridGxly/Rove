@@ -345,3 +345,84 @@ def test_failed_erga_intake_keeps_the_approved_base_resume_with_a_warning(
     assert (directory / "erga-error.json").exists() and not (
         directory / "erga-result.json"
     ).exists()
+
+
+def test_tracking_parameters_do_not_create_duplicate_applications(state):
+    from erga_autopilot.jobs import public_link
+
+    plain = public_link("https://jobs.example.com/apply/9?gh_jid=123&utm_source=x&ref=feed")
+    assert plain == "https://jobs.example.com/apply/9?gh_jid=123"
+    first = workflow.enqueue("https://jobs.example.com/apply/9?gh_jid=123&utm_campaign=a")
+    second = workflow.enqueue("https://jobs.example.com/apply/9?gh_jid=123")
+    assert first["application_id"] == second["application_id"]
+
+
+def test_discord_outage_keeps_events_pending_instead_of_failing_the_run(state, monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(
+        workflow, "config", lambda: {"enabled": True, "forum_channel_id": "f", "guild_id": "g"}
+    )
+    application_id = workflow.enqueue("https://jobs.example.com/4")["application_id"]
+    workflow.set_state(application_id, "PREPARING", thread_id="thread")
+
+    def down(*a, **k):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(workflow, "discord", down)
+    workflow.record(application_id, "opened", {"url": "https://jobs.example.com/4", "title": "t"})
+    workflow.flush_events(application_id)  # must not raise
+    with workflow.db() as conn:
+        assert (
+            conn.execute(
+                "SELECT delivery FROM application_events WHERE application_id=? AND kind='opened'",
+                (application_id,),
+            ).fetchone()[0]
+            == "pending"
+        )
+    sent = []
+    monkeypatch.setattr(workflow, "discord", lambda *a, **k: sent.append(a) or {"id": "1"})
+    workflow.flush_events(application_id)
+    assert (
+        sent
+        and workflow.db()
+        .execute(
+            "SELECT delivery FROM application_events WHERE application_id=? AND kind='opened'",
+            (application_id,),
+        )
+        .fetchone()[0]
+        == "sent"
+    )
+
+
+def test_closed_keryx_posting_parks_the_queued_application(state, monkeypatch):
+    from erga_autopilot.jobs import database
+
+    url = "https://jobs.example.com/closed"
+    application_id = workflow.enqueue(url, source="keryx", title="Example — Intern")[
+        "application_id"
+    ]
+    with database() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "GodlyDonuts/keryx",
+                "job_closed",
+                "Example",
+                "Intern",
+                "Remote",
+                "internship",
+                None,
+                "closed",
+                0,
+                url,
+                None,
+                "{}",
+                "h",
+                "c" * 40,
+                "t",
+                "t",
+            ),
+        )
+    assert discord_feed.close_withdrawn_postings("c" * 40) == 1
+    assert workflow.get(application_id)["status"] == "DEFERRED"

@@ -10,9 +10,11 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Annotated, Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import unslop, workflow
@@ -103,7 +105,68 @@ def completed_response(generated: dict) -> str:
     return text
 
 
+# The local server holds 16K tokens; leave room for the system prompt and 2K of output.
+INPUT_BUDGET_CHARS = 40_000
+
+
+def fit_budget(context: dict, limit: int = INPUT_BUDGET_CHARS) -> dict:
+    """Keep a request inside the model's window by trimming long text, largest first."""
+    context = json.loads(json.dumps(context))
+    trimmable = ("job_text", "job_context")
+
+    def size() -> int:
+        return len(json.dumps(context))
+
+    while size() > limit:
+        excerpts = [
+            item
+            for item in (context.get("career_evidence") or {}).get("results", [])
+            if isinstance(item, dict) and len(item.get("excerpt", "")) > 1500
+        ]
+        texts = [k for k in trimmable if isinstance(context.get(k), str) and len(context[k]) > 1000]
+        longest_excerpt = max(excerpts, key=lambda i: len(i["excerpt"]), default=None)
+        longest_text = max(texts, key=lambda k: len(context[k]), default=None)
+        if longest_excerpt is not None and (
+            longest_text is None or len(longest_excerpt["excerpt"]) >= len(context[longest_text])
+        ):
+            longest_excerpt["excerpt"] = longest_excerpt["excerpt"][
+                : int(len(longest_excerpt["excerpt"]) * 0.7)
+            ]
+        elif longest_text is not None:
+            context[longest_text] = context[longest_text][: int(len(context[longest_text]) * 0.7)]
+        else:
+            break
+    return context
+
+
+class ModelUnavailable(RuntimeError):
+    """The local model server is down; the queue waits instead of failing applications."""
+
+
+def ensure_model():
+    from .runtime import client
+
+    def alive() -> bool:
+        try:
+            with client() as c:
+                return c.get("/models", timeout=5).is_success
+        except httpx.HTTPError:
+            return False
+
+    if alive():
+        return
+    launcher = Path.home() / ".omlx/bin/omlx"
+    if launcher.is_file():
+        subprocess.run([str(launcher), "start"], check=False, capture_output=True, timeout=60)
+        for _ in range(60):
+            time.sleep(1)
+            if alive():
+                return
+    raise ModelUnavailable("Local model server is not running")
+
+
 def generate(directory: Path, context: dict, basename: str, attempts: int = 2) -> dict:
+    ensure_model()
     write_private(directory / f"{basename}-input.json", context)
     python = workflow.config().get("hermes_python")
     if not python or not Path(python).is_file():
@@ -310,6 +373,7 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
         "job_text": (posting_text or page.get("text", "").split("Apply for this job")[0])[:12000],
         "form_questions": [f["label"][:120] for f in page.get("fields", []) if f.get("label")][:60],
     }
+    context = fit_budget(context)
     context_hash = fingerprint(context)
     directory = state_root() / "applications" / application_id
     path = directory / "job-review.json"
@@ -389,10 +453,23 @@ def polish(directory: Path, key: str, value: str) -> dict:
     }
 
 
-def parse_review(raw: str, observed_keys: set[str]) -> dict:
+def parse_review(raw: str, observed_keys: set[str], options_by_key: dict | None = None) -> dict:
     result = Review.model_validate(load_json(raw)).model_dump()
     seen = set()
     for answer in result["answers"]:
+        options = (options_by_key or {}).get(answer["key"]) or []
+        if answer["kind"] == "proposal" and options:
+            wanted = " ".join(re.findall(r"[a-z0-9]+", answer["value"].lower()))
+            if wanted not in {" ".join(re.findall(r"[a-z0-9]+", o.lower())) for o in options}:
+                # A made-up option never reaches the form; the owner picks from the list.
+                answer.update(
+                    kind="needs_user",
+                    value="",
+                    explanation=(
+                        f"Qwen proposed '{answer['value'][:80]}', which is not one of the options; "
+                        "choose one of: " + ", ".join(str(o) for o in options[:10])
+                    )[:1000],
+                )
         if answer["key"] not in observed_keys or answer["key"] in seen:
             raise ValueError("Qwen referenced an unknown or repeated question")
         seen.add(answer["key"])
@@ -440,6 +517,7 @@ def review_application(application_id: str, page: dict) -> dict:
     directions = directory / "owner-context.json"
     if directions.exists():
         context["owner_directions"] = json.loads(directions.read_text())
+    context = fit_budget(context)
     context_hash = fingerprint(context)
     cached_path = directory / "answer-proposals.json"
     if cached_path.exists():
@@ -451,7 +529,11 @@ def review_application(application_id: str, page: dict) -> dict:
         for attempt in range(2):
             generated = generate(directory, context, "reasoning")
             try:
-                result = parse_review(completed_response(generated), {q["key"] for q in questions})
+                result = parse_review(
+                    completed_response(generated),
+                    {q["key"] for q in questions},
+                    {q["key"]: q.get("options") or [] for q in questions},
+                )
                 break
             except (ValueError, ValidationError) as error:
                 if attempt:

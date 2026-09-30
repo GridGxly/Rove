@@ -275,3 +275,57 @@ def test_cached_review_is_re_evaluated_by_current_code_rules(state, monkeypatch)
             )
         ]
     assert kinds.count("qwen_job_review") == 1
+
+
+def test_context_budget_trims_long_text_and_evidence_first():
+    context = {
+        "profile": {"identity": {"legal_first_name": "Alex"}},
+        "job_text": "x" * 30000,
+        "career_evidence": {"results": [{"evidence_id": "e", "excerpt": "y" * 30000}]},
+    }
+    fitted = reasoning.fit_budget(context, limit=20000)
+    assert len(json.dumps(fitted)) <= 20000
+    assert fitted["profile"] == context["profile"]
+    assert (
+        len(fitted["job_text"]) < 30000
+        and len(fitted["career_evidence"]["results"][0]["excerpt"]) < 30000
+    )
+
+
+def test_proposed_value_outside_the_options_becomes_a_question():
+    key = "abcdef012345"
+    raw = json.dumps(
+        {
+            "answers": [
+                {
+                    "key": key,
+                    "kind": "proposal",
+                    "value": "Keryx feed",
+                    "sources": ["s"],
+                    "explanation": "e",
+                }
+            ]
+        }
+    )
+    parsed = reasoning.parse_review(raw, {key}, {key: ["LinkedIn", "Other"]})
+    assert (
+        parsed["answers"][0]["kind"] == "needs_user"
+        and "not one of the options" in parsed["answers"][0]["explanation"]
+    )
+    ok = json.dumps(
+        {
+            "answers": [
+                {
+                    "key": key,
+                    "kind": "proposal",
+                    "value": "other",
+                    "sources": ["s"],
+                    "explanation": "e",
+                }
+            ]
+        }
+    )
+    assert (
+        reasoning.parse_review(ok, {key}, {key: ["LinkedIn", "Other"]})["answers"][0]["kind"]
+        == "proposal"
+    )

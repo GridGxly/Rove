@@ -247,6 +247,14 @@ BLOCK_MARKERS = re.compile(
 )
 
 
+CLOSED_MARKERS = re.compile(
+    r"no longer accepting applications|this job is no longer available|position has been filled"
+    r"|this job has been closed|job posting has expired|this posting has expired"
+    r"|is no longer open|applications are closed",
+    re.IGNORECASE,
+)
+
+
 def pacing_enabled() -> bool:
     return bool(workflow.config().get("human_pacing", True))
 
@@ -595,12 +603,16 @@ class RecruitingBrowser:
         if self.page is None or self.page.is_closed():
             raise ValueError("No live job page. Open a link first.")
         data = self.page.evaluate(OBSERVE)
-        marker = BLOCK_MARKERS.search(data.get("title", "") + "\n" + data.get("text", "")[:3000])
+        head = data.get("title", "") + "\n" + data.get("text", "")[:3000]
+        marker = BLOCK_MARKERS.search(head)
+        closed = CLOSED_MARKERS.search(head)
         data.update(
             url=self.page.url,
             run_id=self.run["id"],
             blocked=bool(marker) and not data.get("fields"),
             block_marker=marker.group(0) if marker else None,
+            closed=bool(closed) and not data.get("fields"),
+            closed_marker=closed.group(0) if closed else None,
             visible_browser=True,
             submission_enabled=False,
             profile_hash=self.run["profile_hash"],

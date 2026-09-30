@@ -9,6 +9,8 @@ import json
 import uuid
 from datetime import UTC, datetime
 
+import httpx
+
 from .discord_feed import discord
 from .jobs import database, public_link
 from .onboarding import read_approved
@@ -604,18 +606,27 @@ def flush_events(application_id: str):
                 "UPDATE application_events SET delivery='sending' WHERE id=? AND delivery='pending'",
                 (row["id"],),
             )
-        for index, start in enumerate(range(0, len(cards), 10)):
-            discord(
-                "POST",
-                f"/channels/{thread}/messages",
-                {
-                    "embeds": cards[start : start + 10],
-                    "allowed_mentions": {"parse": []},
-                    "flags": 4,
-                    "nonce": f"{row['id']}:{index}",
-                    "enforce_nonce": True,
-                },
-            )
+        try:
+            for index, start in enumerate(range(0, len(cards), 10)):
+                discord(
+                    "POST",
+                    f"/channels/{thread}/messages",
+                    {
+                        "embeds": cards[start : start + 10],
+                        "allowed_mentions": {"parse": []},
+                        "flags": 4,
+                        "nonce": f"{row['id']}:{index}",
+                        "enforce_nonce": True,
+                    },
+                )
+        except (httpx.HTTPError, OSError):
+            # Discord is down or rate-limiting: keep the entry pending and try again on
+            # the next flush. The application keeps working; the record stays durable.
+            with db() as conn:
+                conn.execute(
+                    "UPDATE application_events SET delivery='pending' WHERE id=?", (row["id"],)
+                )
+            return
         with db() as conn:
             conn.execute("UPDATE application_events SET delivery='sent' WHERE id=?", (row["id"],))
 

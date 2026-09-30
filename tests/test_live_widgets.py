@@ -62,4 +62,9 @@ def test_block_pages_are_recognized_and_never_treated_as_forms(tmp_path, monkeyp
         assert seen["blocked"] and seen["block_marker"].lower() == "access denied"
         page.set_content("<title>Apply</title><label for=a>Email</label><input id=a>")
         assert not runtime.observe()["blocked"]
+        page.set_content(
+            "<title>Intern</title><p>This job is no longer accepting applications.</p>"
+        )
+        gone = runtime.observe()
+        assert gone["closed"] and not gone["blocked"]
         browser.close()
