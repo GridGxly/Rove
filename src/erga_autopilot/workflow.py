@@ -500,6 +500,15 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
                 fields=fields,
             )
         ]
+    if kind == "submission_rejected":
+        return [
+            embed(
+                "Form rejected · nothing sent",
+                brief(data.get("reason", ""), 300),
+                color="problem",
+                fields=[("Package", f"`{short_hash(data.get('package_hash'))}`", True)],
+            )
+        ]
     if kind == "submit_attempt":
         return [f"→ Submitting once · package `{short_hash(data.get('package_hash'))}`"]
     if kind == "needs_action":
@@ -629,7 +638,12 @@ def ensure_forum(application_id: str) -> str | None:
                 "embeds": [
                     embed(
                         title,
-                        "Preparing in the recruiting browser. Nothing is submitted without your `submit` reply.",
+                        "Preparing in the recruiting browser. "
+                        + (
+                            "It is sent once it is complete; this thread is the record."
+                            if settings.get("auto_submit")
+                            else "Nothing is submitted without your `submit` reply."
+                        ),
                         color="preparing",
                         url=item["url"],
                         fields=[

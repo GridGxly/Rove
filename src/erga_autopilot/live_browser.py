@@ -306,6 +306,8 @@ OBSERVE = (
  const nearest=e=>{let p=e.parentElement;for(let d=0;p&&d<4;d++,p=p.parentElement){const ls=[...p.querySelectorAll('label')].filter(l=>!l.contains(e)&&owns(l,e));if(ls.length)return ls[0].innerText.trim();}return '';};
  const label=e=>[...(e.labels||[])].map(x=>x.innerText).join(' ').trim() || e.getAttribute('aria-label') ||
    (e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ').trim() || nearest(e) || e.getAttribute('placeholder') || '';
+ const labelEls=e=>{const ls=[...(e.labels||[])];if(ls.length)return ls;const ids=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)).filter(Boolean);if(ids.length)return ids;let p=e.parentElement;for(let d=0;p&&d<4;d++,p=p.parentElement){const found=[...p.querySelectorAll('label')].filter(l=>!l.contains(e)&&owns(l,e));if(found.length)return [found[0]];}return [];};
+ const requiredBy=e=>labelEls(e).some(l=>/\brequired\b/i.test(l.className)||/\*\s*$/.test((l.innerText||'').trim()));
  const groupOf=e=>{if(e.type!=='radio'&&e.type!=='checkbox')return '';const f=e.closest('fieldset,[role=radiogroup],[role=group]');if(!f)return '';
    const t=f.querySelector('legend')||[...f.querySelectorAll('label')].find(l=>owns(l,e)&&l.control!==e);return t?t.innerText.trim():'';};
  const fields=[...document.querySelectorAll('input,textarea,select')].filter(e=>visible(e)||e.type==='file').map((e,i)=>{
@@ -313,7 +315,7 @@ OBSERVE = (
    return {ref:String(i),label:label(e),group:groupOf(e),name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||null,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
-    required:e.required || e.getAttribute('aria-required')==='true',disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
+    required:e.required || e.getAttribute('aria-required')==='true' || requiredBy(e),disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
     value:(['password','hidden','file'].includes(e.type)?null:e.value),
     options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):[]};
  }).filter(e=>e.kind!=='hidden');
@@ -334,8 +336,9 @@ OBSERVE = (
    e.setAttribute('data-autopilot-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
  });
  return {title:document.title,text:document.body.innerText.slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
- final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit application|submit my application|send application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-autopilot-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};}),
- ats_markers:{already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
+ final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-autopilot-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};}),
+ ats_markers:{captcha_challenge:[...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"],.g-recaptcha,.h-captcha,.cf-turnstile')].some(e=>{const r=e.getBoundingClientRect();return visible(e)&&r.width>=200&&r.height>=60;}),
+ already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
  greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content'),
   status_region:messages('__STATUS__'),form_error:messages('__ERROR__')}};
 }""".replace("__MESSAGES__", MESSAGES_JS)
@@ -973,17 +976,22 @@ class RecruitingBrowser:
         return result
 
     def check(self, run_id: str):
-        if run_id in self.pages and not self.pages[run_id].is_closed():
-            self.page, self.run = self.pages[run_id], self.runs[run_id]
-        if not self.run or self.run["id"] != run_id:
-            raise ValueError(
-                "This run is not the live browser session; open or inspect the current job"
-            )
+        page = self.pages.get(run_id)
+        if page is None or page.is_closed() or run_id not in self.runs:
+            # Never act on another application's tab: a missing tab is reopened, not reused.
+            raise ValueError("This application's tab is not open; reopen it before continuing")
+        self.page, self.run = page, self.runs[run_id]
 
     def select_combobox(self, locator, field, value, profile) -> bool:
         """Select a unique visible exact option; text input alone is not selection."""
         locator.click()
-        if normalized(field["label"]) == "location city":
+        place = normalized(field["label"]) in {
+            "location city",
+            "location",
+            "current location",
+            "city",
+        }
+        if place:
             locator.fill(value)
         else:
             locator.press("ArrowDown")
@@ -996,17 +1004,19 @@ class RecruitingBrowser:
         wanted = {normalized(value)}
         if normalized(field["label"]) == "country":
             wanted |= {normalized(value + " +1"), normalized(value + " (+1)")}
-        if normalized(field["label"]) == "location city":
+        if place:
             identity = profile["identity"]
-            wanted = {
-                normalized(
-                    ", ".join(
-                        identity[k] for k in ("city", "state_region", "country") if identity[k]
-                    )
-                )
-            }
+            parts = [identity[k] for k in ("city", "state_region", "country") if identity.get(k)]
+            wanted |= {normalized(", ".join(parts)), normalized(", ".join(parts[:2]))}
         texts = options.all_text_contents()
         matches = [i for i, text in enumerate(texts) if normalized(text) in wanted]
+        if not matches and place:
+            # A place typeahead lists "City, State, Country": one option starting with ours.
+            matches = [
+                i
+                for i, text in enumerate(texts)
+                if any(normalized(text).startswith(w) for w in wanted if w)
+            ]
         if not matches:
             locator.fill(value)
             try:
@@ -1519,6 +1529,7 @@ class RecruitingBrowser:
             # A complete step of a multi-page form: continue once, then keep filling.
             self.click(self.page.locator(f'[data-autopilot-nav="{int(nav[0]["ref"])}"]'))
             self.settle()
+            self.wait_for_fields()
             before = self.observe()
             workflow.record(run_id, "form_step", {"clicked": nav[0]["label"], "url": before["url"]})
             if (
@@ -1546,14 +1557,22 @@ class RecruitingBrowser:
             json.dumps(package, sort_keys=True).encode()
         ).hexdigest()
         write_private(directory / "package.json", package)
+        ready = not pending and len(package["final_controls"]) == 1
         workflow.set_state(
             run_id,
-            "NEEDS_USER" if pending else "READY_FOR_REVIEW",
+            "READY_FOR_REVIEW" if ready else "NEEDS_USER",
             package_hash=package["package_hash"],
         )
         workflow.record(run_id, "fields_prepared", {"filled": filled, "pending": pending})
         workflow.flush_events(run_id)
-        return {**result, **package, "status": "NEEDS_USER" if pending else "READY_FOR_REVIEW"}
+        status = "READY_FOR_REVIEW" if ready else "NEEDS_USER"
+        if not pending and not ready:
+            result = {
+                **result,
+                "reason": "The form's last step with its Submit control was not reached. Check "
+                "the recruiting browser, then resume.",
+            }
+        return {**result, **package, "status": status}
 
 
 def socket_path() -> Path:

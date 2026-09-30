@@ -406,7 +406,7 @@ def erga_confirm(application_id: str) -> dict:
 
 
 def finish_attempt(application_id: str, status: str, evidence: dict):
-    if status not in {"APPLIED", "UNKNOWN_SUBMISSION"}:
+    if status not in {"APPLIED", "UNKNOWN_SUBMISSION", "NOT_SUBMITTED"}:
         raise ValueError("Invalid submission outcome")
     directory = state_root() / f"applications/{application_id}"
     receipt = directory / "receipt.json"
@@ -418,6 +418,27 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
             "UPDATE live_submission_attempts SET status=? WHERE application_id=?",
             (status, application_id),
         )
+    if status == "NOT_SUBMITTED":
+        with workflow.db() as conn:
+            conn.execute(
+                "UPDATE live_submission_attempts SET status='NOT_SUBMITTED' WHERE application_id=?",
+                (application_id,),
+            )
+        workflow.record(application_id, "submission_rejected", evidence)
+        workflow.transition(
+            application_id,
+            "NEEDS_USER",
+            "the site rejected the form and kept it open",
+            str(evidence.get("reason", "")),
+        )
+        workflow.action_needed(
+            application_id,
+            "The site rejected the form and kept it open; nothing was sent. "
+            + str(evidence.get("reason", ""))[:300],
+            commands=[f"resume {application_id}", f"defer {application_id}"],
+            headline="The site rejected the form",
+        )
+        return
     if status == "APPLIED":
         try:
             evidence["erga"] = erga_confirm(application_id)
@@ -560,6 +581,13 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
                 confirmation_text=after.get("text", "")[:4000],
                 screenshot=after.get("screenshot"),
             )
+        elif (
+            checks.get("no_form_error") is False
+            and not checks.get("url_changed")
+            and not checks.get("form_gone")
+        ):
+            # The form stayed open and named its own validation error: nothing was sent.
+            result.update(status="NOT_SUBMITTED", reason=adapter.reason(checks, after))
         else:
             result["reason"] = adapter.reason(checks, after)
     except Exception as error:  # noqa: BLE001 -- any uncertainty after the claim must stay durable

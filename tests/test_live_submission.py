@@ -433,7 +433,7 @@ def test_generic_adapter_confirms_a_plain_thank_you_page(board, monkeypatch):
     assert Board.posts == ["/acme/jobs/15"]
 
 
-def test_generic_adapter_treats_an_inline_form_error_as_unknown(board, monkeypatch):
+def test_generic_adapter_treats_an_inline_form_error_as_a_rejected_form(board, monkeypatch):
     runtime, base, state = board
     generic_only(monkeypatch)
     Board.reject.add("/acme/jobs/16")
@@ -442,7 +442,7 @@ def test_generic_adapter_treats_an_inline_form_error_as_unknown(board, monkeypat
         {"kind": "submit", "application_id": run_id, "package_hash": package_hash}, "msg-1"
     )
     result = submission.submit(runtime, run_id, package_hash, "msg-1")
-    assert result["status"] == "UNKNOWN_SUBMISSION", result
+    assert result["status"] == "NOT_SUBMITTED", result
     checks = result["checks"]
     assert not checks["confirmed"] and not checks["no_form_error"]
     assert not checks["url_changed"] and not checks["form_gone"] and checks["post_rejected"]
@@ -450,7 +450,7 @@ def test_generic_adapter_treats_an_inline_form_error_as_unknown(board, monkeypat
     assert "Email address is invalid" in result["reason"]
     # The tab stays open on the form for the owner to look at; nothing was closed.
     assert run_id in runtime.pages and runtime.page.url.endswith("/acme/jobs/16")
-    assert workflow.get(run_id)["status"] == "UNKNOWN_SUBMISSION"
+    assert workflow.get(run_id)["status"] == "NEEDS_USER"
     with workflow.db() as conn:
         states = [
             json.loads(r[0])["to"]
@@ -459,7 +459,8 @@ def test_generic_adapter_treats_an_inline_form_error_as_unknown(board, monkeypat
                 (run_id,),
             )
         ]
-    assert "APPLIED" not in states and "UNKNOWN_SUBMISSION" in states
+    assert "APPLIED" not in states and "UNKNOWN_SUBMISSION" not in states
+    assert "NEEDS_USER" in states
     assert not (state / "applications" / run_id / "receipt.json").read_text().count('"APPLIED"')
     with pytest.raises(PermissionError):
         submission.claim_attempt(run_id, package_hash, "msg-1")

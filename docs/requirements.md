@@ -399,4 +399,4 @@ ciphertext with a separate owner-only key file.
 Final submission is off until the private workflow configuration sets
 `submission_enabled` and lists an adapter in `submit_adapters`. The only adapter today is
 `greenhouse_v1` for public Greenhouse job boards. Every submission also needs the owner's
-`submit` command for the exact package hash; there is no unattended mode.
+`submit` command for the exact package hash, unless the owner turns on the `auto_submit` policy in the private workflow config, which sends complete packages with a daily cap and a minimum gap.

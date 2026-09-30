@@ -184,6 +184,15 @@ def process(application_id: str) -> dict:
                         "Blocked by the employer's site",
                         commands=[f"reconcile {application_id} applied", f"defer {application_id}"],
                     )
+            if page.get("ats_markers", {}).get("captcha_challenge"):
+                return held(
+                    application_id,
+                    "MANUAL_TAKEOVER",
+                    "The site shows a CAPTCHA. Solve it in the recruiting browser, then resume; "
+                    "nothing was sent.",
+                    "CAPTCHA needs you",
+                    commands=[f"resume {application_id}", f"defer {application_id}"],
+                )
             if page.get("ats_markers", {}).get("already_applied"):
                 return held(
                     application_id,
@@ -350,6 +359,13 @@ def process(application_id: str) -> dict:
                         f"answer {application_id} {q['key']} = " for q in open_questions[:4]
                     ] + [f"resume {application_id}", f"defer {application_id}"]
                     headline = "Answers needed"
+                elif page.get("package_hash") and len(page.get("final_controls", [])) != 1:
+                    reason = page.get(
+                        "reason",
+                        "The form's last step with its Submit control was not reached. Check "
+                        "the recruiting browser, then resume.",
+                    )
+                    headline = "Final step not reached"
                 elif page.get("package_hash"):
                     from .submission import enabled_adapter
 
@@ -697,7 +713,7 @@ def run_approved_submissions() -> list[dict]:
                 workflow.action_needed(
                     application_id,
                     "Submission was not attempted: " + str(error)[:600] + ". Nothing was sent. "
-                    "Prepare and review again, then approve the new package hash.",
+                    "Reply resume to prepare it again.",
                     commands=[f"resume {application_id}"],
                     headline="Submission not attempted",
                 )
@@ -751,6 +767,12 @@ def next_queued(max_waiting: int):
         ).fetchone()[0]
         if waiting >= max_waiting:
             return None
+        pasted = conn.execute(
+            "SELECT id FROM application_queue WHERE status='QUEUED' AND source='owner_link' "
+            "ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if pasted:
+            return pasted[0]
         settings = workflow.config()
         if settings.get("auto_submit"):
             # Unattended sending is paced: a daily cap the owner sets, counted from attempts.
@@ -770,7 +792,7 @@ def next_queued(max_waiting: int):
             if last and datetime.now(UTC) - datetime.fromisoformat(last) < gap:
                 return None
         queued = conn.execute(
-            "SELECT id FROM application_queue WHERE status='QUEUED' ORDER BY CASE source WHEN 'owner_link' THEN 0 ELSE 1 END,created_at DESC LIMIT 1"
+            "SELECT id FROM application_queue WHERE status='QUEUED' ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
     return queued[0] if queued else None
 

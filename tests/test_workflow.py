@@ -925,7 +925,12 @@ def test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist(sta
             }
         ],
     }
-    prepared = {"pending": [], "package_hash": "a" * 64, "filled": []}
+    prepared = {
+        "pending": [],
+        "package_hash": "a" * 64,
+        "filled": [],
+        "final_controls": [{"ref": "0", "label": "Submit application"}],
+    }
     monkeypatch.setattr(
         worker, "browser_call", lambda action, **kw: prepared if action == "prepare" else form
     )
@@ -998,7 +1003,12 @@ def test_auto_policy_uses_qwen_drafts_and_queues_exactly_one_submission(state, m
                 "pending": [{"label": "Why us?", "key": "k1", "required": True, "options": []}],
                 "filled": [],
             }
-        return {"pending": [], "package_hash": "a" * 64, "filled": []}
+        return {
+            "pending": [],
+            "package_hash": "a" * 64,
+            "filled": [],
+            "final_controls": [{"ref": "0", "label": "Submit application"}],
+        }
 
     monkeypatch.setattr(worker, "browser_call", browser)
     monkeypatch.setattr(

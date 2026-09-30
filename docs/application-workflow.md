@@ -3,7 +3,7 @@
 The local workflow joins Keryx discovery and owner-pasted links in one durable queue,
 prepares each application in a background recruiting browser, drafts answers with Qwen
 through Hermes, and submits one reviewed package per owner approval on supported boards.
-Recruiting-mail reconciliation and unattended submission are not implemented.
+Recruiting-mail reconciliation is not implemented; unattended submission is an owner policy (see below).
 
 ## Intake and visibility
 
@@ -310,6 +310,6 @@ Greenhouse boards, and `generic_v1`, which reads only the page and confirms noth
 without new confirmation wording. Multi-page support advances only on
 Next/Continue controls after a complete page. Account creation covers email, password,
 terms checkbox and known name fields; anything else on a registration page is a hold.
-No CAPTCHA solving, no proxies, no recruiting-mail tracking, no unattended submission.
+No CAPTCHA solving (a visible challenge stops and asks), no proxies, no recruiting-mail tracking. Unattended submission is an owner policy with a daily cap and a minimum gap.
 Natural-language owner replies are not converted into commands; the strict forms above
 are required.
