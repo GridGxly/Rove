@@ -139,7 +139,17 @@ def months_inclusive(month: str, start: str | None, end: str | None) -> bool | N
     return (start is None or start <= month) and (end is None or month <= end)
 
 
-def evaluate_requirements(requirements: list[dict], profile: dict) -> list[dict]:
+def month_evidenced(month: str, requirement: str, posting: str) -> bool:
+    """A window month must appear in the posting; Qwen may not derive one from a phrase."""
+    from datetime import UTC, datetime
+
+    when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
+    haystack = (requirement + "\n" + posting).lower()
+    spelled = [when.strftime(f).lower() for f in ("%B %Y", "%b %Y", "%B, %Y", "%m/%Y", "%-m/%Y")]
+    return any(text in haystack for text in spelled) or str(when.year) in requirement
+
+
+def evaluate_requirements(requirements: list[dict], profile: dict, posting: str = "") -> list[dict]:
     """Deterministic checks for exact facts; Qwen's judgment stands only where code cannot."""
     education = profile["education"]["schools"]
     graduation = next((s["graduation_month"] for s in education if s["graduation_month"]), None)
@@ -148,14 +158,21 @@ def evaluate_requirements(requirements: list[dict], profile: dict) -> list[dict]
     for item in requirements:
         entry = {**item, "checked_by": "qwen"}
         if item["kind"] == "graduation_window":
+            months = [m for m in (item.get("graduation_start"), item.get("graduation_end")) if m]
+            evidenced = all(
+                month_evidenced(m, item.get("requirement", ""), posting) for m in months
+            )
             inside = (
                 None
-                if graduation is None
+                if graduation is None or not months or not evidenced
                 else months_inclusive(
                     graduation, item.get("graduation_start"), item.get("graduation_end")
                 )
             )
-            if inside is None:
+            if months and not evidenced:
+                entry["status"] = "unknown"
+                entry["note"] = "Window months are not stated in the posting; owner review"
+            elif inside is None:
                 entry["status"] = "unknown"
                 entry["note"] = "Graduation window or approved graduation month unavailable"
             else:
@@ -250,10 +267,10 @@ def decide(requirements: list[dict]) -> str:
     return "fit"
 
 
-def evaluate_review(qwen_output: dict, profile: dict) -> dict:
+def evaluate_review(qwen_output: dict, profile: dict, posting: str = "") -> dict:
     """Code's verdict over Qwen's extraction; rerunnable whenever the rules improve."""
     requirements = evaluate_requirements(
-        [dict(item) for item in qwen_output["requirements"]], profile
+        [dict(item) for item in qwen_output["requirements"]], profile, posting
     )
     requirements, kept, resolved = merge_unknowns(requirements, list(qwen_output["unknowns"]))
     return {
@@ -291,7 +308,10 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     if path.exists():
         prior = json.loads(path.read_text())
         if prior.get("context_hash") == context_hash and prior.get("qwen_output"):
-            current = {**prior, **evaluate_review(prior["qwen_output"], approved["profile"])}
+            current = {
+                **prior,
+                **evaluate_review(prior["qwen_output"], approved["profile"], context["job_text"]),
+            }
             if current["decision"] != prior.get("decision"):
                 current["note"] = "Re-evaluated by updated code rules; Qwen output unchanged"
                 write_private(path, current)
@@ -310,7 +330,10 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
         workflow.flush_events(application_id)
         raise
     qwen_output = parsed.model_dump()
-    result = {"qwen_output": qwen_output, **evaluate_review(qwen_output, approved["profile"])}
+    result = {
+        "qwen_output": qwen_output,
+        **evaluate_review(qwen_output, approved["profile"], context["job_text"]),
+    }
     result.update(
         context_hash=context_hash,
         prompt_version=PROMPT_VERSION,

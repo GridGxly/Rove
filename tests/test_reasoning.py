@@ -21,14 +21,31 @@ def requirement(kind, status="unknown", **extra):
     return {"kind": kind, "requirement": kind, "evidence": "", "status": status, **extra}
 
 
+POSTING = "Acceptable Graduation Dates: December 2027 - June 2028"
+
+
 def test_inclusive_graduation_window_is_decided_by_code_not_qwen():
     window = requirement(
-        "graduation_window", "conflict", graduation_start="2027-12", graduation_end="2028-06"
+        "graduation_window",
+        "conflict",
+        graduation_start="2027-12",
+        graduation_end="2028-06",
+        requirement=POSTING,
     )
-    checked = reasoning.evaluate_requirements([window], PROFILE)[0]
+    checked = reasoning.evaluate_requirements([window], PROFILE, POSTING)[0]
     assert (checked["status"], checked["checked_by"]) == ("satisfied", "code")
     early = requirement("graduation_window", "satisfied", graduation_end="2027-11")
-    assert reasoning.evaluate_requirements([early], PROFILE)[0]["status"] == "conflict"
+    posting = "Must graduate by November 2027"
+    assert reasoning.evaluate_requirements([early], PROFILE, posting)[0]["status"] == "conflict"
+    invented = requirement(
+        "graduation_window",
+        "conflict",
+        graduation_start="2027-05",
+        graduation_end="2027-08",
+        requirement="Rising seniors enrolled in a CS or STEM degree program",
+    )
+    guessed = reasoning.evaluate_requirements([invented], PROFILE, "Rising seniors welcome")[0]
+    assert guessed["status"] == "unknown" and "not stated" in guessed["note"]
     vague = requirement("graduation_window", "conflict")
     assert reasoning.evaluate_requirements([vague], PROFILE)[0]["status"] == "unknown"
     unknown_profile = {**PROFILE, "education": {"schools": [{"graduation_month": None}]}}
