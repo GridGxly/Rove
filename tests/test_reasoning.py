@@ -74,6 +74,9 @@ def test_unknowns_already_compared_by_code_do_not_hold_the_application():
     )
     assert kept and requirements[-1]["status"] == "unknown"
     assert reasoning.decide(requirements) == "needs_review"
+    schedule = ["Can the applicant work ten weeks full time before the December 2027 graduation"]
+    _, kept, resolved = reasoning.merge_unknowns([window, ok], schedule)
+    assert kept == schedule and resolved == []
 
 
 def test_harness_stop_is_not_a_model_answer():

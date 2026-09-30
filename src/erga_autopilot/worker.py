@@ -45,9 +45,13 @@ def process(application_id: str) -> dict:
     workflow.set_state(application_id, "PREPARING", error=None)
     phase = "open"
     final_state = "NEEDS_USER"
+    posting_text = ""
     try:
         page = browser_call("open", url=item["url"])
         for _ in range(6):
+            if not page.get("fields"):
+                # The posting itself; application-form labels are never requirements.
+                posting_text = page.get("text", "") or posting_text
             if page.get("title", "").strip().lower() == "access denied":
                 reason = "The employer denied browser access. No application was submitted. The visible page is available for manual inspection."
                 workflow.set_state(application_id, "MANUAL_TAKEOVER")
@@ -74,7 +78,7 @@ def process(application_id: str) -> dict:
                 from .reasoning import review_application, review_job
 
                 phase = "job_fit_review"
-                fit = review_job(application_id, page)
+                fit = review_job(application_id, page, posting_text)
                 if fit["decision"] != "fit" and not workflow.owner_override(
                     application_id, "proceed"
                 ):

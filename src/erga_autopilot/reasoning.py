@@ -22,7 +22,7 @@ from .runtime import state_root, write_private
 
 # Bump when the prompts in scripts/recruiting_reasoning.py change so cached
 # reviews produced by an older prompt are never reused silently.
-PROMPT_VERSION = "2026-09-30.2"
+PROMPT_VERSION = "2026-09-30.3"
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 
 
@@ -202,7 +202,10 @@ def evaluate_requirements(requirements: list[dict], profile: dict) -> list[dict]
 # Qwen is told not to judge these, so an "unknown" that only restates a kind code
 # already compared is noise, not a hold. Anything else becomes a review item.
 CODE_KIND_TERMS = {
-    "graduation_window": r"graduat",
+    "graduation_window": (
+        r"graduat.*\b(window|range|within|falls|between|acceptable)\b"
+        r"|\b(window|range|within|falls|between|acceptable)\b.*graduat"
+    ),
     "work_authorization": r"authoriz|eligib",
     "sponsorship": r"sponsor",
 }
@@ -241,7 +244,7 @@ def decide(requirements: list[dict]) -> str:
     return "fit"
 
 
-def review_job(application_id: str, page: dict) -> dict:
+def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     """Qwen extracts requirements before any applicant data enters the form."""
     approved = read_approved()
     item = workflow.get(application_id)
@@ -257,7 +260,8 @@ def review_job(application_id: str, page: dict) -> dict:
         "career_evidence": asyncio.run(career_evidence("skills experience projects")),
         "expected_job_title": item["title"],
         "job_url": page["url"],
-        "job_text": page.get("text", "").split("Apply for this job")[0][:12000],
+        "job_text": (posting_text or page.get("text", "").split("Apply for this job")[0])[:12000],
+        "form_questions": [f["label"][:120] for f in page.get("fields", []) if f.get("label")][:60],
     }
     context_hash = fingerprint(context)
     directory = state_root() / "applications" / application_id
