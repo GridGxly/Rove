@@ -71,6 +71,66 @@ def held(
     }
 
 
+def use_drafts(application_id: str, proposals: dict, pending: list) -> int:
+    """Owner policy auto_use_drafts: Qwen's drafts become answers without a per-draft reply.
+
+    The draft cards stay in the thread for review after the fact; a later `answer`
+    reply before submission still overrides. Facts only the owner knows stay questions.
+    """
+    labels = {q["key"]: q.get("label", "") for q in pending}
+    used = []
+    with workflow.db() as conn:
+        for answer in proposals.get("answers", []):
+            if answer.get("kind") != "proposal" or answer["key"] not in labels:
+                continue
+            if conn.execute(
+                "SELECT 1 FROM application_answers WHERE application_id=? AND field_key=?",
+                (application_id, answer["key"]),
+            ).fetchone():
+                continue
+            conn.execute(
+                "INSERT INTO application_answers VALUES(?,?,?,?)",
+                (
+                    application_id,
+                    answer["key"],
+                    answer["value"],
+                    f"auto-draft:{answer['proposal_hash'][:12]}",
+                ),
+            )
+            used.append(answer["key"])
+    for key in used:
+        workflow.record(application_id, "auto_draft_used", {"key": key, "label": labels[key]})
+    if used:
+        workflow.flush_events(application_id)
+    return len(used)
+
+
+def queue_auto_submit(application_id: str, package_hash: str) -> str:
+    """Owner policy auto_submit: one synthetic approval for this exact package, once."""
+    message_id = f"auto-submit:{application_id}:{package_hash[:12]}"
+    with workflow.db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO owner_commands VALUES(?,?,?,?,?,?)",
+            (
+                message_id,
+                application_id,
+                "submit",
+                json.dumps(
+                    {
+                        "kind": "submit",
+                        "application_id": application_id,
+                        "package_hash": package_hash,
+                    }
+                ),
+                "applied",
+                workflow.now(),
+            ),
+        )
+    workflow.record(application_id, "auto_submit_queued", {"package_hash": package_hash})
+    workflow.flush_events(application_id)
+    return message_id
+
+
 def skip_optional(application_id: str, questions: list):
     """Record a blank for optional fields with no approved fact or draft; never asks."""
     with workflow.db() as conn:
@@ -89,6 +149,7 @@ def skip_optional(application_id: str, questions: list):
 
 def process(application_id: str) -> dict:
     item = workflow.get(application_id)
+    settings = workflow.config()
     (state_root() / f"applications/{application_id}/error.json").unlink(missing_ok=True)
     workflow.ensure_forum(application_id)
     workflow.set_state(application_id, "PREPARING", error=None)
@@ -245,9 +306,13 @@ def process(application_id: str) -> dict:
                         for q in pending
                         if not q.get("required", True) and q["key"] not in drafted_keys
                     ]
+                    auto_used = 0
+                    if settings.get("auto_use_drafts", settings.get("auto_submit")):
+                        auto_used = use_drafts(application_id, proposals, pending)
                     if optional:
                         # An optional field nobody can fill from approved facts stays blank.
                         skip_optional(application_id, optional)
+                    if optional or auto_used:
                         phase = "prepare"
                         page = browser_call("prepare", run_id=application_id)
                         page["qwen_review"] = proposals
@@ -276,22 +341,61 @@ def process(application_id: str) -> dict:
                     ] + [f"resume {application_id}", f"defer {application_id}"]
                     headline = "Answers needed"
                 elif page.get("package_hash"):
-                    final_state = "READY_FOR_REVIEW"
-                    reason = (
-                        "Every field is filled from approved facts. Check the form and the "
-                        "resume in the recruiting browser, then send it once."
-                    )
+                    from .submission import enabled_adapter
+
                     if fit.get("unverified"):
-                        reason += (
-                            " The posting states requirements I could not check against "
-                            "your profile; see Why."
-                        )
                         items = [f"not verified · {u}" for u in fit["unverified"][:4]]
-                    commands = [
-                        f"submit {application_id} {workflow.short_hash(page['package_hash'])}",
-                        f"resume {application_id}",
-                    ]
-                    headline = "Ready to submit"
+                    caveat = (
+                        " The posting states requirements I could not check against your "
+                        "profile; see Why."
+                        if fit.get("unverified")
+                        else ""
+                    )
+                    try:
+                        enabled_adapter(page.get("url") or item["url"])
+                    except PermissionError as why:
+                        # No adapter or submission disabled: the owner presses Submit.
+                        final_state = "MANUAL_TAKEOVER"
+                        cause = (
+                            "this site has no submission adapter yet"
+                            if "adapter" in str(why)
+                            else "final submission is off in your local config"
+                        )
+                        reason = (
+                            f"Every field is filled from approved facts, but {cause}. Review "
+                            "the form in the recruiting browser, press its Submit button "
+                            "yourself, then reply." + caveat
+                        )
+                        commands = [
+                            f"reconcile {application_id} applied",
+                            f"defer {application_id}",
+                        ]
+                        headline = "Ready · send it yourself"
+                    else:
+                        final_state = "READY_FOR_REVIEW"
+                        if settings.get("auto_submit"):
+                            # Owner policy: send it; the thread is the record to review after.
+                            workflow.set_state(application_id, "READY_FOR_REVIEW")
+                            queue_auto_submit(application_id, page["package_hash"])
+                            workflow.refresh_status(application_id)
+                            result = {
+                                "application_id": application_id,
+                                "page": page,
+                                "status": "READY_FOR_REVIEW",
+                                "auto_submit": True,
+                                "submitted": False,
+                            }
+                            workflow.save_result(application_id, result)
+                            return result
+                        reason = (
+                            "Every field is filled from approved facts. Check the form and "
+                            "the resume in the recruiting browser, then send it once." + caveat
+                        )
+                        commands = [
+                            f"submit {application_id} {workflow.short_hash(page['package_hash'])}",
+                            f"resume {application_id}",
+                        ]
+                        headline = "Ready to submit"
                 else:
                     reason = page.get("reason", page.get("status", "Browser requires review"))
                 break
@@ -637,6 +741,17 @@ def next_queued(max_waiting: int):
         ).fetchone()[0]
         if waiting >= max_waiting:
             return None
+        settings = workflow.config()
+        if settings.get("auto_submit"):
+            # Unattended sending is paced: a daily cap the owner sets, counted from attempts.
+            cap = int(settings.get("max_submissions_per_day", 10))
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
+            sent_today = conn.execute(
+                "SELECT COUNT(*) FROM live_submission_attempts WHERE created_at LIKE ?",
+                (today + "%",),
+            ).fetchone()[0]
+            if sent_today >= cap:
+                return None
         queued = conn.execute(
             "SELECT id FROM application_queue WHERE status='QUEUED' ORDER BY CASE source WHEN 'owner_link' THEN 0 ELSE 1 END,created_at DESC LIMIT 1"
         ).fetchone()
@@ -672,6 +787,10 @@ def tick() -> dict:
             return {"idle": True}
         try:
             result = process(queued)
+            if result.get("auto_submit"):
+                submitted = run_approved_submissions()
+                if submitted:
+                    result = {**result, "submissions": submitted}
         except PhaseError as failure:
             from .reasoning import ModelUnavailable
 

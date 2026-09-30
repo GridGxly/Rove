@@ -24,7 +24,7 @@ from .runtime import state_root, write_private
 
 # Bump when the prompts in scripts/recruiting_reasoning.py change so cached
 # reviews produced by an older prompt are never reused silently.
-PROMPT_VERSION = "2026-09-30.3"
+PROMPT_VERSION = "2026-09-30.4"
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 
 

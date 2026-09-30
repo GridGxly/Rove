@@ -581,6 +581,20 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
                 color="preparing" if kind == "signed_in" else "problem",
             )
         ]
+    if kind == "form_step":
+        return [f"→ Clicked {clip(data.get('clicked', 'Next'), 40)} · next form step"]
+    if kind == "auto_draft_used":
+        return [
+            (
+                f"→ Used Qwen's draft for “{clip(data.get('label', ''), 80)}” · auto-approve is "
+                f"on; reply `answer {application_id} {data.get('key', '')} = …` before it is sent "
+                "to change it"
+            )
+        ]
+    if kind == "auto_submit_queued":
+        return [
+            f"→ Auto-submit is on · sending once · package `{short_hash(data.get('package_hash'))}`"
+        ]
     if kind == "optional_skipped":
         return ["→ Left blank · optional: " + clip(", ".join(data.get("labels", [])), 300)]
     if kind == "posting_closed":

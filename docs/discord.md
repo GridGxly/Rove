@@ -85,6 +85,8 @@ Examples include:
 
 This channel should stay quiet unless the user actually needs to do something.
 
+With the `auto_submit` policy on, a complete application is sent without a card here; the thread's live status card and its timeline are where the owner reviews it afterwards.
+
 The implemented workflow posts here for answers it cannot draft, sign-in and account steps, blocked sites and manual steps in the browser, stopped preparation, ready-to-submit review, and submission problems. Job fit never lands here; that goes to `shortlist`. The channel is a to-do list: an application has at most one live card, a new card replaces the previous one, and the card is withdrawn when the application stops waiting on you.
 
 #### `memory`

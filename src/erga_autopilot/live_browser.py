@@ -206,6 +206,32 @@ def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
         and eligible["sponsorship_future"] is False
     ):
         return "No", "eligibility.sponsorship_now+future"
+    prefs = profile["preferences"]
+    excluded = [normalized(x) for x in (prefs.get("excluded_locations") or []) if x]
+    if (
+        prefs.get("relocate") is True
+        and "onsite" in (prefs.get("work_styles") or [])
+        and re.search(
+            r"(comfortable|able|willing|open|available) (to )?(work|working|commut|relocat|be|being)"
+            r"|will you be (local|located|based|in|able)|are you (local|located|based)|relocat",
+            name,
+        )
+        and re.search(r"office|on ?site|in person|local|located|based|relocat|commut|hybrid", name)
+        and not any(place and place in name for place in excluded)
+    ):
+        # Approved: relocate anywhere in the US and work onsite. A named city that the
+        # owner excluded is never answered for them.
+        return "Yes", "preferences.relocate+onsite"
+    if name in {
+        "location",
+        "current location",
+        "city state",
+        "city and state",
+        "where are you located",
+    }:
+        parts = [identity.get("city"), identity.get("state_region")]
+        if all(parts):
+            return ", ".join(parts), "identity.location"
     # Dates, graduation, authorization, demographics and custom questions
     # need an adapter or user review; never guess option values or legal wording.
     return None, None

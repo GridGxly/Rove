@@ -187,6 +187,22 @@ stays `UNKNOWN_SUBMISSION` until the owner reconciles; nothing retries.
 Public Greenhouse boards run an invisible reCAPTCHA on submit. A challenge or an emailed
 security code is recorded as an unknown submission for the owner to finish and reconcile.
 
+### Unattended sending as an owner policy
+
+Two private `config/workflow.json` keys turn the review step into an after-the-fact one:
+
+- `auto_use_drafts`: Qwen's drafts become the answers without a per-draft `use` reply.
+  The draft cards stay in the thread; an `answer` reply before sending still overrides.
+- `auto_submit`: a complete package is sent once, on the tick that prepared it, through
+  the enabled adapter for that site. The thread records "auto-submit is on · sending
+  once", then the result card. `max_submissions_per_day` (default 10) paces unattended
+  sending; an application the owner resumed or pasted is never capped.
+
+What still stops and asks: a required question only the owner can answer, an
+eligibility conflict on a feed job, a sign-in or account wall, a blocked site, a
+CAPTCHA or identity step, a site with no enabled adapter, and any unclear submission
+result. Nothing is ever sent twice for the same package.
+
 ## Records outside Discord
 
 SQLite holds the queue, events, answers, commands, and attempts. Private per-application

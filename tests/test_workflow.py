@@ -938,8 +938,11 @@ def test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist(sta
         "unverified": [],
         "requirements": [gate("sponsorship", "No visa sponsorship", "conflict")],
     }
+    from erga_autopilot import submission
+
     monkeypatch.setattr(reasoning, "review_job", lambda *a: review)
     monkeypatch.setattr(reasoning, "review_application", lambda *a: pytest.fail("nothing to draft"))
+    monkeypatch.setattr(submission, "enabled_adapter", lambda url: object())
     calls = owner_channels(monkeypatch)
     pasted = workflow.enqueue("https://jobs.example.com/pasted", title="Example — Intern")[
         "application_id"
@@ -959,3 +962,98 @@ def test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist(sta
         "/channels/action/messages",
         "/channels/short/messages",
     ]
+
+
+def test_auto_policy_uses_qwen_drafts_and_queues_exactly_one_submission(state, monkeypatch):
+    from erga_autopilot import reasoning, submission, worker
+
+    form = {
+        "url": "https://jobs.example.com/form",
+        "observation_id": "obs-1",
+        "fields": [
+            {
+                "label": "First name",
+                "name": "first",
+                "kind": "text",
+                "options": [],
+                "required": True,
+            },
+            {
+                "label": "Why us?",
+                "name": "why",
+                "kind": "textarea",
+                "options": [],
+                "required": True,
+            },
+        ],
+    }
+    calls = []
+
+    def browser(action, **kw):
+        calls.append(action)
+        if action != "prepare":
+            return form
+        if calls.count("prepare") == 1:
+            return {
+                "pending": [{"label": "Why us?", "key": "k1", "required": True, "options": []}],
+                "filled": [],
+            }
+        return {"pending": [], "package_hash": "a" * 64, "filled": []}
+
+    monkeypatch.setattr(worker, "browser_call", browser)
+    monkeypatch.setattr(
+        worker, "prepare_resume", lambda *a: {"ready": True, "resume_sha256": "b" * 64}
+    )
+    monkeypatch.setattr(
+        reasoning,
+        "review_job",
+        lambda *a: {"decision": "fit", "rationale": "", "unverified": [], "requirements": []},
+    )
+    draft = {
+        "key": "k1",
+        "kind": "proposal",
+        "value": "Because of the mission.",
+        "proposal_hash": "c" * 64,
+        "sources": ["story"],
+        "explanation": "from the story note",
+    }
+    monkeypatch.setattr(reasoning, "review_application", lambda *a: {"answers": [draft]})
+    monkeypatch.setattr(submission, "enabled_adapter", lambda url: object())
+    owner_channels(monkeypatch)
+    base = workflow.config()
+    monkeypatch.setattr(workflow, "config", lambda: {**base, "auto_submit": True})
+    app = workflow.enqueue(
+        "https://jobs.example.com/auto", source="keryx", title="Example — Intern"
+    )["application_id"]
+    result = worker.process(app)
+    assert result["status"] == "READY_FOR_REVIEW" and result["auto_submit"]
+    assert calls.count("prepare") == 2
+    with workflow.db() as conn:
+        answer = conn.execute(
+            "SELECT value, owner_message_id FROM application_answers WHERE application_id=?",
+            (app,),
+        ).fetchone()
+        assert tuple(answer) == ("Because of the mission.", "auto-draft:" + "c" * 12)
+        command = conn.execute(
+            "SELECT message_id, kind, status FROM owner_commands WHERE application_id=?", (app,)
+        ).fetchone()
+        assert tuple(command) == (f"auto-submit:{app}:{'a' * 12}", "submit", "applied")
+        assert not conn.execute(
+            "SELECT 1 FROM owner_notices WHERE application_id=?", (app,)
+        ).fetchone()
+        kinds = [
+            r[0]
+            for r in conn.execute(
+                "SELECT kind FROM application_events WHERE application_id=? ORDER BY id", (app,)
+            )
+        ]
+    assert "auto_draft_used" in kinds and kinds[-1] == "auto_submit_queued"
+    # The same package is never queued twice.
+    worker.queue_auto_submit(app, "a" * 64)
+    with workflow.db() as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM owner_commands WHERE application_id=?", (app,)
+            ).fetchone()[0]
+            == 1
+        )
