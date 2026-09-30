@@ -384,12 +384,7 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         pending = data.get("pending", [])
         if pending:
             cards.append(
-                embed(
-                    f"Waiting on you · {len(pending)} question{'s' if len(pending) != 1 else ''}",
-                    question_lines(pending),
-                    color="needs",
-                    footer="Qwen drafts what it can; unknown facts come to you",
-                )
+                f"→ {len(pending)} question{'s' if len(pending) != 1 else ''} left for Qwen or you"
             )
         return cards
     if kind == "qwen_job_review":
@@ -446,20 +441,10 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
             )
         ]
     if kind == "qwen_question":
-        return [
-            embed(
-                "Only you can answer · " + clip(data.get("label") or data.get("key", ""), 150),
-                brief(data.get("explanation", ""), 240),
-                color="needs",
-                fields=[
-                    (
-                        "Reply",
-                        command_block([f"answer {application_id} {data.get('key', '')} = "]),
-                        False,
-                    )
-                ],
-            )
-        ]
+        line = f"→ Only you can answer “{clip(data.get('label') or data.get('key', ''), 90)}”"
+        if data.get("explanation"):
+            line += " · " + brief(data["explanation"], 160)
+        return [line]
     if kind == "lifecycle":
         to = str(data.get("to", ""))
         state = STATE_WORDS.get(to, to.replace("_", " ").title())
