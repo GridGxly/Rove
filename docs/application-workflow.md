@@ -49,8 +49,14 @@ change never reuses an older answer.
 
 The worker creates an application forum post before preparation. It opens the posting,
 follows bounded observed application-start controls, uses Erga's supported job intake,
-and fills deterministic approved fields as a batch. Exact profile and resume hashes,
-field values, provenance, unresolved questions, and screenshots remain private artifacts.
+and fills deterministic approved fields as a batch. The observer reads associated labels
+first and falls back to the nearest label that owns no other control, reports a radio
+group as one question with its options, and reports a Yes/No button group (buttons with
+`aria-pressed` over a hidden checkbox, as on Ashby boards) as one choice. Code selects an
+option only when an approved fact matches exactly one option, such as the graduation month
+or the authorization and sponsorship answers, and verifies the selection. Exact profile
+and resume hashes, field values, provenance, unresolved questions, and screenshots remain
+private artifacts.
 The forum mirrors meaningful events. A failed tailored resume is never reported as
 validated: an approved base PDF can be preserved with an explicit review warning.
 
