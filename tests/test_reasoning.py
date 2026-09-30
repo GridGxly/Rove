@@ -467,3 +467,17 @@ def test_class_standing_is_decided_by_code_from_the_graduation_month():
         "10-week Summer 2027 internship in NYC",
     )
     assert checked[0]["status"] == "satisfied" and checked[0]["checked_by"] == "code"
+
+
+def test_drafts_are_shortened_to_the_fields_limit_at_a_sentence_boundary():
+    from erga_autopilot.reasoning import length_problems, shorten_to_fit
+
+    questions = [{"key": "k1", "max_chars": 120}, {"key": "k2", "max_chars": None}]
+    long = "First sentence here. " * 7 + "Second one follows. " + "Third closes it."
+    result = {"answers": [{"key": "k1", "kind": "proposal", "value": long, "explanation": "x"}]}
+    assert "120" in length_problems(result, questions)
+    shorten_to_fit(result, questions)
+    assert len(result["answers"][0]["value"]) <= 120
+    assert result["answers"][0]["value"].endswith(".")
+    assert "Shortened" in result["answers"][0]["explanation"]
+    assert length_problems(result, questions) == ""

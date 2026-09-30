@@ -603,6 +603,39 @@ def parse_review(raw: str, observed_keys: set[str], options_by_key: dict | None 
     return result
 
 
+def length_problems(result: dict, questions: list) -> str:
+    """A draft must fit the field it is for; the site truncates silently otherwise."""
+    limits = {q["key"]: q.get("max_chars") for q in questions}
+    problems = []
+    for answer in result.get("answers", []):
+        if answer.get("kind") != "proposal":
+            continue
+        limit, value = limits.get(answer["key"]), answer.get("value", "")
+        if limit and len(value) > int(limit):
+            problems.append(
+                f"answer {answer['key']} is {len(value)} characters; the field allows {limit}"
+            )
+        elif len(value.split()) > 150:
+            problems.append(
+                f"answer {answer['key']} is {len(value.split())} words; keep it under 130"
+            )
+    return "; ".join(problems)[:300]
+
+
+def shorten_to_fit(result: dict, questions: list):
+    limits = {q["key"]: q.get("max_chars") for q in questions}
+    for answer in result.get("answers", []):
+        if answer.get("kind") != "proposal":
+            continue
+        limit = int(limits.get(answer["key"]) or 0) or 900
+        if len(answer.get("value", "")) > limit:
+            answer["value"] = workflow.brief(answer["value"], limit)
+            answer["explanation"] = (
+                str(answer.get("explanation", ""))[:200]
+                + f" Shortened to fit the field's {limit}-character limit."
+            ).strip()
+
+
 def review_application(application_id: str, page: dict) -> dict:
     directory = state_root() / "applications" / application_id
     approved = read_approved()
@@ -655,6 +688,12 @@ def review_application(application_id: str, page: dict) -> dict:
                     {q["key"] for q in questions},
                     {q["key"]: q.get("options") or [] for q in questions},
                 )
+                problems = length_problems(result, questions)
+                if problems and not attempt:
+                    context = {**context, "previous_output_problem": problems}
+                    continue
+                if problems:
+                    shorten_to_fit(result, questions)
                 break
             except (ValueError, ValidationError) as error:
                 if attempt:
@@ -681,6 +720,7 @@ def review_application(application_id: str, page: dict) -> dict:
         if answer["kind"] == "proposal" and len(answer["value"]) > 60:
             # Written answers get the Unslop pass before they are hashed for approval.
             answer.update(polish(directory, answer["key"], answer["value"]))
+    shorten_to_fit(result, questions)
     for answer in result["answers"]:
         answer["proposal_hash"] = fingerprint(
             {"application_id": application_id, "context_hash": context_hash, **answer}

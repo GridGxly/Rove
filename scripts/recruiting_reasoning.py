@@ -24,7 +24,7 @@ ANSWER_PROMPT = (
     "Include every supplied question exactly once, using the exact provided field keys. "
     "When a question lists options, a proposal value must be one of those options verbatim. "
     "Write application prose in a direct, personal voice, with concrete facts and no marketing "
-    "filler. Keep written answers below 130 words. When a question asks for one project or "
+    "filler. Keep written answers below 130 words, and within max_chars when a question gives one. When a question asks for one project or "
     "example, draft with the explicit owner choice if there is one, otherwise with the project "
     "the approved story context calls the proudest or the one most relevant to the posting, and "
     "name that choice in the explanation; the owner edits or approves the draft, so do not ask "

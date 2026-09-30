@@ -155,6 +155,16 @@ decisions, drafts, job fit, the filled form, submission results, and failures. S
 are shown in words ("your profile", "your reply", "your evidence", "the posting"),
 never as internal keys.
 
+A label is matched to a profile fact by its meaning when it is short and plain: "Profile
+Link (Optional)" is the portfolio, "LinkedIn Profile URL" is LinkedIn, "Mobile Number" is
+the phone. A label that carries instructions or names another person is never matched.
+A US phone is typed as ten national digits first, because sites with their own country
+selector reject a repeated code; if the site still rejects it, the international form is
+tried once. A draft must fit its field: the observation records each field's character
+limit, Qwen is told it, one retry asks for a shorter answer, and a remaining overflow is
+cut at a sentence boundary and marked as shortened. A "rising senior" style requirement
+is decided by code from the approved graduation month and the internship year.
+
 A field counts as required when the input says so or when its label carries a
 "required" class or a trailing asterisk, which is how Ashby and Lever mark it. A place
 typeahead (location, city) is typed into and the one suggestion that starts with the

@@ -360,7 +360,7 @@ OBSERVE = (
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||null,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
     required:e.required || e.getAttribute('aria-required')==='true' || requiredBy(e),disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
-    value:(['password','hidden','file'].includes(e.type)?null:e.value),
+    value:(['password','hidden','file'].includes(e.type)?null:e.value),maxlength:(e.maxLength>0?e.maxLength:null),
     options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):[]};
  }).filter(e=>e.kind!=='hidden');
  const boxes=[...new Set([...document.querySelectorAll('button[aria-pressed]')].filter(visible).map(b=>b.parentElement))].filter(c=>c.querySelectorAll(':scope > button[aria-pressed]').length>=2);
@@ -1510,6 +1510,7 @@ class RecruitingBrowser:
                         "required": field["required"],
                         "key": field["key"],
                         "options": choices,
+                        "max_chars": field.get("maxlength"),
                         "reason": "Needs reviewed answer or supported control adapter",
                     }
                 )
