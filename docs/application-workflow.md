@@ -149,7 +149,10 @@ uv run autopilot browser status
 ```
 
 `workflow resume` and `workflow defer` are local owner operations equivalent to the
-Discord commands. A paused application retains the visible session. Delivery records are
+Discord commands. A paused application retains the visible session. The browser service
+is a long-lived process: after updating browser code, restart it deliberately
+(`launchctl kickstart -k gui/$UID/dev.erga-autopilot.browser`) while no preparation is
+active; open applications are re-prepared on their next `resume`. Delivery records are
 written before Discord mutations. An ambiguous forum creation or message delivery is held
 for reconciliation instead of automatically creating duplicate records. The current owner
 command bootstrap starts at the current channel cursor; it does not replay old approvals.
