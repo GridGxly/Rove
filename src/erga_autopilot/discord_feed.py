@@ -126,51 +126,50 @@ def tick(seed: bool = False) -> dict:
             )
         pending = db.execute("""SELECT o.* FROM feed_outbox o JOIN jobs j ON j.id=o.job_id
             WHERE o.status='pending' AND j.active=1 LIMIT 25""").fetchall()
-        for offset in range(0, len(pending), 3):
-            batch = pending[offset : offset + 3]
-            parts = ["**Internship matches · queued for visible preparation**"]
-            for row in batch:
-                job = json.loads(row["payload"])
-                from .workflow import enqueue
+        from .workflow import clip, embed, enqueue
 
-                queued = (
-                    enqueue(job["url"], source="keryx", title=job["company"] + " — " + job["title"])
-                    if job.get("url")
-                    else None
-                )
-                title = (job["company"] + " — " + job["title"]).replace("\n", " ")[:180]
-                parts.append(
-                    f"**{title}**\n{job.get('cycle') or 'Term not listed'} · {job.get('location', '')[:120]}\n{job.get('url') or 'Employer link needs review'}\n"
-                    + (
-                        f"Application `{queued['application_id']}` · requirements checked before filling."
-                        if queued
-                        else "Needs employer link."
-                    )
-                )
-            text = "\n\n".join(parts)
-            if len(text) > 1950:
-                raise ValueError("Feed batch exceeds Discord message limit")
+        for row in pending:
+            job = json.loads(row["payload"])
+            queued = (
+                enqueue(job["url"], source="keryx", title=job["company"] + " — " + job["title"])
+                if job.get("url")
+                else None
+            )
+            card = embed(
+                clip(job["title"].replace("\n", " "), 200),
+                f"**{clip(job['company'], 100)}** · {clip(job.get('location') or 'Location not listed', 120)}",
+                color="preparing",
+                url=job.get("url"),
+                fields=[
+                    ("Cycle", job.get("cycle") or "Not listed", True),
+                    ("Track", str(job.get("program", "")).replace("-", " ").title() or "—", True),
+                    (
+                        "Application",
+                        f"`{queued['application_id']}`" if queued else "needs employer link",
+                        True,
+                    ),
+                ],
+                footer="Keryx · GodlyDonuts/keryx · queued for preparation",
+            )
             with db:
-                for row in batch:
-                    db.execute("UPDATE feed_outbox SET status='sending' WHERE key=?", (row["key"],))
+                db.execute("UPDATE feed_outbox SET status='sending' WHERE key=?", (row["key"],))
             message = discord(
                 "POST",
                 f"/channels/{config['channel_id']}/messages",
                 {
-                    "content": text,
+                    "embeds": [card],
                     "allowed_mentions": {"parse": []},
-                    "nonce": str(int(batch[0]["key"][:15], 16)),
+                    "nonce": str(int(row["key"][:15], 16)),
                     "enforce_nonce": True,
                     "flags": 4,
                 },
             )
             with db:
-                for row in batch:
-                    db.execute(
-                        "UPDATE feed_outbox SET status='sent',message_id=? WHERE key=?",
-                        (message["id"], row["key"]),
-                    )
-            sent += len(batch)
+                db.execute(
+                    "UPDATE feed_outbox SET status='sent',message_id=? WHERE key=?",
+                    (message["id"], row["key"]),
+                )
+            sent += 1
         result.update(
             sent=sent,
             pending=db.execute(

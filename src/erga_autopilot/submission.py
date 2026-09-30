@@ -263,9 +263,13 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
         )
         workflow.action_needed(
             application_id,
-            "A single submission was attempted, but its outcome is unconfirmed. Do not click "
-            "Submit again. Check the visible browser and any employer email, then reply "
-            f"`reconcile {application_id} applied` or `reconcile {application_id} not-submitted`.",
+            "One submission was attempted but not confirmed. Do not click Submit again. "
+            "Check the recruiting browser and any employer email, then tell me the outcome.",
+            commands=[
+                f"reconcile {application_id} applied",
+                f"reconcile {application_id} not-submitted",
+            ],
+            headline="Submission unclear",
         )
 
 

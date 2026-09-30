@@ -422,7 +422,8 @@ class RecruitingBrowser:
             self.run["navigation_error"] = type(error).__name__
         result = self.observe()
         result["feed_lookup"] = lookup_job_link(target)
-        workflow.set_state(run_id, "PREPARING", title=result["title"][:300])
+        if not existing["title"]:
+            workflow.set_state(run_id, "PREPARING", title=result["title"][:300])
         workflow.record(run_id, "opened", {"url": self.page.url, "title": result["title"]})
         workflow.flush_events(run_id)
         return result

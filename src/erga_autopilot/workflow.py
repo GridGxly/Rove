@@ -200,6 +200,337 @@ def forum_url(application_id: str) -> str | None:
     )
 
 
+COLORS = {
+    "preparing": 0x5865F2,
+    "needs": 0xF2A93B,
+    "applied": 0x57F287,
+    "problem": 0xED4245,
+    "qwen": 0x9B59B6,
+    "info": 0x99AAB5,
+}
+STATE_COLORS = {
+    "APPLIED": "applied",
+    "UNKNOWN_SUBMISSION": "problem",
+    "MANUAL_TAKEOVER": "problem",
+    "NEEDS_USER": "needs",
+    "READY_FOR_REVIEW": "needs",
+}
+
+
+def clip(text, limit: int) -> str:
+    text = str(text if text is not None else "")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def embed(
+    title: str, description: str = "", *, color: str = "info", fields=(), url=None, footer=None
+):
+    """One Discord embed within the platform's size limits."""
+    item = {"title": clip(title, 256) or "Update", "color": COLORS[color]}
+    if description:
+        item["description"] = clip(description, 2000)
+    if url:
+        item["url"] = url
+    if fields:
+        item["fields"] = [
+            {
+                "name": clip(name, 256) or "\u200b",
+                "value": clip(value, 1024) or "—",
+                "inline": inline,
+            }
+            for name, value, inline in list(fields)[:25]
+        ]
+    if footer:
+        item["footer"] = {"text": clip(footer, 2048)}
+    return item
+
+
+def short_hash(value) -> str:
+    return str(value or "")[:12]
+
+
+def display_title(item: dict) -> str:
+    title = (item.get("title") or "").strip()
+    if title.lower().startswith("job application for "):
+        title = title[len("job application for ") :]
+    return title or "Application"
+
+
+def command_block(commands) -> str:
+    return "```\n" + "\n".join(commands) + "\n```"
+
+
+def question_lines(questions, limit: int = 10) -> str:
+    lines = []
+    for question in list(questions)[:limit]:
+        label = clip(question.get("label") or question.get("name") or "Question", 110)
+        line = f"• {label} · `{question.get('key', '')}`"
+        options = question.get("options") or []
+        if options:
+            line += "\n  options: " + clip(", ".join(str(o) for o in options[:8]), 160)
+        lines.append(line)
+    if len(questions) > limit:
+        lines.append(f"• …and {len(questions) - limit} more in the forum")
+    return "\n".join(lines)
+
+
+def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
+    """Glanceable forum entries: one card per event, values in fields, commands in code."""
+    if kind == "forum_creation_attempt":
+        return []
+    if kind == "fields_prepared":
+        cards = []
+        filled = data.get("filled", [])
+        for start in range(0, len(filled), 24):
+            fields = []
+            for field in filled[start : start + 24]:
+                if "sha256" in field:
+                    value = f"resume PDF · `{short_hash(field['sha256'])}`\n_{field['source']}_"
+                else:
+                    value = f"{clip(field.get('value', ''), 300)}\n_{clip(field.get('source', ''), 120)}_"
+                fields.append((field.get("label") or "Field", value, True))
+            cards.append(
+                embed(
+                    "Form filled" if start == 0 else "Form filled (continued)",
+                    f"{len(filled)} fields filled from approved facts" if start == 0 else "",
+                    color="preparing",
+                    fields=fields,
+                )
+            )
+        pending = data.get("pending", [])
+        if pending:
+            cards.append(
+                embed(
+                    f"Waiting on you · {len(pending)} question{'s' if len(pending) != 1 else ''}",
+                    question_lines(pending),
+                    color="needs",
+                    footer="Qwen drafts what it can; unknown facts come to you",
+                )
+            )
+        return cards
+    if kind == "qwen_job_review":
+        decision = str(data.get("decision", "needs_review"))
+        label = {"fit": "Fit", "not_fit": "Not a fit", "needs_review": "Your call"}.get(
+            decision, decision
+        )
+        color = {"fit": "applied", "not_fit": "problem"}.get(decision, "needs")
+        groups = {"satisfied": [], "unknown": [], "conflict": []}
+        for item in data.get("requirements", []):
+            line = clip(item.get("requirement", ""), 90)
+            if item.get("checked_by") == "code":
+                line += " ✓code"
+            groups.setdefault(item.get("status", "unknown"), []).append("• " + line)
+        fields = []
+        if groups["satisfied"]:
+            fields.append(("Satisfied", "\n".join(groups["satisfied"][:8]), False))
+        if groups["unknown"]:
+            fields.append(("Unknown", "\n".join(groups["unknown"][:6]), False))
+        if groups["conflict"]:
+            fields.append(("Conflict", "\n".join(groups["conflict"][:6]), False))
+        footer = "Qwen extracted the requirements · code checked dates and approved facts"
+        if data.get("qwen_decision") and data["qwen_decision"] != decision:
+            footer += f" · Qwen said {data['qwen_decision']}"
+        if data.get("note"):
+            footer += " · " + data["note"]
+        return [
+            embed(
+                f"Job fit · {label}",
+                clip(data.get("rationale", ""), 700),
+                color=color,
+                fields=fields,
+                footer=footer,
+            )
+        ]
+    if kind == "qwen_answer_proposal":
+        fields = [
+            ("Sources", ", ".join(data.get("sources", [])) or "—", False),
+            ("Why", clip(data.get("explanation", ""), 400), False),
+        ]
+        if data.get("unslop"):
+            fields.append(("Unslop", clip(data["unslop"], 300), False))
+        if data.get("approve_command"):
+            fields.append(
+                ("Approve exactly this text", command_block([data["approve_command"]]), False)
+            )
+        return [
+            embed(
+                "Draft · " + clip(data.get("label") or data.get("key", ""), 200),
+                data.get("value", ""),
+                color="qwen",
+                fields=fields,
+                footer="Qwen through Hermes · unapproved until you reply",
+            )
+        ]
+    if kind == "qwen_question":
+        return [
+            embed(
+                "Needs you · " + clip(data.get("label") or data.get("key", ""), 200),
+                clip(data.get("explanation", ""), 600),
+                color="needs",
+                fields=[
+                    (
+                        "Reply with",
+                        command_block(
+                            [f"answer {application_id} {data.get('key', '')} = your answer"]
+                        ),
+                        False,
+                    )
+                ],
+            )
+        ]
+    if kind == "lifecycle":
+        to = str(data.get("to", ""))
+        return [
+            embed(
+                f"{data.get('from', '?')} → {to}",
+                clip(data.get("trigger", ""), 300)
+                + (("\n" + clip(data.get("detail", ""), 600)) if data.get("detail") else ""),
+                color=STATE_COLORS.get(to, "preparing"),
+            )
+        ]
+    if kind == "submission_confirmed":
+        checks = data.get("checks", {})
+        fields = [("Package", f"`{short_hash(data.get('package_hash'))}`", True)]
+        if data.get("confirmation_url"):
+            fields.append(("Confirmation page", data["confirmation_url"], False))
+        if checks:
+            fields.append(
+                (
+                    "Checks",
+                    "\n".join(
+                        f"{'✅' if v else '❌'} {k}" for k, v in checks.items() if k != "confirmed"
+                    ),
+                    False,
+                )
+            )
+        if data.get("erga"):
+            fields.append(("Erga", clip(json.dumps(data["erga"]), 200), False))
+        return [
+            embed("Applied ✅", clip(data.get("reason", ""), 300), color="applied", fields=fields)
+        ]
+    if kind == "submission_unknown":
+        checks = data.get("checks", {})
+        fields = [("Package", f"`{short_hash(data.get('package_hash'))}`", True)]
+        if checks:
+            fields.append(
+                (
+                    "Checks",
+                    "\n".join(
+                        f"{'✅' if v else '❌'} {k}" for k, v in checks.items() if k != "confirmed"
+                    ),
+                    False,
+                )
+            )
+        fields.append(
+            (
+                "Reply with",
+                command_block(
+                    [
+                        f"reconcile {application_id} applied",
+                        f"reconcile {application_id} not-submitted",
+                    ]
+                ),
+                False,
+            )
+        )
+        return [
+            embed(
+                "Submission unclear · do not click again",
+                clip(data.get("reason", ""), 600),
+                color="problem",
+                fields=fields,
+            )
+        ]
+    if kind == "submit_attempt":
+        return [
+            embed(
+                "Submitting once",
+                f"Package `{short_hash(data.get('package_hash'))}` · adapter {data.get('adapter', '')}",
+                color="preparing",
+            )
+        ]
+    if kind == "needs_action":
+        fields = []
+        if data.get("questions"):
+            fields.append(("Questions", question_lines(data["questions"]), False))
+        if data.get("commands"):
+            fields.append(("Reply with", command_block(data["commands"]), False))
+        return [
+            embed(
+                data.get("headline") or "Needs you",
+                clip(data.get("reason", ""), 1200),
+                color="needs",
+                fields=fields,
+            )
+        ]
+    if kind == "shortlisted":
+        fields = []
+        if data.get("items"):
+            fields.append(("Why", "\n".join("• " + clip(i, 160) for i in data["items"][:8]), False))
+        if data.get("commands"):
+            fields.append(("Reply with", command_block(data["commands"]), False))
+        return [embed("Your call", clip(data.get("reason", ""), 800), color="needs", fields=fields)]
+    if kind == "opened":
+        return [
+            embed("Opened", clip(data.get("title", ""), 200), color="info", url=data.get("url"))
+        ]
+    if kind == "application_link":
+        return [
+            embed(
+                f"Clicked · {clip(data.get('clicked', ''), 80)}", data.get("url", ""), color="info"
+            )
+        ]
+    if kind == "resume_prepared":
+        fields = [
+            ("Tailored", "yes" if data.get("tailored") else "no, approved base PDF", True),
+            ("SHA-256", f"`{short_hash(data.get('sha256'))}`", True),
+        ]
+        if data.get("warning"):
+            fields.append(("Warning", clip(data["warning"], 300), False))
+        return [
+            embed(
+                "Resume ready", clip(data.get("review", ""), 200), color="preparing", fields=fields
+            )
+        ]
+    if kind == "resume_preparation_started":
+        return [embed("Preparing resume", "Erga job intake from approved evidence", color="info")]
+    if kind == "qwen_failure":
+        return [
+            embed(
+                "Qwen run failed · " + str(data.get("phase", "")).replace("_", " "),
+                clip(data.get("reason", ""), 500),
+                color="problem",
+            )
+        ]
+    if kind == "owner_answer":
+        return [
+            embed(
+                "You answered",
+                f"`{data.get('field_key', '')}` = {clip(data.get('value', ''), 900)}",
+                color="applied",
+            )
+        ]
+    if kind.endswith("_requested"):
+        extra = {k: v for k, v in data.items() if k not in {"kind"}}
+        return [
+            embed(
+                "You asked · " + kind[: -len("_requested")],
+                clip(", ".join(f"{k}: {v}" for k, v in extra.items()), 300),
+                color="info",
+            )
+        ]
+    if kind == "browser_access_blocked":
+        return [
+            embed(
+                "Employer blocked the recruiting browser",
+                clip(data.get("reason", data.get("url", "")), 600),
+                color="problem",
+            )
+        ]
+    fields = [(str(k), clip(v, 400), False) for k, v in list(data.items())[:10]]
+    return [embed(kind.replace("_", " ").capitalize(), "", color="info", fields=fields)]
+
+
 def ensure_forum(application_id: str) -> str | None:
     item, settings = get(application_id), config()
     if item["thread_id"]:
@@ -215,17 +546,30 @@ def ensure_forum(application_id: str) -> str | None:
     if prior:
         raise RuntimeError("Forum creation result is uncertain; reconcile before retrying")
     record(application_id, "forum_creation_attempt", {})
+    title = display_title(item)
     thread = discord(
         "POST",
         f"/channels/{settings['forum_channel_id']}/threads",
         {
-            "name": (item["title"] or "Application")[:80] + " · " + application_id,
+            "name": clip(title, 80),
             "auto_archive_duration": 10080,
             "applied_tags": [settings["tags"]["Preparing"]]
             if settings.get("tags", {}).get("Preparing")
             else [],
             "message": {
-                "content": f"**Preparing**\n{item['source_url']}\nOfficial target: {item['url']}\nApplication `{application_id}` · visible browser\nSubmission requires review of the exact prepared package.",
+                "embeds": [
+                    embed(
+                        title,
+                        "Preparing in the recruiting browser. Nothing is submitted without your `submit` reply.",
+                        color="preparing",
+                        url=item["url"],
+                        fields=[
+                            ("Application", f"`{application_id}`", True),
+                            ("Source", item["source"].replace("_", " "), True),
+                            ("Posting", clip(item["source_url"], 300), False),
+                        ],
+                    )
+                ],
                 "allowed_mentions": {"parse": []},
             },
         },
@@ -243,85 +587,6 @@ def ensure_forum(application_id: str) -> str | None:
     return thread["id"]
 
 
-def event_text(kind: str, data: dict) -> str:
-    if kind == "fields_prepared":
-        parts = ["**Form preparation**"]
-        for field in data.get("filled", []):
-            value = field.get("value", "resume PDF · SHA-256 " + field.get("sha256", ""))
-            parts.append(f"Asked: {field['label']}\nFilled: {value}\nSource: {field['source']}")
-        for field in data.get("pending", []):
-            parts.append(
-                f"Needs answer: {field['label']} · `{field.get('key', '')}`\n{field.get('reason', '')}"
-            )
-        return "\n\n".join(parts)
-    if kind == "qwen_job_review":
-        parts = [
-            f"**Qwen job-fit review** · decision: {data.get('decision')}"
-            + (
-                f" (Qwen said {data['qwen_decision']}; code re-checked exact facts)"
-                if data.get("qwen_decision") and data["qwen_decision"] != data.get("decision")
-                else ""
-            ),
-            str(data.get("rationale", ""))[:1200],
-        ]
-        for item in data.get("requirements", []):
-            parts.append(
-                f"{item.get('status', '?')} · {item.get('kind')} · {item.get('requirement', '')[:200]}"
-                + (f"\n{item['note']}" if item.get("note") else "")
-                + f"\nchecked by: {item.get('checked_by', 'qwen')}"
-            )
-        for unknown in data.get("unknowns", []):
-            parts.append("unknown: " + str(unknown)[:300])
-        return "\n\n".join(parts)
-    if kind == "qwen_answer_proposal":
-        return (
-            "**Qwen draft** · question `"
-            + data.get("key", "")
-            + "`\n"
-            + data.get("value", "")
-            + "\nSources: "
-            + ", ".join(data.get("sources", []))
-            + "\n"
-            + data.get("explanation", "")
-            + "\nApprove exactly this text with: `"
-            + data.get("approve_command", "")
-            + "`"
-        )
-    if kind == "qwen_question":
-        return (
-            f"**Qwen needs you** · question `{data.get('key', '')}`\n{data.get('explanation', '')}"
-        )
-    if kind == "lifecycle":
-        return (
-            f"**Status {data.get('from')} → {data.get('to')}**\n"
-            f"Trigger: {data.get('trigger')}\n{data.get('detail', '')}"
-        )
-    if kind in {"submission_confirmed", "submission_unknown"}:
-        checks = data.get("checks", {})
-        parts = [
-            "**Submission confirmed**"
-            if kind == "submission_confirmed"
-            else "**Submission outcome unknown**",
-            f"Package: {data.get('package_hash')}",
-            f"Attempted: {data.get('attempted_at')}",
-        ]
-        if data.get("confirmation_url"):
-            parts.append(f"Confirmation page: {data['confirmation_url']}")
-        if checks:
-            parts.append("Checks: " + ", ".join(f"{k}={v}" for k, v in checks.items()))
-        if data.get("reason"):
-            parts.append(str(data["reason"]))
-        if data.get("erga"):
-            parts.append("Erga: " + str(data["erga"])[:300])
-        return "\n".join(parts)
-    return (
-        "**"
-        + kind.replace("_", " ").capitalize()
-        + "**\n"
-        + "\n".join(f"{key}: {str(value)[:600]}" for key, value in data.items())
-    )
-
-
 def flush_events(application_id: str):
     thread = ensure_forum(application_id)
     if not thread:
@@ -332,19 +597,19 @@ def flush_events(application_id: str):
             (application_id,),
         ).fetchall()
     for row in rows:
-        content = event_text(row["kind"], json.loads(row["data"]))
-        # Persist chunks before sending; each independently has a stable nonce.
+        cards = event_embeds(application_id, row["kind"], json.loads(row["data"]))
+        # Persist before sending; each message independently has a stable nonce.
         with db() as conn:
             conn.execute(
                 "UPDATE application_events SET delivery='sending' WHERE id=? AND delivery='pending'",
                 (row["id"],),
             )
-        for index, start in enumerate(range(0, len(content), 1800)):
+        for index, start in enumerate(range(0, len(cards), 10)):
             discord(
                 "POST",
                 f"/channels/{thread}/messages",
                 {
-                    "content": content[start : start + 1800],
+                    "embeds": cards[start : start + 10],
                     "allowed_mentions": {"parse": []},
                     "flags": 4,
                     "nonce": f"{row['id']}:{index}",
@@ -355,36 +620,85 @@ def flush_events(application_id: str):
             conn.execute("UPDATE application_events SET delivery='sent' WHERE id=?", (row["id"],))
 
 
-def action_needed(application_id: str, reason: str):
+def action_needed(
+    application_id: str,
+    reason: str,
+    *,
+    questions=None,
+    commands=None,
+    headline: str | None = None,
+):
+    """One card in the thread and one in action-needed: what happened, what to reply."""
     settings = config()
-    record(application_id, "needs_action", {"reason": reason})
+    item = get(application_id)
+    payload = {
+        "reason": reason,
+        "questions": list(questions or []),
+        "commands": list(commands or []),
+        "headline": headline,
+    }
+    record(application_id, "needs_action", payload)
     flush_events(application_id)
     if settings.get("enabled") and settings.get("action_channel_id"):
+        fields = [("Application", f"`{application_id}`", True)]
+        link = forum_url(application_id)
+        if link:
+            fields.append(("Forum", link, True))
+        if payload["questions"]:
+            fields.append(("Questions", question_lines(payload["questions"]), False))
+        if payload["commands"]:
+            fields.append(("Reply with", command_block(payload["commands"]), False))
         discord(
             "POST",
             f"/channels/{settings['action_channel_id']}/messages",
             {
-                "content": f"**Application {application_id} needs you**\n{reason[:1300]}\n{forum_url(application_id) or ''}",
+                "embeds": [
+                    embed(
+                        headline or f"{clip(display_title(item), 90)} · needs you",
+                        clip(reason, 1200),
+                        color="needs",
+                        url=link or item["url"],
+                        fields=fields,
+                    )
+                ],
                 "allowed_mentions": {"parse": []},
                 "flags": 4,
             },
         )
-    status = get(application_id)["status"]
-    apply_tags(application_id, STATE_TAGS.get(status, ["Preparing", "Needs Action"]))
+    apply_tags(application_id, STATE_TAGS.get(item["status"], ["Preparing", "Needs Action"]))
 
 
-def shortlist(application_id: str, reason: str):
+def shortlist(application_id: str, reason: str, items=(), commands=()):
     """A borderline job goes to the owner's shortlist with the reasons, once."""
     settings = config()
     item = get(application_id)
-    record(application_id, "shortlisted", {"reason": reason})
+    payload = {"reason": reason, "items": list(items), "commands": list(commands)}
+    record(application_id, "shortlisted", payload)
     flush_events(application_id)
     if settings.get("enabled") and settings.get("shortlist_channel_id"):
+        fields = [("Application", f"`{application_id}`", True)]
+        link = forum_url(application_id)
+        if link:
+            fields.append(("Forum", link, True))
+        if payload["items"]:
+            fields.append(
+                ("Why", "\n".join("• " + clip(i, 160) for i in payload["items"][:8]), False)
+            )
+        if payload["commands"]:
+            fields.append(("Reply with", command_block(payload["commands"]), False))
         discord(
             "POST",
             f"/channels/{settings['shortlist_channel_id']}/messages",
             {
-                "content": f"**Your call · {item['title'][:120]}**\n{item['url']}\n{reason[:1400]}\n{forum_url(application_id) or ''}",
+                "embeds": [
+                    embed(
+                        "Your call · " + clip(display_title(item), 150),
+                        clip(reason, 800),
+                        color="needs",
+                        url=item["url"],
+                        fields=fields,
+                    )
+                ],
                 "allowed_mentions": {"parse": []},
                 "flags": 4,
             },

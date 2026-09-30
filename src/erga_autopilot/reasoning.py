@@ -423,10 +423,12 @@ def review_application(application_id: str, page: dict) -> dict:
         context_hash=context_hash,
         prompt_version=PROMPT_VERSION,
     )
+    labels = {q["key"]: q.get("label", "") for q in questions}
     for answer in result["answers"]:
         answer["proposal_hash"] = fingerprint(
             {"application_id": application_id, "context_hash": context_hash, **answer}
         )
+        answer["label"] = labels.get(answer["key"], "")
         if answer["kind"] == "proposal":
             answer["approve_command"] = (
                 f"use {application_id} {answer['key']} {answer['proposal_hash']}"
