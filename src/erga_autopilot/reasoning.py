@@ -236,7 +236,14 @@ def evaluate_requirements(requirements: list[dict], profile: dict, posting: str 
     checked = []
     for item in requirements:
         entry = {**item, "checked_by": "qwen"}
-        if item["kind"] == "graduation_window":
+        if item["kind"] == "graduation_window" and not re.search(
+            GRADUATION_WORDS, item.get("requirement", ""), re.IGNORECASE
+        ):
+            # An internship term ("Winter/Spring 2027") is not a graduation requirement.
+            entry["kind"] = "dates"
+            entry["status"] = "unknown"
+            entry["note"] = "Stated as a term, not as a graduation requirement"
+        elif item["kind"] == "graduation_window":
             months = [m for m in (item.get("graduation_start"), item.get("graduation_end")) if m]
             evidenced = all(
                 month_evidenced(m, item.get("requirement", ""), posting) for m in months
@@ -362,12 +369,38 @@ def merge_unknowns(requirements: list[dict], unknowns: list[str]) -> tuple[list,
     return requirements, kept, resolved
 
 
+# Requirement kinds that decide eligibility. Skills and other wishes are for the resume
+# and the written answers, never a gate: an unknown skill must not stop an application.
+GATE_KINDS = {
+    "program",
+    "graduation_window",
+    "work_authorization",
+    "sponsorship",
+    "location",
+    "degree",
+}
+GRADUATION_WORDS = (
+    r"graduat|class of|degree (?:by|in|expected|completion)|expected to graduate|completion of"
+)
+
+
 def decide(requirements: list[dict]) -> str:
-    if any(r["status"] == "conflict" and r["checked_by"] == "code" for r in requirements):
+    gates = [r for r in requirements if r.get("kind") in GATE_KINDS]
+    if any(r["status"] == "conflict" and r["checked_by"] == "code" for r in gates):
         return "not_fit"
-    if any(r["status"] != "satisfied" for r in requirements):
+    if any(r["status"] == "conflict" for r in gates):
         return "needs_review"
+    # Unknown skills are the resume's job. Eligibility the posting states but code cannot
+    # verify is listed on the submit card, so the owner decides once, at submit time.
     return "fit"
+
+
+def unverified(requirements: list[dict]) -> list[str]:
+    return [
+        r["requirement"][:160]
+        for r in requirements
+        if r.get("kind") in GATE_KINDS and r["status"] == "unknown"
+    ]
 
 
 def evaluate_review(qwen_output: dict, profile: dict, posting: str = "") -> dict:
@@ -378,6 +411,7 @@ def evaluate_review(qwen_output: dict, profile: dict, posting: str = "") -> dict
     requirements, kept, resolved = merge_unknowns(requirements, list(qwen_output["unknowns"]))
     return {
         "decision": decide(requirements),
+        "unverified": unverified(requirements),
         "qwen_decision": qwen_output["decision"],
         "rationale": qwen_output["rationale"],
         "requirements": requirements,
@@ -601,7 +635,7 @@ def review_application(application_id: str, page: dict) -> dict:
         answer["label"] = labels.get(answer["key"], "")
         if answer["kind"] == "proposal":
             answer["approve_command"] = (
-                f"use {application_id} {answer['key']} {answer['proposal_hash']}"
+                f"use {application_id} {answer['key']} {answer['proposal_hash'][:12]}"
             )
     write_private(directory / "answer-proposals.json", result)
     for answer in result["answers"]:

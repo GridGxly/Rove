@@ -10,9 +10,11 @@ Recruiting-mail reconciliation and unattended submission are not implemented.
 `autopilot feed tick` checks the fixed Keryx source. An unchanged revision does not
 redownload the snapshot. New matching internships enter a deduplicated notification
 outbox and application queue; each job is announced once, and later Keryx metadata
-changes to a known job do not re-post it. Each tick publishes at most 25 matches, one
-card per job (title, company, location, cycle, track, application id), so a large
-backlog drains over several ticks. A posting that closes in Keryx parks its queued
+changes to a known job do not re-post it. Each tick publishes the newest pending
+matches first, at most `batch_size` (default 10) of them, one card per job (title,
+company, location, cycle, track, application id). Before posting, pending announcements
+beyond the newest `max_pending` (default 40) are expired unposted, so a long gap
+between ticks does not flood the channel. A posting that closes in Keryx parks its queued
 application and leaves a note on any application already in progress. Tracking
 parameters (`utm_*`, `gh_src`, `ref`, and similar) are stripped so the same posting
 reached through two links is one application.
@@ -66,12 +68,22 @@ and can overrule Qwen's arithmetic:
 - work-authorization and sponsorship requirements are compared with approved facts
 - approved nationwide relocation plus accepted onsite work settles location rules
 
-The decision is computed by code from the requirement statuses. A code-verified
-conflict is `not_fit`; a Qwen doubt or unknown is `needs_review`. Either holds the
-application, posts one card to the shortlist channel with the reasons, and waits for
-`proceed` or `defer`. Qwen's raw extraction is kept, so improved code rules re-evaluate
-old reviews without another model call. Reviews cache on posting text, profile version,
-and prompt version.
+The decision is computed by code from the requirement statuses, and only a conflict on
+an eligibility requirement (program, graduation window, work authorization,
+sponsorship, location, degree) changes it. A code-verified conflict is `not_fit`; a
+conflict only Qwen claims is `needs_review`; otherwise the job is `fit`. Eligibility
+the posting states but code cannot check against the profile does not hold the job:
+the thread's job-fit card lists it as stated by the posting, and the ready-to-submit
+card repeats it under Why, so you decide once, at submit time. Skills, dates, and
+other wishes never affect the decision either; they are left to the resume and the
+written answers. A requirement Qwen files as a graduation window that never mentions
+graduating (an internship term, for example) is reclassified as dates. Either non-fit
+decision holds a feed job with one card in the thread and one in the shortlist channel
+(nothing goes to action-needed for a fit hold) and waits for `proceed` or `defer`. The
+card's summary and reasons are the conflicting requirements themselves, plus any
+unchecked eligibility, not Qwen's prose. A link you pasted is never held on fit. Qwen's
+raw extraction is kept, so improved code rules re-evaluate old reviews without another
+model call. Reviews cache on posting text, profile version, and prompt version.
 
 ## Preparation and questions
 
@@ -82,6 +94,9 @@ deterministic approved fields as a batch. The observer reads associated labels f
 falls back to the nearest label that owns no other control, reports a radio group as one
 question with options, and reports a Yes/No button group as one choice. Code selects an
 option only when an approved fact matches exactly one option and verifies the selection.
+Typed values are verified too: a site that trims whitespace or prefixes a phone number
+with its country code still passes; any other difference stops preparation with a card
+that names the field.
 A page whose known fields are complete and that shows a Next/Continue control instead of
 a final submit is advanced once and filled again, for at most four steps.
 
@@ -117,8 +132,28 @@ reconcile APPLICATION_ID applied             owner applied or confirmed manually
 reconcile APPLICATION_ID not-submitted       owner verified nothing was sent
 ```
 
-Every hold is one card in the thread and one in action-needed: what happened, the open
-questions with their keys, and the exact reply commands in a code block.
+`PROPOSAL_HASH` and `PACKAGE_HASH` accept a prefix of 8 to 64 hex characters of the
+current hash; cards show the first 12. A prefix that does not match the current draft or
+package is rejected.
+
+Every hold is one card in the thread and one in an owner channel (action-needed, or
+shortlist for a fit hold): what happened, why, the questions only you can answer, and
+the exact reply commands in a code block. The "Answers needed" card lists only the
+questions Qwen could not draft (up to six, numbered, with their options) and a bare
+`answer APPLICATION_ID FIELD_KEY = ` line for the first four to complete; drafts are
+approved from their own cards in the thread.
+
+`action-needed` and `shortlist` are to-do lists. An application has at most one live
+card in each; a new card replaces the previous one, and the cards are withdrawn as
+soon as the application stops waiting on you (any state other than `NEEDS_USER`,
+`READY_FOR_REVIEW`, `MANUAL_TAKEOVER`, or `UNKNOWN_SUBMISSION`). The thread's first
+post is edited into a live status card (headline, one line, the reply commands) so the
+forum list previews the current state; the entries below it stay the full
+chronological record. Routine steps there (opened, clicked Apply, resume ready, your
+replies, lifecycle changes, the submit click) are one-line messages; cards are kept for
+decisions, drafts, job fit, the filled form, submission results, and failures. Sources
+are shown in words ("your profile", "your reply", "your evidence", "the posting"),
+never as internal keys.
 
 ## Submission
 
@@ -161,7 +196,10 @@ Private `config/workflow.json` maps `guild_id`, `forum_channel_id`, `control_cha
 It also supplies `hermes_python`, an explicit `enabled` flag, `submission_enabled`,
 `submit_adapters`, `max_waiting_applications` (default 1), `browser_app` (`chrome` or
 `chromium`), `max_open_tabs` (default 5), `human_pacing` (default true), and an optional
-`unslop_path` pointing at a local clone of the Unslop repository.
+`unslop_path` pointing at a local clone of the Unslop repository. Private
+`config/feed.json` holds the feed's `enabled` flag, the jobs channel's `channel_id`,
+`batch_size` (cards per feed tick, default 10), and `max_pending` (pending
+announcements kept, default 40).
 
 ```sh
 uv run autopilot install-services
@@ -177,9 +215,12 @@ uv run autopilot browser status
 Discord commands. Delivery records are written before Discord mutations. Thread entries and the
 action-needed and shortlist cards are stored first and posted after; a failed post is
 logged to `logs/delivery-failures.log` under the state root and retried on every worker
-tick. Each tick also re-checks queued feed jobs against the approved exclusion rules and
+tick. A failed card withdrawal or status-card edit is logged there too, but not retried.
+Each tick also re-checks queued feed jobs against the approved exclusion rules and
 defers the ones that now match, with the reason in the queue record; a link you pasted
-is never pruned that way. An ambiguous forum creation is held for
+is never pruned that way. The worker takes an application you told to `resume`,
+`proceed`, or `account ... create` first, then a pasted link before a feed job, and
+otherwise the newest queued job. An ambiguous forum creation is held for
 reconciliation. The worker holds the only processing lock, so a `PREPARING` application
 older than fifteen minutes is a crashed run and is handed back to the owner. When the
 local model server is down the worker starts it once and otherwise leaves the queue

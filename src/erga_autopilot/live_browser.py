@@ -50,6 +50,15 @@ def approved_ats(url: str) -> bool:
     return any(host == suffix or host.endswith("." + suffix) for suffix in ATS_HOSTS)
 
 
+def same_value(expected: str, actual: str) -> bool:
+    """A typed value counts when the site kept it, reformatted it, or prefixed its country code."""
+    expected, actual = str(expected or ""), str(actual or "")
+    if expected == actual or " ".join(expected.split()) == " ".join(actual.split()):
+        return True
+    digits_expected, digits_actual = re.sub(r"\D", "", expected), re.sub(r"\D", "", actual)
+    return len(digits_expected) >= 7 and digits_actual.endswith(digits_expected)
+
+
 def job_scope(url: str) -> tuple:
     """Tenant AND job binding: an ATS hostname alone is never employer approval."""
     parsed = urlsplit(url)
@@ -66,7 +75,12 @@ def job_scope(url: str) -> tuple:
         return (host, *parts[:2])
     if host == "jobs.ashbyhq.com" and len(parts) >= 2:
         return (host, *parts[:2])
-    return (host, parsed.path.rstrip("/"))
+    # Employer sites: the posting and its apply page share the job number, not the path.
+    path = re.sub(
+        r"/(apply|application|apply-?now)$", "", parsed.path.rstrip("/"), flags=re.IGNORECASE
+    )
+    numbers = re.findall(r"[A-Za-z]{0,3}\d{4,}", path)
+    return (host, numbers[-1].upper()) if numbers else (host, path)
 
 
 def validate_destination(url: str) -> str:
@@ -84,13 +98,35 @@ def normalized(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
 
+COUNTRY_ALIASES = {"united states", "united states of america", "usa", "us", "u s", "u s a"}
+
+
+def option_matches(option_label: str, value) -> bool:
+    """Exact option text, or the same country written differently."""
+    a, b = normalized(option_label), normalized(str(value))
+    return a == b or (a in COUNTRY_ALIASES and b in COUNTRY_ALIASES)
+
+
 def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
     identity = profile["identity"]
-    name = normalized(label)
+    # "(Optional)" and "(Required)" qualify the field; they are not part of its name.
+    name = " ".join(re.sub(r"\b(optional|required)\b", " ", normalized(label)).split())
+    if name in {"contact phone type", "phone type", "phone number type"}:
+        return "Mobile", "default.phone_type"
     keys = {
         "first name": "legal_first_name",
         "legal first name": "legal_first_name",
         "middle name": "legal_middle_name",
+        "legal middle name": "legal_middle_name",
+        "country region of residence": "country",
+        "country region": "country",
+        "state": "state_region",
+        "state region": "state_region",
+        "state province": "state_region",
+        "state province region": "state_region",
+        "mobile number": "phone",
+        "cell phone": "phone",
+        "mobile phone number": "phone",
         "last name": "legal_last_name",
         "legal last name": "legal_last_name",
         "preferred name": "preferred_name",
@@ -1122,14 +1158,14 @@ class RecruitingBrowser:
                 if (
                     field["kind"] in ("text", "email", "tel", "url", "textarea")
                     and entry.get("control") != "combobox"
-                    and field["value"] != entry["value"]
+                    and not same_value(entry["value"], field["value"])
                 ):
-                    raise ValueError("Post-batch verification mismatch")
+                    raise ValueError(f"Field verification failed: {field.get('label', '')[:80]}")
                 if (
                     entry.get("control") in {"radio_group", "choice"}
                     and field.get("value") != entry["value"]
                 ):
-                    raise ValueError("Post-batch verification mismatch")
+                    raise ValueError(f"Field verification failed: {field.get('label', '')[:80]}")
 
     def _fill_page(self, run_id: str, before: dict, approved: dict, answers: dict):
         """Fill one page of a form from approved facts; returns (filled, pending)."""
@@ -1285,9 +1321,7 @@ class RecruitingBrowser:
                 )
                 continue
             if field["tag"] == "select" and value is not None:
-                options = [
-                    x for x in field["options"] if normalized(x["label"]) == normalized(str(value))
-                ]
+                options = [x for x in field["options"] if option_matches(x["label"], value)]
                 if len(options) == 1:
                     locator.select_option(value=options[0]["value"])
                     if locator.input_value() != options[0]["value"]:
@@ -1328,7 +1362,7 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            if field["value"] and field["value"] != value and not owner_answer:
+            if field["value"] and not same_value(value, field["value"]) and not owner_answer:
                 pending.append(
                     {
                         "label": field["label"],
@@ -1338,9 +1372,14 @@ class RecruitingBrowser:
                     }
                 )
                 continue
+            if field["value"] and same_value(value, field["value"]):
+                filled.append(
+                    {"label": field["label"], "value": value, "source": source, "key": field["key"]}
+                )
+                continue
             self.type_value(locator, value)
-            if locator.input_value() != value:
-                raise ValueError("Field verification failed")
+            if not same_value(value, locator.input_value()):
+                raise ValueError(f"Field verification failed: {field['label'][:80]}")
             filled.append(
                 {"label": field["label"], "value": value, "source": source, "key": field["key"]}
             )

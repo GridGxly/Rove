@@ -42,7 +42,7 @@ def test_inclusive_graduation_window_is_decided_by_code_not_qwen():
         "conflict",
         graduation_start="2027-05",
         graduation_end="2027-08",
-        requirement="Rising seniors enrolled in a CS or STEM degree program",
+        requirement="Rising seniors graduating from a CS or STEM degree program",
     )
     guessed = reasoning.evaluate_requirements([invented], PROFILE, "Rising seniors welcome")[0]
     assert guessed["status"] == "unknown" and "not stated" in guessed["note"]
@@ -79,7 +79,7 @@ def test_authorization_sponsorship_and_relocation_use_approved_facts():
 def test_decision_escalates_qwen_doubt_but_only_code_conflicts_reject():
     ok = {**requirement("program", "satisfied"), "checked_by": "qwen"}
     assert reasoning.decide([ok]) == "fit"
-    doubt = {**requirement("skills", "conflict"), "checked_by": "qwen"}
+    doubt = {**requirement("location", "conflict"), "checked_by": "qwen"}
     assert reasoning.decide([ok, doubt]) == "needs_review"
     hard = {**requirement("graduation_window", "conflict"), "checked_by": "code"}
     assert reasoning.decide([ok, hard]) == "not_fit"
@@ -97,7 +97,8 @@ def test_unknowns_already_compared_by_code_do_not_hold_the_application():
         [window, ok], ["Must hold a security clearance"]
     )
     assert kept and requirements[-1]["status"] == "unknown"
-    assert reasoning.decide(requirements) == "needs_review"
+    # An unresolved unknown is shown to the owner as unverified; it never holds the job.
+    assert reasoning.decide(requirements) == "fit"
     schedule = ["Can the applicant work ten weeks full time before the December 2027 graduation"]
     _, kept, resolved = reasoning.merge_unknowns([window, ok], schedule)
     assert kept == schedule and resolved == []
@@ -360,3 +361,71 @@ def test_computing_degree_satisfies_a_related_field_requirement_by_code():
         [checked], ["Whether Computing Technology counts as a related field to CS"]
     )
     assert kept == [] and len(resolved) == 1
+
+
+def test_only_conflicts_on_eligibility_requirements_change_the_decision():
+    ok = {**requirement("program", "satisfied"), "checked_by": "qwen"}
+    hard = {**requirement("graduation_window", "conflict"), "checked_by": "code"}
+    assert reasoning.decide([ok, hard]) == "not_fit"
+    claimed = {**requirement("work_authorization", "conflict"), "checked_by": "qwen"}
+    assert reasoning.decide([ok, claimed]) == "needs_review"
+    unchecked = {**requirement("graduation_window", "unknown"), "checked_by": "qwen"}
+    assert reasoning.decide([ok, unchecked]) == "fit"
+
+
+def test_skills_and_other_wishes_never_change_the_decision():
+    wishes = [
+        {**requirement("skills", "unknown"), "checked_by": "qwen"},
+        {**requirement("other", "unknown"), "checked_by": "qwen"},
+        {**requirement("skills", "conflict"), "checked_by": "qwen"},
+    ]
+    assert reasoning.decide(wishes) == "fit"
+
+
+def test_evaluate_review_lists_unverified_eligibility_instead_of_holding():
+    output = {
+        "decision": "needs_review",
+        "rationale": "unsure",
+        "requirements": [
+            {"kind": "program", "requirement": "Internship", "evidence": "", "status": "satisfied"},
+            {
+                "kind": "location",
+                "requirement": "Based in Example City",
+                "evidence": "",
+                "status": "unknown",
+            },
+            {"kind": "skills", "requirement": "Rust", "evidence": "", "status": "unknown"},
+        ],
+        "unknowns": [],
+    }
+    result = reasoning.evaluate_review(output, PROFILE)
+    assert result["decision"] == "fit"
+    assert result["unverified"] == ["Based in Example City"]
+
+
+def test_an_internship_term_is_not_a_graduation_window():
+    term = requirement(
+        "graduation_window",
+        "conflict",
+        graduation_start="2027-01",
+        graduation_end="2027-05",
+        requirement="Winter/Spring 2027",
+    )
+    checked = reasoning.evaluate_requirements([term], PROFILE, "Winter/Spring 2027 internship")[0]
+    assert (checked["kind"], checked["status"], checked["checked_by"]) == (
+        "dates",
+        "unknown",
+        "qwen",
+    )
+    assert "term" in checked["note"]
+    assert reasoning.decide([checked]) == "fit"
+    window = requirement(
+        "graduation_window",
+        "unknown",
+        graduation_start="2027-05",
+        graduation_end="2028-05",
+        requirement="Graduating between May 2027 and May 2028",
+    )
+    posting = "Eligibility: graduating between May 2027 and May 2028"
+    checked = reasoning.evaluate_requirements([window], PROFILE, posting)[0]
+    assert (checked["status"], checked["checked_by"]) == ("satisfied", "code")

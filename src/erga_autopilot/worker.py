@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from . import matching, workflow
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
+from .reasoning import GATE_KINDS
 from .resumes import prepare_resume
 from .runtime import state_root, write_private
 
@@ -25,27 +26,43 @@ class PhaseError(Exception):
 
 
 def fit_hold(application_id: str, fit: dict) -> dict:
-    items = []
-    for item in fit.get("requirements", []):
-        if item["status"] != "satisfied":
-            items.append(
-                f"{item['status']} · {item['requirement'][:140]}"
-                + (f" ({item['note']})" if item.get("note") else "")
-            )
-    label = {"fit": "fit", "not_fit": "not a fit", "needs_review": "your call"}.get(
-        fit["decision"], fit["decision"]
-    )
+    """What blocks the job, in the owner's terms: conflicts first, unchecked eligibility next."""
+    conflicts = [
+        r
+        for r in fit.get("requirements", [])
+        if r["status"] == "conflict" and r.get("kind") in GATE_KINDS
+    ]
+    unchecked = [
+        r
+        for r in fit.get("requirements", [])
+        if r["status"] == "unknown" and r.get("kind") in GATE_KINDS
+    ]
+    items = [f"conflict · {r['requirement'][:110]}" for r in conflicts] + [
+        f"unchecked · {r['requirement'][:110]}" for r in unchecked
+    ]
+    if conflicts:
+        summary = "Conflicts with your approved facts: " + "; ".join(
+            r["requirement"][:80] for r in conflicts[:2]
+        )
+    elif unchecked:
+        summary = "Eligibility the posting states could not be checked against your profile: " + (
+            "; ".join(r["requirement"][:80] for r in unchecked[:2])
+        )
+    else:
+        summary = "Job-fit review asks for your call."
     return {
-        "summary": f"Job-fit review: {label}. " + fit["rationale"][:500],
+        "summary": summary + ".",
         "items": items,
         "commands": [f"proceed {application_id}", f"defer {application_id}"],
     }
 
 
-def held(application_id: str, status: str, reason: str, headline: str, **extra) -> dict:
-    """End a run in a state the owner must act on, with one clear card."""
+def held(
+    application_id: str, status: str, reason: str, headline: str, channel: str = "action", **extra
+) -> dict:
+    """End a run in a state the owner must act on, with one clear card in one channel."""
     workflow.set_state(application_id, status)
-    workflow.action_needed(application_id, reason, headline=headline, **extra)
+    workflow.action_needed(application_id, reason, headline=headline, channel=channel, **extra)
     return {
         "application_id": application_id,
         "status": status,
@@ -54,14 +71,33 @@ def held(application_id: str, status: str, reason: str, headline: str, **extra) 
     }
 
 
+def skip_optional(application_id: str, questions: list):
+    """Record a blank for optional fields with no approved fact or draft; never asks."""
+    with workflow.db() as conn:
+        for question in questions:
+            conn.execute(
+                "INSERT OR IGNORE INTO application_answers VALUES(?,?,?,?)",
+                (application_id, question["key"], "skip", f"auto-skip:{question['key']}"),
+            )
+    workflow.record(
+        application_id,
+        "optional_skipped",
+        {"labels": [str(q.get("label") or q.get("key"))[:80] for q in questions[:12]]},
+    )
+    workflow.flush_events(application_id)
+
+
 def process(application_id: str) -> dict:
     item = workflow.get(application_id)
+    (state_root() / f"applications/{application_id}/error.json").unlink(missing_ok=True)
     workflow.ensure_forum(application_id)
     workflow.set_state(application_id, "PREPARING", error=None)
     phase = "open"
     final_state = "NEEDS_USER"
     posting_text = ""
     questions: list = []
+    items: list = []
+    channel = "action"
     commands: list = [f"resume {application_id}", f"defer {application_id}"]
     headline = "Browser needs a look"
     try:
@@ -154,18 +190,20 @@ def process(application_id: str) -> dict:
 
                 phase = "job_fit_review"
                 fit = review_job(application_id, page, posting_text)
-                if fit["decision"] != "fit" and not workflow.owner_override(
-                    application_id, "proceed"
+                # A link the owner pasted is a decision already made: never ask again.
+                if (
+                    fit["decision"] != "fit"
+                    and item["source"] != "owner_link"
+                    and not workflow.owner_override(application_id, "proceed")
                 ):
                     hold = fit_hold(application_id, fit)
-                    workflow.shortlist(
-                        application_id, hold["summary"], hold["items"], hold["commands"]
-                    )
-                    reason, commands, headline = (
+                    reason, commands, headline, items = (
                         hold["summary"],
                         hold["commands"],
                         "Your call on fit",
+                        hold["items"],
                     )
+                    channel = "shortlist"
                     break
                 phase = "resume"
                 directory = state_root() / "applications" / application_id
@@ -194,35 +232,63 @@ def process(application_id: str) -> dict:
                 phase = "prepare"
                 page = browser_call("prepare", run_id=application_id)
                 pending = page.get("pending", [])
+                proposals: dict = {"answers": []}
                 if pending:
                     phase = "answer_drafting"
                     proposals = review_application(application_id, page)
                     page["qwen_review"] = proposals
-                    drafted = sum(
-                        1 for a in proposals.get("answers", []) if a["kind"] == "proposal"
-                    )
-                    reason = (
-                        f"{len(pending)} question{'s' if len(pending) != 1 else ''} left. "
-                        f"Qwen drafted {drafted}; each draft card has its own approve command. "
-                        "Answer the rest, then resume."
-                    )
-                    questions = pending[:10]
-                    commands = [
-                        f"use {application_id} FIELD_KEY PROPOSAL_HASH",
-                        f"answer {application_id} FIELD_KEY = your answer",
-                        f"resume {application_id}",
-                        f"defer {application_id}",
+                    drafted_keys = {
+                        a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"
+                    }
+                    optional = [
+                        q
+                        for q in pending
+                        if not q.get("required", True) and q["key"] not in drafted_keys
                     ]
+                    if optional:
+                        # An optional field nobody can fill from approved facts stays blank.
+                        skip_optional(application_id, optional)
+                        phase = "prepare"
+                        page = browser_call("prepare", run_id=application_id)
+                        page["qwen_review"] = proposals
+                        pending = page.get("pending", [])
+                if pending:
+                    drafted_keys = {
+                        a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"
+                    }
+                    open_questions = [q for q in pending if q["key"] not in drafted_keys]
+                    drafted = len([q for q in pending if q["key"] in drafted_keys])
+                    parts = []
+                    if drafted:
+                        parts.append(
+                            f"{drafted} draft{'s' if drafted != 1 else ''} to approve in the "
+                            "thread (each card has its `use` command)"
+                        )
+                    if open_questions:
+                        count = len(open_questions)
+                        parts.append(
+                            f"{count} question{'s' if count != 1 else ''} only you can answer"
+                        )
+                    reason = " · ".join(parts) + f". Then reply `resume {application_id}`."
+                    questions = open_questions[:6]
+                    commands = [
+                        f"answer {application_id} {q['key']} = " for q in open_questions[:4]
+                    ] + [f"resume {application_id}", f"defer {application_id}"]
                     headline = "Answers needed"
                 elif page.get("package_hash"):
                     final_state = "READY_FOR_REVIEW"
                     reason = (
-                        "Every field is filled and verified against approved facts. Check the "
-                        "form and the resume in the recruiting browser, then send it once."
+                        "Every field is filled from approved facts. Check the form and the "
+                        "resume in the recruiting browser, then send it once."
                     )
+                    if fit.get("unverified"):
+                        reason += (
+                            " The posting states requirements I could not check against "
+                            "your profile; see Why."
+                        )
+                        items = [f"not verified · {u}" for u in fit["unverified"][:4]]
                     commands = [
-                        f"submit {application_id} {page['package_hash']}",
-                        f"answer {application_id} FIELD_KEY = value",
+                        f"submit {application_id} {workflow.short_hash(page['package_hash'])}",
                         f"resume {application_id}",
                     ]
                     headline = "Ready to submit"
@@ -252,7 +318,14 @@ def process(application_id: str) -> dict:
     result = {"application_id": application_id, "page": page, "reason": reason, "submitted": False}
     workflow.save_result(application_id, result)
     return held(
-        application_id, final_state, reason, headline, questions=questions, commands=commands
+        application_id,
+        final_state,
+        reason,
+        headline,
+        channel=channel,
+        questions=questions,
+        commands=commands,
+        items=items,
     )
 
 
@@ -270,7 +343,7 @@ def parse_command(message: dict, owner: str, channel: str, allowed: set[str]) ->
     match = re.fullmatch(r"account ([a-f0-9]{12}) create", text, re.IGNORECASE)
     if match:
         return {"kind": "account", "application_id": match[1].lower()}
-    match = re.fullmatch(r"submit ([a-f0-9]{12}) ([a-f0-9]{64})", text, re.IGNORECASE)
+    match = re.fullmatch(r"submit ([a-f0-9]{12}) ([a-f0-9]{8,64})", text, re.IGNORECASE)
     if match:
         return {
             "kind": "submit",
@@ -284,7 +357,7 @@ def parse_command(message: dict, owner: str, channel: str, allowed: set[str]) ->
             "application_id": match[1].lower(),
             "outcome": match[2].lower(),
         }
-    match = re.fullmatch(r"use ([a-f0-9]{12}) ([a-f0-9]{12}) ([a-f0-9]{64})", text, re.IGNORECASE)
+    match = re.fullmatch(r"use ([a-f0-9]{12}) ([a-f0-9]{12}) ([a-f0-9]{8,64})", text, re.IGNORECASE)
     if match:
         return {
             "kind": "use",
@@ -320,12 +393,16 @@ def apply_command(command: dict, message_id: str):
                 )
         elif item["status"] in {"APPLIED", "SUBMITTING", "UNKNOWN_SUBMISSION"}:
             raise PermissionError("This application cannot be prepared again")
-        if command["kind"] == "submit" and (
-            item["status"] != "READY_FOR_REVIEW" or item["package_hash"] != command["package_hash"]
-        ):
-            raise PermissionError(
-                "Submission needs the exact package hash of a reviewed, ready application"
-            )
+        if command["kind"] == "submit":
+            # A prefix of at least eight hex characters names the one current package.
+            current = str(item["package_hash"] or "")
+            if item["status"] != "READY_FOR_REVIEW" or not current.startswith(
+                command["package_hash"]
+            ):
+                raise PermissionError(
+                    "Submission needs the exact package hash of a reviewed, ready application"
+                )
+            command = {**command, "package_hash": current}
         if command["kind"] in {"proceed", "account"} and item["status"] != "NEEDS_USER":
             raise PermissionError("Only a held application can be told to proceed")
         if command["kind"] == "use":
@@ -341,7 +418,7 @@ def apply_command(command: dict, message_id: str):
                     for a in proposals["answers"]
                     if a["key"] == command["field_key"]
                     and a["kind"] == "proposal"
-                    and a["proposal_hash"] == command["proposal_hash"]
+                    and a["proposal_hash"].startswith(command["proposal_hash"])
                 ),
                 None,
             )
@@ -349,7 +426,11 @@ def apply_command(command: dict, message_id: str):
                 raise PermissionError(
                     "Draft changed or is not an answer proposal; review the current draft"
                 )
-            command = {**command, "value": answer["value"]}
+            command = {
+                **command,
+                "value": answer["value"],
+                "proposal_hash": answer["proposal_hash"],
+            }
         if command["kind"] in {"answer", "use"}:
             observation_path = state_root() / f"applications/{application_id}/observation.json"
             observation = json.loads(observation_path.read_text())
@@ -557,7 +638,7 @@ def next_queued(max_waiting: int):
         if waiting >= max_waiting:
             return None
         queued = conn.execute(
-            "SELECT id FROM application_queue WHERE status='QUEUED' ORDER BY CASE source WHEN 'owner_link' THEN 0 ELSE 1 END,created_at LIMIT 1"
+            "SELECT id FROM application_queue WHERE status='QUEUED' ORDER BY CASE source WHEN 'owner_link' THEN 0 ELSE 1 END,created_at DESC LIMIT 1"
         ).fetchone()
     return queued[0] if queued else None
 
@@ -610,11 +691,22 @@ def tick() -> dict:
                     "detail": str(failure.error)[:1500],
                 },
             )
+            detail = str(failure.error)
+            if detail.startswith("Field verification failed"):
+                label = detail.partition(":")[2].strip() or "a field"
+                reason = (
+                    f"The site changed the value I typed for “{label}”. Check it in the "
+                    "recruiting browser, then resume."
+                )
+            else:
+                reason = (
+                    f"Preparation stopped during {failure.phase.replace('_', ' ')}: "
+                    + type(failure.error).__name__
+                    + ". Details are saved locally; nothing was submitted."
+                )
             workflow.action_needed(
                 queued,
-                f"Preparation stopped during {failure.phase.replace('_', ' ')}: "
-                + type(failure.error).__name__
-                + ". Details are saved locally; nothing was submitted.",
+                reason,
                 commands=[f"resume {queued}", f"defer {queued}"],
                 headline="Preparation stopped",
             )

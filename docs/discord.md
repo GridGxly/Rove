@@ -33,6 +33,8 @@ Real guild, channel, role, and user IDs stay in local configuration and must not
 
 That post is the readable history for one application. It should answer what Autopilot did, what it submitted, what changed later, and why.
 
+The post's first message is a live status card that Autopilot edits in place (headline, one line, the reply commands), so the forum list previews the current state. The entries below it are the chronological record: routine steps (opened, clicked Apply, resume ready, your replies, lifecycle changes, the submit click) are one-line messages, and cards are used for decisions, drafts, job fit, the filled form, submission results, and failures. Sources are shown in words ("your profile", "your reply", "your evidence"), never as internal keys.
+
 The post can keep:
 
 - the source job and official application URL
@@ -58,6 +60,8 @@ This is useful for borderline roles, unusual opportunities, startups, local comp
 
 A shortlist item should preserve enough context to make the decision without redoing discovery, including the job, company, source, official URL, and the reason it was held for review.
 
+The implemented workflow posts a job-fit hold here, and only here: a feed job whose posting states an eligibility requirement (program, graduation window, work authorization, sponsorship, location, degree) that conflicts with an approved fact. The card links to the thread and carries the conflicting requirement (and any eligibility that could not be checked) as its reasons, plus the `proceed` and `defer` commands. Eligibility that could not be checked, skills, dates, and other items never hold a job on their own, and a link you pasted is never held on fit. The channel is a to-do list: an application has at most one live card here, and it is withdrawn when the application stops waiting on you.
+
 ## Agent
 
 #### `agent-control`
@@ -80,6 +84,8 @@ Examples include:
 - a deadline or recruiting event that needs a decision
 
 This channel should stay quiet unless the user actually needs to do something.
+
+The implemented workflow posts here for answers it cannot draft, sign-in and account steps, blocked sites and manual steps in the browser, stopped preparation, ready-to-submit review, and submission problems. Job fit never lands here; that goes to `shortlist`. The channel is a to-do list: an application has at most one live card, a new card replaces the previous one, and the card is withdrawn when the application stops waiting on you.
 
 #### `memory`
 
@@ -143,7 +149,7 @@ url: https://jobs.example.com/apply/123
 
 asked: First name
 filled: Alex
-source: profile_snapshot.legal_first_name
+source: your profile
 
 asked: Resume / CV
 uploaded: example-resume.pdf
@@ -249,10 +255,17 @@ The [application workflow](application-workflow.md) maps an existing source chan
 (such as `jobs`) through private configuration, publishes matching Keryx updates, and
 queues preparation. Every post is an embed card: a title, one line of context, values in
 fields, and the exact reply commands in a code block. The jobs channel gets one card per
-Keryx job. Forum cards cover opening, job-fit review, the filled form (one field per
-entry with its source), each Qwen draft with its approve command, lifecycle transitions
-with their trigger, submit attempts, and receipts. Owner-only `answer`, `use`, `resume`,
-`defer`, `proceed`, `account`, `submit`, and `reconcile` commands are handled by
-deterministic code, independently of model wording. A job-fit hold is also posted to `shortlist` with its
-reasons. Action-needed and shortlist cards are recorded before they are posted, and a
-failed post is retried on the next worker tick. Recruiting-mail lifecycle updates are still unimplemented.
+Keryx job, newest first, at most `batch_size` (default 10) per feed tick; pending
+announcements beyond the newest `max_pending` (default 40) expire unposted. In the
+forum, routine steps (opening, clicking Apply, resume ready, your replies, lifecycle
+transitions with their trigger, the submit click) are one-line messages; cards cover
+job-fit review, the filled form (one field per entry with its source in words), each
+Qwen draft with its approve command, questions only you can answer, holds, and
+submission results. Owner-only `answer`, `use`, `resume`, `defer`, `proceed`, `account`,
+`submit`, and `reconcile` commands are handled by deterministic code, independently of
+model wording. A job-fit hold on a feed job is posted to `shortlist` only, with the
+conflicting eligibility requirement (and any unchecked ones) as its reasons; a pasted
+link is never held on fit. Action-needed and shortlist cards are recorded before they
+are posted, and a failed post is retried on the next worker tick; each application keeps
+at most one live card per channel, withdrawn when it stops waiting on you.
+Recruiting-mail lifecycle updates are still unimplemented.

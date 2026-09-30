@@ -586,3 +586,376 @@ def test_queued_feed_jobs_are_deferred_when_approved_rules_exclude_them(state, m
     ]
     assert "machine learning" in workflow.get(feed["application_id"])["error"]
     assert worker.prune_excluded() == 0
+
+
+def test_submit_and_use_commands_accept_hash_prefixes_of_eight_to_sixty_four_hex():
+    parse = lambda text: parse_command(
+        {"author": {"id": "owner"}, "content": text}, "owner", "control", {"control"}
+    )
+    app = "abcdef012345"
+    assert parse(f"submit {app} " + "c" * 8)["package_hash"] == "c" * 8
+    assert parse(f"submit {app} " + "c" * 64)["package_hash"] == "c" * 64
+    assert parse(f"submit {app} " + "c" * 7) is None
+    assert parse(f"submit {app} " + "c" * 65) is None
+    assert parse(f"use {app} {app} " + "d" * 12)["proposal_hash"] == "d" * 12
+    assert parse(f"use {app} {app} " + "d" * 7) is None
+
+
+def test_submit_prefix_binds_the_full_package_hash(state):
+    app = workflow.enqueue("https://jobs.example.com/ready")["application_id"]
+    workflow.set_state(app, "READY_FOR_REVIEW", package_hash="c" * 64)
+    with pytest.raises(PermissionError):
+        apply_command({"kind": "submit", "application_id": app, "package_hash": "d" * 12}, "m1")
+    apply_command({"kind": "submit", "application_id": app, "package_hash": "c" * 12}, "m2")
+    with workflow.db() as conn:
+        rows = conn.execute("SELECT message_id,payload FROM owner_commands").fetchall()
+    assert [r["message_id"] for r in rows] == ["m2"]
+    assert json.loads(rows[0]["payload"])["package_hash"] == "c" * 64
+
+
+def test_use_prefix_resolves_the_exact_proposal_and_stores_its_full_hash(state):
+    from erga_autopilot.onboarding import read_approved
+
+    app = workflow.enqueue("https://jobs.example.com/use")["application_id"]
+    directory = state / "applications" / app
+    directory.mkdir(parents=True)
+    field = {"key": "abcdef012345", "kind": "textarea", "label": "Why us?", "required": True}
+    (directory / "observation.json").write_text(json.dumps({"fields": [field]}))
+    proposal = {
+        "key": field["key"],
+        "kind": "proposal",
+        "proposal_hash": "a" * 64,
+        "value": "Because of the synthetic mission.",
+    }
+    (directory / "answer-proposals.json").write_text(
+        json.dumps({"profile_hash": read_approved()["profile_hash"], "answers": [proposal]})
+    )
+    command = {
+        "kind": "use",
+        "application_id": app,
+        "field_key": field["key"],
+        "proposal_hash": "a" * 12,
+    }
+    with pytest.raises(PermissionError, match="Draft changed"):
+        apply_command({**command, "proposal_hash": "b" * 12}, "m1")
+    apply_command(command, "m2")
+    assert workflow.approved_answers(app)[field["key"]]["value"] == proposal["value"]
+    with workflow.db() as conn:
+        stored = conn.execute("SELECT payload FROM owner_commands WHERE message_id='m2'").fetchone()
+    assert json.loads(stored[0])["proposal_hash"] == "a" * 64
+
+
+def gate(kind: str, requirement: str, status: str) -> dict:
+    return {
+        "kind": kind,
+        "requirement": requirement,
+        "evidence": "",
+        "status": status,
+        "checked_by": "qwen",
+        "note": "",
+    }
+
+
+def test_fit_hold_names_conflicts_and_unchecked_eligibility_without_qwen_prose():
+    from erga_autopilot.worker import fit_hold
+
+    fit = {
+        "decision": "needs_review",
+        "rationale": "Qwen thinks this is a stretch but doable.",
+        "requirements": [
+            gate("program", "Internship", "satisfied"),
+            gate("sponsorship", "No visa sponsorship", "conflict"),
+            gate("graduation_window", "Graduating by June 2028", "unknown"),
+            gate("skills", "Rust", "unknown"),
+        ],
+    }
+    hold = fit_hold("abcdef012345", fit)
+    assert hold["items"] == [
+        "conflict · No visa sponsorship",
+        "unchecked · Graduating by June 2028",
+    ]
+    assert hold["summary"].startswith("Conflicts with your approved facts: No visa sponsorship")
+    assert "stretch" not in hold["summary"]
+    assert hold["commands"] == ["proceed abcdef012345", "defer abcdef012345"]
+
+
+def test_fit_hold_without_conflicts_asks_about_unchecked_eligibility_only():
+    from erga_autopilot.worker import fit_hold
+
+    fit = {
+        "decision": "needs_review",
+        "rationale": "Probably fine.",
+        "requirements": [gate("location", "Based in Example City", "unknown")],
+    }
+    hold = fit_hold("abcdef012345", fit)
+    assert hold["items"] == ["unchecked · Based in Example City"]
+    assert hold["summary"].startswith("Eligibility the posting states could not be checked")
+    assert "Probably" not in hold["summary"]
+
+
+def test_cap_backlog_expires_every_pending_card_but_the_newest(state):
+    with discord_feed.feed_db() as db:
+        for index in range(5):
+            db.execute(
+                "INSERT INTO feed_outbox(key,job_id,payload) VALUES(?,?,?)",
+                (f"k{index}", f"job_{index}", "{}"),
+            )
+        db.execute("UPDATE feed_outbox SET status='sent' WHERE key='k4'")
+        assert discord_feed.cap_backlog(db, 2) == 2
+        rows = {r[0]: r[1] for r in db.execute("SELECT key,status FROM feed_outbox")}
+        assert discord_feed.cap_backlog(db, 2) == 0
+    assert rows == {
+        "k0": "expired",
+        "k1": "expired",
+        "k2": "pending",
+        "k3": "pending",
+        "k4": "sent",
+    }
+
+
+def seed_feed(state, monkeypatch, config: dict, count: int) -> list:
+    """Enable the feed with `config`, queue `count` pending Keryx cards, capture posts."""
+    (state / "config").mkdir(exist_ok=True)
+    (state / "config/feed.json").write_text(
+        json.dumps({"enabled": True, "channel_id": "jobs", **config})
+    )
+    monkeypatch.setattr(discord_feed, "sync_keryx", dict)
+    prefs = {
+        "title_keywords": ["software"],
+        "excluded_title_keywords": [],
+        "excluded_companies": [],
+    }
+    monkeypatch.setattr(discord_feed, "read_approved", lambda: {"profile": {"preferences": prefs}})
+    sent = []
+    monkeypatch.setattr(
+        discord_feed, "discord", lambda *a, **k: sent.append(a) or {"id": str(len(sent))}
+    )
+    with discord_feed.feed_db() as db:
+        for index in range(count):
+            job = {
+                "id": f"job_{index}",
+                "company": "Example Labs",
+                "title": "Software Intern",
+                "program": "internship",
+                "location": "Remote",
+                "url": f"https://jobs.example.com/batch/{index}",
+                "cycle": "summer-2027",
+            }
+            db.execute(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "GodlyDonuts/keryx",
+                    job["id"],
+                    job["company"],
+                    job["title"],
+                    job["location"],
+                    "internship",
+                    job["cycle"],
+                    "open",
+                    1,
+                    job["url"],
+                    None,
+                    json.dumps(job),
+                    f"h{index}",
+                    "a" * 40,
+                    "t",
+                    "t",
+                ),
+            )
+            db.execute(
+                "INSERT INTO feed_outbox(key,job_id,payload) VALUES(?,?,?)",
+                (f"{index:064x}", job["id"], json.dumps(job)),
+            )
+    return sent
+
+
+def test_feed_tick_posts_at_most_batch_size_cards_per_call(state, monkeypatch):
+    sent = seed_feed(state, monkeypatch, {"batch_size": 2}, 3)
+    first = discord_feed.tick()
+    assert (first["sent"], first["pending"]) == (2, 1)
+    second = discord_feed.tick()
+    assert (second["sent"], second["pending"]) == (1, 0)
+    assert len(sent) == 3
+
+
+def test_feed_tick_expires_the_backlog_beyond_max_pending(state, monkeypatch):
+    sent = seed_feed(state, monkeypatch, {"batch_size": 1, "max_pending": 2}, 3)
+    result = discord_feed.tick()
+    assert (result["expired"], result["sent"], result["pending"]) == (1, 1, 1)
+    with discord_feed.feed_db() as db:
+        oldest = db.execute("SELECT status FROM feed_outbox ORDER BY rowid LIMIT 1").fetchone()[0]
+    assert oldest == "expired" and len(sent) == 1
+
+
+def owner_channels(monkeypatch) -> list:
+    """Enable both owner channels with a fake Discord that records (method, path, payload)."""
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {
+            "enabled": True,
+            "action_channel_id": "action",
+            "shortlist_channel_id": "short",
+            "guild_id": "g",
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        workflow,
+        "discord",
+        lambda method, path, payload=None: (
+            calls.append((method, path, payload)) or {"id": f"m{len(calls)}"}
+        ),
+    )
+    return calls
+
+
+def test_a_new_notice_withdraws_the_previous_card_in_the_same_channel(state, monkeypatch):
+    calls = owner_channels(monkeypatch)
+    app = workflow.enqueue("https://jobs.example.com/todo")["application_id"]
+    workflow.notice(app, "action", {"reason": "first"})
+    workflow.notice(app, "action", {"reason": "second"})
+    assert [(method, path) for method, path, _ in calls] == [
+        ("POST", "/channels/action/messages"),
+        ("DELETE", "/channels/action/messages/m1"),
+        ("POST", "/channels/action/messages"),
+    ]
+    with workflow.db() as conn:
+        rows = [tuple(r) for r in conn.execute("SELECT delivery,message_id FROM owner_notices")]
+    assert rows == [("withdrawn", "m1"), ("sent", "m3")]
+
+
+@pytest.mark.parametrize("status", ["QUEUED", "DEFERRED", "PREPARING", "APPLIED"])
+def test_leaving_a_waiting_state_withdraws_the_owner_cards(state, monkeypatch, status):
+    calls = owner_channels(monkeypatch)
+    app = workflow.enqueue("https://jobs.example.com/todo")["application_id"]
+    workflow.set_state(app, "NEEDS_USER")
+    workflow.notice(app, "action", {"reason": "needs you"})
+    workflow.notice(app, "shortlist", {"reason": "your call"})
+
+    def deliveries():
+        with workflow.db() as conn:
+            return [r[0] for r in conn.execute("SELECT delivery FROM owner_notices ORDER BY id")]
+
+    workflow.set_state(app, "NEEDS_USER")
+    assert deliveries() == ["sent", "sent"]
+    workflow.set_state(app, status)
+    assert deliveries() == ["withdrawn", "withdrawn"]
+    assert [(m, p) for m, p, _ in calls if m == "DELETE"] == [
+        ("DELETE", "/channels/action/messages/m1"),
+        ("DELETE", "/channels/short/messages/m2"),
+    ]
+
+
+def test_the_thread_status_card_mirrors_the_live_owner_card(state, monkeypatch):
+    calls = owner_channels(monkeypatch)
+    app = workflow.enqueue("https://jobs.example.com/status")["application_id"]
+    workflow.set_state(app, "NEEDS_USER", thread_id="thread-1")
+    command = f"answer {app} abcdef012345 = "
+    workflow.action_needed(
+        app, "A question needs you.", commands=[command], headline="Answers needed"
+    )
+    _, path, payload = [c for c in calls if c[0] == "PATCH"][-1]
+    assert path == "/channels/thread-1/messages/thread-1" and len(payload["embeds"]) == 1
+    card = payload["embeds"][0]
+    assert (
+        "Answers needed" in card["description"] and "A question needs you." in card["description"]
+    )
+    assert {f["name"]: f["value"] for f in card["fields"]}["Reply"] == workflow.command_block(
+        [command]
+    )
+    workflow.set_state(app, "DEFERRED")
+    card = [c for c in calls if c[0] == "PATCH"][-1][2]["embeds"][0]
+    assert f"resume {app}" in card["description"] and "Parked" in card["description"]
+
+
+def test_status_card_is_not_refreshed_without_a_thread_or_when_disabled(state, monkeypatch):
+    calls = owner_channels(monkeypatch)
+    enabled = workflow.config
+    app = workflow.enqueue("https://jobs.example.com/quiet")["application_id"]
+    workflow.set_state(app, "DEFERRED")  # enabled, but no thread yet
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": False})
+    workflow.set_state(app, "QUEUED", thread_id="thread-1")  # thread, but disabled
+    assert calls == []
+    monkeypatch.setattr(workflow, "config", enabled)
+    workflow.set_state(app, "DEFERRED")
+    assert [(m, p) for m, p, _ in calls] == [("PATCH", "/channels/thread-1/messages/thread-1")]
+
+
+def test_hold_fields_render_reasons_questions_and_commands_for_the_owner():
+    questions = [
+        {"label": "Need sponsorship?", "key": "abcdef012345", "options": ["Yes", "No"]},
+        {"label": "Current GPA", "key": "123456abcdef"},
+    ]
+    fields = workflow.hold_fields(
+        {
+            "items": [f"item {n}" for n in range(6)],
+            "questions": questions,
+            "commands": ["proceed x", "defer x"],
+        }
+    )
+    named = {name: value for name, value, _ in fields}
+    assert list(named) == ["Why", "Only you can answer", "Reply"]
+    assert named["Why"] == "\n".join(f"• item {n}" for n in range(4))
+    assert named["Only you can answer"] == "1. Need sponsorship?  (Yes / No)\n2. Current GPA"
+    assert "abcdef012345" not in named["Only you can answer"]
+    assert named["Reply"] == "```\nproceed x\ndefer x\n```"
+
+
+def test_brief_keeps_whole_leading_sentences_and_never_goes_empty():
+    text = "First sentence here. Second one follows! Third is long enough to be cut off?"
+    assert workflow.brief(text, 45) == "First sentence here. Second one follows!"
+    assert workflow.brief("short", 45) == "short"
+    assert workflow.brief("x" * 80, 20) == "x" * 19 + "…"
+
+
+def test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist(state, monkeypatch):
+    from erga_autopilot import reasoning, worker
+
+    form = {
+        "url": "https://jobs.example.com/form",
+        "observation_id": "obs-1",
+        "fields": [
+            {
+                "label": "First name",
+                "name": "first",
+                "kind": "text",
+                "options": [],
+                "required": True,
+            }
+        ],
+    }
+    prepared = {"pending": [], "package_hash": "a" * 64, "filled": []}
+    monkeypatch.setattr(
+        worker, "browser_call", lambda action, **kw: prepared if action == "prepare" else form
+    )
+    monkeypatch.setattr(
+        worker, "prepare_resume", lambda *a: {"ready": True, "resume_sha256": "b" * 64}
+    )
+    review = {
+        "decision": "needs_review",
+        "rationale": "unsure",
+        "unverified": [],
+        "requirements": [gate("sponsorship", "No visa sponsorship", "conflict")],
+    }
+    monkeypatch.setattr(reasoning, "review_job", lambda *a: review)
+    monkeypatch.setattr(reasoning, "review_application", lambda *a: pytest.fail("nothing to draft"))
+    calls = owner_channels(monkeypatch)
+    pasted = workflow.enqueue("https://jobs.example.com/pasted", title="Example — Intern")[
+        "application_id"
+    ]
+    feed = workflow.enqueue(
+        "https://jobs.example.com/feed", source="keryx", title="Example — Intern"
+    )["application_id"]
+    assert worker.process(pasted)["status"] == "READY_FOR_REVIEW"
+    assert worker.process(feed)["status"] == "NEEDS_USER"
+    with workflow.db() as conn:
+        cards = sorted(
+            tuple(r)
+            for r in conn.execute("SELECT application_id,channel,delivery FROM owner_notices")
+        )
+    assert cards == sorted([(pasted, "action", "sent"), (feed, "shortlist", "sent")])
+    assert [p for m, p, _ in calls if m == "POST"] == [
+        "/channels/action/messages",
+        "/channels/short/messages",
+    ]

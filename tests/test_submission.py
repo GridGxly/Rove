@@ -197,7 +197,8 @@ def test_owner_commands_for_submission_lifecycle_parse_strictly():
     good = lambda text: {"author": {"id": "owner"}, "content": text}
     parse = lambda text: worker.parse_command(good(text), "owner", "control", {"control"})
     assert parse("submit abcdef012345 " + "a" * 64)["kind"] == "submit"
-    assert parse("submit abcdef012345 " + "a" * 12) is None
+    assert parse("submit abcdef012345 " + "a" * 7) is None
+    assert parse("submit abcdef012345 " + "a" * 12)["package_hash"] == "a" * 12
     assert parse("proceed abcdef012345") == {"kind": "proceed", "application_id": "abcdef012345"}
     assert parse("reconcile abcdef012345 applied")["outcome"] == "applied"
     assert parse("reconcile abcdef012345 maybe") is None

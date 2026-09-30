@@ -80,6 +80,17 @@ def queue_jobs(db, records):
         )
 
 
+def cap_backlog(db, keep: int) -> int:
+    """A backlog beyond the newest `keep` jobs is old news: expire it instead of flooding."""
+    with db:
+        cursor = db.execute(
+            """UPDATE feed_outbox SET status='expired' WHERE status='pending' AND rowid NOT IN
+            (SELECT rowid FROM feed_outbox WHERE status='pending' ORDER BY rowid DESC LIMIT ?)""",
+            (max(keep, 1),),
+        )
+    return cursor.rowcount
+
+
 def close_withdrawn_postings(revision: str) -> int:
     """A queued application whose Keryx posting closed is parked, not prepared."""
     from . import workflow
@@ -133,7 +144,7 @@ def tick(seed: bool = False) -> dict:
             announced = {
                 r[0]
                 for r in db.execute(
-                    "SELECT DISTINCT job_id FROM feed_outbox WHERE status IN ('sent','sending','pending')"
+                    "SELECT DISTINCT job_id FROM feed_outbox WHERE status IN ('sent','sending','pending','expired')"
                 )
             }
             if row:
@@ -159,8 +170,12 @@ def tick(seed: bool = False) -> dict:
                 """UPDATE feed_outbox SET status='superseded' WHERE status='pending'
                 AND job_id IN (SELECT job_id FROM feed_outbox WHERE status='sent')"""
             )
-        pending = db.execute("""SELECT o.* FROM feed_outbox o JOIN jobs j ON j.id=o.job_id
-            WHERE o.status='pending' AND j.active=1 LIMIT 25""").fetchall()
+        expired = cap_backlog(db, int(config.get("max_pending", 40)))
+        pending = db.execute(
+            """SELECT o.* FROM feed_outbox o JOIN jobs j ON j.id=o.job_id
+            WHERE o.status='pending' AND j.active=1 ORDER BY o.rowid DESC LIMIT ?""",
+            (int(config.get("batch_size", 10)),),
+        ).fetchall()
         from .workflow import clip, embed, enqueue
 
         for row in pending:
@@ -184,7 +199,7 @@ def tick(seed: bool = False) -> dict:
                         True,
                     ),
                 ],
-                footer="Keryx · GodlyDonuts/keryx · queued for preparation",
+                footer="Keryx · queued for preparation",
             )
             with db:
                 db.execute("UPDATE feed_outbox SET status='sending' WHERE key=?", (row["key"],))
@@ -206,6 +221,7 @@ def tick(seed: bool = False) -> dict:
             sent += 1
         result.update(
             sent=sent,
+            expired=expired,
             pending=db.execute(
                 "SELECT COUNT(*) FROM feed_outbox WHERE status='pending'"
             ).fetchone()[0],
