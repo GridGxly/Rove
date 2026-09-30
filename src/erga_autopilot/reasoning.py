@@ -277,6 +277,29 @@ def evaluate_requirements(requirements: list[dict], profile: dict, posting: str 
                 entry["checked_by"] = "code"
             else:
                 entry["status"] = "unknown"
+        elif item["kind"] == "degree":
+            majors = " ".join(
+                (school.get("major") or "") + " " + (school.get("degree") or "")
+                for school in education
+            ).lower()
+            computing = any(
+                term in majors
+                for term in ("comput", "software", "information technology", "data science")
+            )
+            broad = re.search(
+                r"computer science|computing|software|\bstem\b|related (?:field|discipline"
+                r"|major|area|degree)|technical (?:field|degree|discipline)"
+                r"|information (?:systems|technology)",
+                item.get("requirement", ""),
+                re.IGNORECASE,
+            )
+            if computing and broad:
+                entry["status"] = "satisfied"
+                entry["checked_by"] = "code"
+                entry["note"] = (
+                    "Approved major is a computing degree; "
+                    "the posting accepts computing or related fields"
+                )
         elif item["kind"] == "location" and profile["preferences"]["relocate"] is True:
             # Approved nationwide relocation plus accepted onsite work settles where the
             # applicant can be. Qwen may only flag an explicit posting rule that excludes
@@ -302,6 +325,7 @@ CODE_KIND_TERMS = {
     "work_authorization": r"authoriz|eligib",
     "sponsorship": r"sponsor",
     "location": r"relocat|on-?site|in[- ]person|physically present|local to|commut|office",
+    "degree": r"degree|major|field of study|related field|computer science|qualif",
 }
 
 
@@ -374,7 +398,9 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
         "form_questions": [f["label"][:120] for f in page.get("fields", []) if f.get("label")][:60],
     }
     context = fit_budget(context)
-    context_hash = fingerprint(context)
+    # Form labels help Qwen tell questions from requirements but must not force a new
+    # model call whenever an observer improvement changes how a label is read.
+    context_hash = fingerprint({k: v for k, v in context.items() if k != "form_questions"})
     directory = state_root() / "applications" / application_id
     path = directory / "job-review.json"
     if path.exists():

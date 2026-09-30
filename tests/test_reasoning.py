@@ -248,7 +248,6 @@ def test_cached_review_is_re_evaluated_by_current_code_rules(state, monkeypatch)
             "expected_job_title": "",
             "job_url": page["url"],
             "job_text": "posting",
-            "form_questions": [],
         }
     )
     stale = {
@@ -329,3 +328,35 @@ def test_proposed_value_outside_the_options_becomes_a_question():
         reasoning.parse_review(ok, {key}, {key: ["LinkedIn", "Other"]})["answers"][0]["kind"]
         == "proposal"
     )
+
+
+def test_computing_degree_satisfies_a_related_field_requirement_by_code():
+    profile = {
+        **PROFILE,
+        "education": {
+            "schools": [
+                {
+                    "graduation_month": "2027-12",
+                    "major": "Computing Technology and Software Development",
+                    "degree": "B.A.S.",
+                }
+            ]
+        },
+    }
+    related = requirement(
+        "degree",
+        "unknown",
+        requirement="Bachelor's in Computer Science, Engineering or a related field",
+    )
+    checked = reasoning.evaluate_requirements([related], profile)[0]
+    assert (checked["status"], checked["checked_by"]) == ("satisfied", "code")
+    strict = requirement(
+        "degree", "conflict", requirement="Must be enrolled in Electrical Engineering"
+    )
+    assert reasoning.evaluate_requirements([strict], profile)[0]["status"] == "conflict"
+    vague = requirement("degree", "unknown", requirement="Enrolled in Electrical Engineering")
+    assert reasoning.evaluate_requirements([vague], profile)[0]["checked_by"] == "qwen"
+    _, kept, resolved = reasoning.merge_unknowns(
+        [checked], ["Whether Computing Technology counts as a related field to CS"]
+    )
+    assert kept == [] and len(resolved) == 1
