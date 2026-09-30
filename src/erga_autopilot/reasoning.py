@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from . import workflow
+from . import unslop, workflow
 from .evidence import career_evidence
 from .onboarding import read_approved
 from .runtime import state_root, write_private
@@ -364,6 +364,31 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     return result
 
 
+def polish(directory: Path, key: str, value: str) -> dict:
+    """Unslop pass over one draft: scan, one bounded Qwen repair, re-scan, keep facts."""
+    report = unslop.scan(value)
+    if not unslop.needs_cleanup(report):
+        return {"unslop": unslop.summary(report, None), "unslop_report": report}
+    try:
+        generated = generate(directory, unslop.cleanup_context(value, report), f"cleanup-{key}", 1)
+        cleaned = strip_fence(completed_response(generated)).strip().strip('"')
+    except (RuntimeError, ValueError) as error:
+        return {"unslop": ("cleanup skipped: " + str(error))[:300], "unslop_report": report}
+    if not cleaned or len(cleaned) > 3000 or not unslop.preserved_facts(value, cleaned):
+        return {
+            "unslop": "cleanup rejected (facts or length changed); original kept. "
+            + unslop.summary(report, None),
+            "unslop_report": report,
+        }
+    after = unslop.scan(cleaned)
+    return {
+        "value": cleaned,
+        "original_value": value,
+        "unslop": unslop.summary(report, after),
+        "unslop_report": {"before": report, "after": after},
+    }
+
+
 def parse_review(raw: str, observed_keys: set[str]) -> dict:
     result = Review.model_validate(load_json(raw)).model_dump()
     seen = set()
@@ -449,6 +474,10 @@ def review_application(application_id: str, page: dict) -> dict:
         prompt_version=PROMPT_VERSION,
     )
     labels = {q["key"]: q.get("label", "") for q in questions}
+    for answer in result["answers"]:
+        if answer["kind"] == "proposal" and len(answer["value"]) > 60:
+            # Written answers get the Unslop pass before they are hashed for approval.
+            answer.update(polish(directory, answer["key"], answer["value"]))
     for answer in result["answers"]:
         answer["proposal_hash"] = fingerprint(
             {"application_id": application_id, "context_hash": context_hash, **answer}

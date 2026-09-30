@@ -83,8 +83,16 @@ def main():
     from erga_autopilot.runtime import api_key, write_private
 
     config = load_config()
+    from erga_autopilot.unslop import CLEANUP_PROMPT, RULES
+
     context = json.loads(args.input.read_text())
-    system = JOB_FIT_PROMPT if context.get("review_type") == "job_fit" else ANSWER_PROMPT
+    kind = context.get("review_type")
+    if kind == "job_fit":
+        system = JOB_FIT_PROMPT
+    elif kind == "cleanup":
+        system = CLEANUP_PROMPT
+    else:
+        system = ANSWER_PROMPT + " " + RULES
     agent = AIAgent(
         model=config["model"]["default"],
         provider="custom",
