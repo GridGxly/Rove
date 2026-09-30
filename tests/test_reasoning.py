@@ -13,7 +13,7 @@ PROFILE = {
         "sponsorship_now": False,
         "sponsorship_future": False,
     },
-    "preferences": {"relocate": True},
+    "preferences": {"relocate": True, "work_styles": []},
 }
 
 
@@ -47,6 +47,13 @@ def test_authorization_sponsorship_and_relocation_use_approved_facts():
     )
     assert [c["status"] for c in checked] == ["satisfied", "satisfied", "unknown", "conflict"]
     assert [c["checked_by"] for c in checked] == ["code", "code", "qwen", "qwen"]
+    onsite = {**PROFILE, "preferences": {"relocate": True, "work_styles": ["onsite", "hybrid"]}}
+    settled = reasoning.evaluate_requirements([requirement("location", "unknown")], onsite)[0]
+    assert (settled["status"], settled["checked_by"]) == ("satisfied", "code")
+    _, kept, resolved = reasoning.merge_unknowns(
+        [settled], ["Whether the applicant can be physically present in SoHo for 10 weeks"]
+    )
+    assert kept == [] and len(resolved) == 1
     needs_visa = {**PROFILE, "eligibility": {**PROFILE["eligibility"], "sponsorship_future": True}}
     sponsorship = requirement("sponsorship", "satisfied", sponsorship_available=False)
     assert reasoning.evaluate_requirements([sponsorship], needs_visa)[0]["status"] == "conflict"
@@ -197,3 +204,57 @@ def test_job_review_ignores_stale_prompt_cache_and_overrides_qwen_arithmetic(sta
         )["decision"]
         == "fit"
     )
+
+
+def test_cached_review_is_re_evaluated_by_current_code_rules(state, monkeypatch):
+    application_id = workflow.enqueue("https://jobs.example.com/2")["application_id"]
+    directory = state / "applications" / application_id
+    directory.mkdir(parents=True)
+
+    async def evidence(_query):
+        return {"results": []}
+
+    monkeypatch.setattr(reasoning, "career_evidence", evidence)
+    monkeypatch.setattr(reasoning, "generate", lambda *a, **k: pytest.fail("Qwen must not run"))
+    page = {"url": "https://jobs.example.com/2", "text": "posting", "fields": []}
+    from erga_autopilot.onboarding import read_approved
+
+    context_hash = reasoning.fingerprint(
+        {
+            "review_type": "job_fit",
+            "prompt_version": reasoning.PROMPT_VERSION,
+            "profile": {
+                key: read_approved()["profile"][key]
+                for key in ("identity", "education", "eligibility", "availability", "preferences")
+            },
+            "career_evidence": {"results": []},
+            "expected_job_title": "",
+            "job_url": page["url"],
+            "job_text": "posting",
+            "form_questions": [],
+        }
+    )
+    stale = {
+        "context_hash": context_hash,
+        "decision": "needs_review",
+        "model": "m",
+        "qwen_output": {
+            "decision": "needs_review",
+            "rationale": "unsure",
+            "requirements": [
+                {"kind": "program", "requirement": "Intern", "evidence": "", "status": "satisfied"}
+            ],
+            "unknowns": [],
+        },
+    }
+    (directory / "job-review.json").write_text(json.dumps(stale))
+    result = reasoning.review_job(application_id, page)
+    assert result["decision"] == "fit" and "Re-evaluated" in result["note"]
+    with workflow.db() as conn:
+        kinds = [
+            r[0]
+            for r in conn.execute(
+                "SELECT kind FROM application_events WHERE application_id=?", (application_id,)
+            )
+        ]
+    assert kinds.count("qwen_job_review") == 1

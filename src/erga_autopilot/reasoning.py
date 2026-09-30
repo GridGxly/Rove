@@ -190,11 +190,16 @@ def evaluate_requirements(requirements: list[dict], profile: dict) -> list[dict]
             else:
                 entry["status"] = "unknown"
         elif item["kind"] == "location" and profile["preferences"]["relocate"] is True:
-            # Approved nationwide relocation is a fact; Qwen may only flag an explicit
-            # posting rule that excludes relocation, which stays a review item.
+            # Approved nationwide relocation plus accepted onsite work settles where the
+            # applicant can be. Qwen may only flag an explicit posting rule that excludes
+            # relocation, which stays a review item rather than a rejection.
             if item["status"] == "conflict":
                 entry["status"] = "unknown"
                 entry["note"] = "Relocation is approved; confirm the posting excludes it"
+            elif "onsite" in profile["preferences"]["work_styles"]:
+                entry["status"] = "satisfied"
+                entry["checked_by"] = "code"
+                entry["note"] = "Approved: relocate anywhere in the US and work onsite"
         checked.append(entry)
     return checked
 
@@ -208,6 +213,7 @@ CODE_KIND_TERMS = {
     ),
     "work_authorization": r"authoriz|eligib",
     "sponsorship": r"sponsor",
+    "location": r"relocat|on-?site|in[- ]person|physically present|local to|commut|office",
 }
 
 
@@ -244,6 +250,22 @@ def decide(requirements: list[dict]) -> str:
     return "fit"
 
 
+def evaluate_review(qwen_output: dict, profile: dict) -> dict:
+    """Code's verdict over Qwen's extraction; rerunnable whenever the rules improve."""
+    requirements = evaluate_requirements(
+        [dict(item) for item in qwen_output["requirements"]], profile
+    )
+    requirements, kept, resolved = merge_unknowns(requirements, list(qwen_output["unknowns"]))
+    return {
+        "decision": decide(requirements),
+        "qwen_decision": qwen_output["decision"],
+        "rationale": qwen_output["rationale"],
+        "requirements": requirements,
+        "unknowns": kept,
+        "resolved_unknowns": resolved,
+    }
+
+
 def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     """Qwen extracts requirements before any applicant data enters the form."""
     approved = read_approved()
@@ -268,8 +290,14 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     path = directory / "job-review.json"
     if path.exists():
         prior = json.loads(path.read_text())
-        if prior.get("context_hash") == context_hash and prior.get("model"):
-            return prior
+        if prior.get("context_hash") == context_hash and prior.get("qwen_output"):
+            current = {**prior, **evaluate_review(prior["qwen_output"], approved["profile"])}
+            if current["decision"] != prior.get("decision"):
+                current["note"] = "Re-evaluated by updated code rules; Qwen output unchanged"
+                write_private(path, current)
+                workflow.record(application_id, "qwen_job_review", current)
+                workflow.flush_events(application_id)
+            return current
     try:
         generated = generate(directory, context, "job-reasoning")
         parsed = JobReview.model_validate_json(strip_fence(completed_response(generated)))
@@ -281,13 +309,8 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
         )
         workflow.flush_events(application_id)
         raise
-    result = parsed.model_dump()
-    result["requirements"] = evaluate_requirements(result["requirements"], approved["profile"])
-    result["requirements"], result["unknowns"], result["resolved_unknowns"] = merge_unknowns(
-        result["requirements"], result["unknowns"]
-    )
-    result["qwen_decision"] = result["decision"]
-    result["decision"] = decide(result["requirements"])
+    qwen_output = parsed.model_dump()
+    result = {"qwen_output": qwen_output, **evaluate_review(qwen_output, approved["profile"])}
     result.update(
         context_hash=context_hash,
         prompt_version=PROMPT_VERSION,
