@@ -53,3 +53,11 @@ Obsidian is used as the reference human interface for the private local Markdown
 Those projects and services keep their own names, trademarks, licenses, and terms. Using them together does not imply endorsement or affiliation.
 
 Update this file when a dependency's license requires explicit attribution or redistribution notices.
+
+## Patchright
+
+The recruiting browser is driven with [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python), a fork of Microsoft Playwright, both under the Apache License 2.0.
+
+## Unslop
+
+The drafting rules digest and the built-in list of AI-writing tells in `src/erga_autopilot/unslop.py` derive from [Unslop](https://github.com/theclaymethod/unslop) by Clayton Kim, MIT License. The scanners themselves run from a local clone when one is configured.

@@ -107,6 +107,10 @@ Employer-account passwords may be stored locally, but they must be encrypted at 
 
 The encryption key should live in a separate owner-only local file outside the database.
 
+The current implementation does this with Fernet (AES-CBC with HMAC): ciphertext in `credentials/store.enc` and the key in `credentials/key` under the private state root, both mode 0600. An account is created only after the owner replies `account ... create` for that application; the daemon fills the application email, a generated password, the terms checkbox and known name fields, and records the host and username without the secret. Only the browser daemon reads the store, to complete a sign-in form on the same host.
+
+The recruiting browser is a Chrome instance the daemon launches with a localhost-only DevTools port. Anything running as the local user could connect to that port; that account is trusted in this threat model.
+
 Never put credentials in the Obsidian vault, normal Markdown notes, Discord, or model memory.
 
 Never commit or post to Discord:

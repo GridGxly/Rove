@@ -131,7 +131,7 @@ The current reference setup uses:
 - Erga;
 - Obsidian or an Obsidian-compatible local Markdown vault;
 - QMD for local vault retrieval in the reference full setup;
-- Playwright/Chromium browser dependencies for the fast local browser runtime;
+- Patchright and Google Chrome (or Chrome for Testing) for the recruiting browser;
 - Discord bot credentials;
 - optional Zoho Mail OAuth for recruiting-mail tracking.
 
@@ -163,7 +163,7 @@ If you want the original local-first recruiting assistant without browser auto-a
 
 ## Status
 
-The local Discord/Hermes/oMLX stack, Erga evidence, QMD retrieval and synthetic prepare-only browser workflow have been verified. Real Keryx job intake, reviewed candidate onboarding, approved profile/evidence reads and version-checked QMD profile retrieval are implemented; see [Onboarding and jobs](docs/onboarding-and-jobs.md). The production Hermes tool list uses these real workflows. See [Local runtime](docs/local-runtime.md) for the tested configuration and [Runtime measurements](docs/runtime-benchmarks.md) for results and limits. The [application workflow](docs/application-workflow.md) connects a durable queue, a visible browser, code-checked Qwen job-fit review, deterministic preparation, Erga intake, Qwen/Hermes answer proposals, forum recording, and owner-approved single-attempt submission on public Greenhouse boards with an independent confirmation contract. Other ATS adapters, account-based flows, and mail reconciliation are not implemented yet.
+The local Discord/Hermes/oMLX stack, Erga evidence, QMD retrieval and synthetic prepare-only browser workflow have been verified. Real Keryx job intake, reviewed candidate onboarding, approved profile/evidence reads and version-checked QMD profile retrieval are implemented; see [Onboarding and jobs](docs/onboarding-and-jobs.md). The production Hermes tool list uses these real workflows. See [Local runtime](docs/local-runtime.md) for the tested configuration and [Runtime measurements](docs/runtime-benchmarks.md) for results and limits. The [application workflow](docs/application-workflow.md) connects a durable queue, a visible browser, code-checked Qwen job-fit review, deterministic preparation, Erga intake, Qwen/Hermes answer proposals, forum recording, and owner-approved single-attempt submission on public Greenhouse boards with an independent confirmation contract. The recruiting browser is a background Chrome the daemon launches itself, drafts pass through the Unslop contract, account-walled boards are handled with an owner-approved encrypted account, multi-page forms advance step by step, and each application has a readable note in the vault. Other submission adapters and mail reconciliation are not implemented yet.
 
 The project is being built in stages: local runtime, model certification, Hermes/Obsidian memory, Erga integration, transactional state, Discord control, onboarding, job intake, resume/research workflows, prepare-only browser automation, controlled submission, recruiting lifecycle tracking, and finally restricted autopilot.
 

@@ -34,7 +34,9 @@ A full local setup is expected to need:
 - Erga
 - Obsidian or an Obsidian-compatible local Markdown vault
 - QMD for the reference local retrieval/indexing layer
-- Playwright/Chromium and the dependencies used by the fast local browser runtime
+- Patchright (a Playwright fork) and Google Chrome, or Patchright's Chrome for Testing, for the recruiting browser
+- the `cryptography` package for the encrypted local credential store
+- optionally a local clone of [Unslop](https://github.com/theclaymethod/unslop) for draft cleanup scanners (`unslop_path`)
 - SQLite for Autopilot transactional state
 
 Autopilot dependencies are locked in `uv.lock`. See [Local runtime](local-runtime.md) for the tested oMLX and model revisions and certification commands.
@@ -388,6 +390,11 @@ service, and the installed Hermes Python for Qwen proposals. Discord needs permi
 to send messages and create posts in the configured existing forum. Channel management
 is unnecessary when mapping existing channels. No proxy, Camofox service, Docker stack,
 or cloud extraction provider is required by the default implementation.
+
+The recruiting browser is launched by the daemon with a localhost-only DevTools port;
+the local account is trusted by design and nothing else on the network can reach it.
+Employer accounts the workflow creates are stored under the private state root as
+ciphertext with a separate owner-only key file.
 
 Final submission is off until the private workflow configuration sets
 `submission_enabled` and lists an adapter in `submit_adapters`. The only adapter today is

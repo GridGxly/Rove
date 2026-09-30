@@ -258,3 +258,12 @@ The recruiting SQLite database now also holds canonical URL aliases, application
 records, forum bindings, delivery events, owner-message checkpoints, and field-bound
 answers. Exact observations, profile snapshots, resume PDFs, Erga results, and Qwen
 proposals live in private per-application directories. See [Application workflow](application-workflow.md).
+
+## Application notes and credentials
+
+Each application also gets a readable note in the vault under
+`Erga Autopilot/Applications/`, rewritten from SQLite and the private artifacts on every
+change. It is a mirror for reading and searching, not a candidate fact, and it is not
+indexed as profile memory. Employer-account credentials never enter the vault, Discord,
+or model context; they live in `credentials/store.enc` under the private state root with
+the key in `credentials/key` next to it, both owner-only.

@@ -349,6 +349,28 @@ Fast browser automation does not change the trust model.
 
 Read [Security](../SECURITY.md) and [Prompt injection](prompt-injection.md) before changing the browser executor or its tool surface.
 
+## Runtime as implemented
+
+The daemon launches Google Chrome (or Chrome for Testing) as its own app instance with
+the dedicated profile and connects over a localhost DevTools port with Patchright. A
+benchmark of anti-detection tooling found that the signal bot managers act on is the
+automation control protocol's shape, not static traits, so the browser is never started
+by an automation library (no automation flag, `navigator.webdriver` false) and the
+Playwright fork patches the remaining protocol leaks. Real Chrome on real hardware and a
+residential home connection are what paid "stealth" browsers imitate.
+
+Behavior is paced: randomized pauses, mouse travel before clicks, typed short values,
+and a front-door visit before a deep link. Block pages are recognized and retried once
+patiently; a second block is handed to the owner. Detection is measured, not assumed:
+a private verification script launches a separate instance with the same flags against
+public bot-detection pages and saves the report.
+
+Launch activates Chrome once; the daemon hands focus back for a few seconds afterwards.
+Tabs are created in the background and never take focus. Only one client may drive the
+daemon's Chrome; diagnostics use a separate instance. The destination guard attaches to
+a page only during automated operations, because a route handler runs only while the
+daemon is inside a browser call and would stall manual browsing otherwise.
+
 ## Implementation order
 
 Build the fast path in this order:

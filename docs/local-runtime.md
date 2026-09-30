@@ -17,6 +17,7 @@ See [Runtime measurements](runtime-benchmarks.md) for measured throughput, cache
 | Obsidian | 1.13.7, existing private vault |
 | Tectonic | 0.17.0, local resume compilation |
 | Autopilot | Python 3.12, dependencies pinned in `uv.lock` |
+| Patchright | 1.63, drives the daemon-launched Google Chrome over local CDP |
 
 The model's root weights are MLX affine 4-bit, group size 64, totaling 16,054,541,599 bytes. Vision, normalization and convolution components retain source precision. The separate MTP head is 849,400,337 bytes; the complete selected download with metadata is 16,950,465,457 bytes. The base is `Qwen/Qwen3.8-27B`; OrcaRouter published the converted/abliterated checkpoint under Apache-2.0, updated 2026-08-27. `trust_remote_code` stays false. Model weights are not modified.
 
@@ -111,7 +112,7 @@ From the checkout:
 
 ```sh
 uv sync
-uv run playwright install chromium
+uv run patchright install chromium
 uv run autopilot start
 uv run autopilot status
 uv run autopilot stop
