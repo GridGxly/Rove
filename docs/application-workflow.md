@@ -28,9 +28,12 @@ files, execute JavaScript, use a shell, choose arbitrary click selectors, or sub
 ## Job-fit review before any applicant data
 
 When the worker reaches an application form it asks Qwen to extract the posting's hard
-requirements as structured items. Qwen judges what code cannot: program type, degree
-field, required skills, location rules, and explicit conditions. Trusted code performs
-the exact comparisons and can overrule Qwen's arithmetic:
+requirements as structured items. The review reads the posting text captured before the
+Apply link was followed; the form's own labels are passed separately as questions, never
+as requirements, so an option list such as graduation terms cannot become a window. Qwen
+judges what code cannot: program type, degree field, required skills, location rules, and
+explicit conditions. Trusted code performs the exact comparisons and can overrule Qwen's
+arithmetic:
 
 - graduation windows are compared inclusively with the approved graduation month
 - work-authorization and sponsorship requirements are compared with approved facts
