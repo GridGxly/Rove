@@ -445,6 +445,42 @@ class RecruitingBrowser:
             self.cdp = self.browser.new_browser_cdp_session()
         self.context.set_default_timeout(12000)
         self.context.add_init_script(PREPARE_GUARD)
+        if self.cdp is not None:
+            self.adopt_pages()
+
+    def adopt_pages(self):
+        """After a reconnect, map the tabs still open in Chrome back to their applications.
+
+        A tab whose URL belongs to an application waiting on the owner is kept and
+        re-registered; anything else left over (blank tabs, finished runs) is closed.
+        """
+        with workflow.db() as conn:
+            waiting = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT id,url FROM application_queue WHERE run_id IS NOT NULL AND status IN "
+                    "('NEEDS_USER','READY_FOR_REVIEW','MANUAL_TAKEOVER','PREPARING')"
+                )
+            ]
+        for page in list(self.context.pages):
+            if page.is_closed():
+                continue
+            owner = next(
+                (
+                    item
+                    for item in waiting
+                    if job_scope(page.url) == job_scope(item["url"])
+                    or page.url.startswith(item["url"].rstrip("/"))
+                ),
+                None,
+            )
+            run_file = state_root() / f"applications/{owner['id']}/run.json" if owner else None
+            if owner and run_file and run_file.is_file() and owner["id"] not in self.pages:
+                self.pages[owner["id"]] = page
+                self.runs[owner["id"]] = json.loads(run_file.read_text())
+            else:
+                with contextlib.suppress(PlaywrightError):
+                    page.close()
 
     def new_page(self):
         """A background tab (or a background window when none exists): never steals focus."""
