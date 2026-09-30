@@ -236,6 +236,13 @@ Two private `config/workflow.json` keys turn the review step into an after-the-f
   `min_minutes_between_submissions` (default 8) pace unattended sending the way one
   person would apply; an application the owner resumed or pasted is never capped.
 
+Two defaults keep unattended runs from stalling on routine questions. A voluntary
+self-identification question (gender, race or ethnicity, veteran or disability status)
+takes the form's own decline option, recorded with the source
+`policy.decline_self_identification`; a form without a decline option stays with the
+owner. A page that says the applicant already applied stops the run before anything is
+sent and asks the owner to mark it applied or park it.
+
 What still stops and asks: a required question only the owner can answer, an
 eligibility conflict on a feed job, a sign-in or account wall, a blocked site, a
 CAPTCHA or identity step, a site with no enabled adapter, and any unclear submission
