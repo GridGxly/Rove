@@ -752,6 +752,13 @@ def next_queued(max_waiting: int):
             ).fetchone()[0]
             if sent_today >= cap:
                 return None
+            # Sites score form duration and burst rate; unattended sends keep a human gap.
+            gap = timedelta(minutes=int(settings.get("min_minutes_between_submissions", 8)))
+            last = conn.execute("SELECT MAX(created_at) FROM live_submission_attempts").fetchone()[
+                0
+            ]
+            if last and datetime.now(UTC) - datetime.fromisoformat(last) < gap:
+                return None
         queued = conn.execute(
             "SELECT id FROM application_queue WHERE status='QUEUED' ORDER BY CASE source WHEN 'owner_link' THEN 0 ELSE 1 END,created_at DESC LIMIT 1"
         ).fetchone()
