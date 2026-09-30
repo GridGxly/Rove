@@ -216,3 +216,12 @@ def test_real_mcp_reads_only_approved_sections_and_exposes_no_approval(local_sta
     names = {tool.name for tool in asyncio.run(mcp.list_tools())}
     assert {"read_candidate_section", "read_career_evidence", "retrieve_candidate_memory"} <= names
     assert not any("approve" in name or "submit" in name for name in names)
+
+
+def test_abbreviated_ai_ml_titles_match_the_machine_learning_exclusion():
+    from erga_autopilot.matching import contains
+
+    assert contains("Summer 2027 AI/ML Software Development Internship", "machine learning")
+    assert contains("ML Engineer Intern", "machine learning")
+    assert not contains("Software Engineer Intern (HTML/CSS)", "machine learning")
+    assert not contains("AI-powered fintech Software Intern", "machine learning")

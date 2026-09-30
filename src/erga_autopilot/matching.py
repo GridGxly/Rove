@@ -8,10 +8,19 @@ from urllib.parse import urlsplit
 from .jobs import database
 from .onboarding import digest, draft, read_approved
 
+# Approved exclusions are phrases; postings abbreviate them. An "AI/ML" or "ML" title is
+# the machine-learning specialist role the exclusion names.
+EXCLUSION_SYNONYMS = {
+    "machine learning": ("ai ml", "ml", "ml ai"),
+    "artificial intelligence": ("ai ml", "ml ai"),
+}
+
 
 def contains(text: str, phrase: str) -> bool:
     normalize = lambda value: " ".join(re.findall(r"[a-z0-9]+", value.lower()))
-    return f" {normalize(phrase)} " in f" {normalize(text)} "
+    haystack = f" {normalize(text)} "
+    wanted = [normalize(phrase), *EXCLUSION_SYNONYMS.get(normalize(phrase), ())]
+    return any(f" {needle} " in haystack for needle in wanted)
 
 
 def review_matches(limit: int = 10, *, preview_draft: bool = False) -> dict:
