@@ -155,6 +155,14 @@ decisions, drafts, job fit, the filled form, submission results, and failures. S
 are shown in words ("your profile", "your reply", "your evidence", "the posting"),
 never as internal keys.
 
+A field counts as required when the input says so or when its label carries a
+"required" class or a trailing asterisk, which is how Ashby and Lever mark it. A place
+typeahead (location, city) is typed into and the one suggestion that starts with the
+approved "City, State" is chosen. After a Next control the runtime waits for the next
+step's fields before reading it, and a form whose last step with its Submit control was
+never reached is handed back with "Final step not reached", never called ready. A visible
+CAPTCHA challenge stops the run and asks the owner to solve it in the recruiting browser.
+
 Optional fields with no approved fact and no Qwen draft are left blank and noted in one
 line; only required questions reach the owner. A phone-type field defaults to Mobile and
 the form card shows that source as a default. Country selects match the approved country
@@ -247,6 +255,12 @@ What still stops and asks: a required question only the owner can answer, an
 eligibility conflict on a feed job, a sign-in or account wall, a blocked site, a
 CAPTCHA or identity step, a site with no enabled adapter, and any unclear submission
 result. Nothing is ever sent twice for the same package.
+
+When the site keeps the form open and names a validation error after the single click,
+nothing was sent: the attempt is recorded as not submitted, the application goes back to
+"needs you" with the site's message, and a later `resume` prepares a new package. Only an
+outcome the page cannot settle (navigation without a confirmation, a timeout, a crash)
+becomes "unclear" and blocks all sending until the owner reconciles it.
 
 ## Records outside Discord
 
