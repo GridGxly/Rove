@@ -196,7 +196,6 @@ def tick(seed: bool = False) -> dict:
                     "allowed_mentions": {"parse": []},
                     "nonce": str(int(row["key"][:15], 16)),
                     "enforce_nonce": True,
-                    "flags": 4,
                 },
             )
             with db:

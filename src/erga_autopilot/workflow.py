@@ -645,7 +645,6 @@ def flush_events(application_id: str):
                     {
                         "embeds": cards[start : start + 10],
                         "allowed_mentions": {"parse": []},
-                        "flags": 4,
                         "nonce": f"{row['id']}:{index}",
                         "enforce_nonce": True,
                     },
@@ -704,7 +703,6 @@ def action_needed(
                     )
                 ],
                 "allowed_mentions": {"parse": []},
-                "flags": 4,
             },
         )
     apply_tags(application_id, STATE_TAGS.get(item["status"], ["Preparing", "Needs Action"]))
@@ -743,7 +741,6 @@ def shortlist(application_id: str, reason: str, items=(), commands=()):
                     )
                 ],
                 "allowed_mentions": {"parse": []},
-                "flags": 4,
             },
         )
 

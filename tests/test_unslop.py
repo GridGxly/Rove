@@ -93,7 +93,7 @@ def test_drafts_get_one_bounded_cleanup_and_are_hashed_after_it(state, monkeypat
     result = reasoning.review_application(application_id, page)
     answer = result["answers"][0]
     assert answer["value"] == fixed and answer["original_value"] == slop
-    assert answer["unslop"].startswith("fixed")
+    assert "repaired" in answer["unslop"] and "leveraging" in answer["unslop"]
     assert calls == ["reasoning", f"cleanup-{key}"]
     expected = reasoning.fingerprint(
         {
@@ -115,3 +115,14 @@ def test_drafts_get_one_bounded_cleanup_and_are_hashed_after_it(state, monkeypat
         }
     )
     assert answer["proposal_hash"] == expected
+
+
+def test_cadence_scores_alone_never_trigger_a_rewrite_and_summary_is_one_line():
+    report = {
+        "source": "unslop",
+        "violations": [],
+        "structure": [{"metric": "sentence_burstiness"}],
+    }
+    assert not unslop.needs_cleanup(report)
+    assert unslop.summary(report, None) == "clean (unslop scan) · advisory: sentence_burstiness"
+    assert not unslop.preserved_facts("I built 56 things.", "I built 56 things and 3 more.")

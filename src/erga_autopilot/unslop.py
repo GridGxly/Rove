@@ -154,26 +154,34 @@ def scan(text: str) -> dict:
 
 
 def needs_cleanup(report: dict) -> bool:
+    """Only phrase-level tells authorize a repair; cadence scores alone never do."""
     hard = [v for v in report["violations"] if v.get("severity") == "hard"]
-    return bool(hard) or len(report["violations"]) >= 2 or bool(report["structure"])
+    return bool(hard) or len(report["violations"]) >= 2
+
+
+def _flag_names(report: dict) -> list[str]:
+    names = []
+    for flag in report.get("structure", []):
+        names.append(str(flag.get("metric", flag)) if isinstance(flag, dict) else str(flag))
+    return names
 
 
 def summary(before: dict, after: dict | None) -> str:
-    def describe(report: dict) -> str:
-        phrases = [v["phrase"] for v in report["violations"]][:6]
-        parts = []
-        if phrases:
-            parts.append("phrases: " + ", ".join(phrases))
-        if report["structure"]:
-            parts.append("structure: " + ", ".join(str(f) for f in report["structure"][:4]))
-        return "; ".join(parts) or "none"
-
+    phrases = [v["phrase"] for v in before["violations"]][:6]
+    notes = _flag_names(before)[:3]
     if after is None:
-        return f"clean ({before['source']} scan)"
-    return (
-        f"fixed {len(before['violations'])} → {len(after['violations'])} tells "
-        f"({before['source']} scan). Before: {describe(before)}. After: {describe(after)}."
+        text = f"clean ({before['source']} scan)"
+        if phrases or notes:
+            text += " · advisory: " + ", ".join(phrases + notes)
+        return text
+    remaining = [v["phrase"] for v in after["violations"]][:4]
+    text = (
+        f"{len(before['violations'])} tell{'s' if len(before['violations']) != 1 else ''} "
+        f"repaired ({before['source']} scan): " + ", ".join(phrases)
     )
+    if remaining:
+        text += " · still flagged: " + ", ".join(remaining)
+    return text
 
 
 def cleanup_context(text: str, report: dict) -> dict:
@@ -195,6 +203,12 @@ def cleanup_context(text: str, report: dict) -> dict:
 
 
 def preserved_facts(original: str, cleaned: str) -> bool:
-    """Every number and capitalized token of the original must survive the repair."""
+    """Every number and capitalized token survives, no new number appears, no padding."""
     tokens = set(re.findall(r"\b(?:\d[\d,.%]*|[A-Z][A-Za-z0-9+#./-]{1,})\b", original))
-    return all(token in cleaned for token in tokens)
+    numbers_after = set(re.findall(r"\d[\d,.%]*", cleaned))
+    numbers_before = set(re.findall(r"\d[\d,.%]*", original))
+    return (
+        all(token in cleaned for token in tokens)
+        and numbers_after <= numbers_before
+        and len(cleaned) <= int(len(original) * 1.15) + 40
+    )

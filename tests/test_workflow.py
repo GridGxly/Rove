@@ -493,3 +493,24 @@ def test_account_command_parses_and_resumes_a_held_application(state):
     assert workflow.get(application_id)["status"] == "QUEUED" and workflow.owner_override(
         application_id, "account"
     )
+
+
+def test_cards_are_posted_without_the_suppress_embeds_flag(state, monkeypatch):
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {
+            "enabled": True,
+            "forum_channel_id": "f",
+            "guild_id": "g",
+            "action_channel_id": "a",
+        },
+    )
+    sent = []
+    monkeypatch.setattr(
+        workflow, "discord", lambda method, path, payload=None: sent.append(payload) or {"id": "1"}
+    )
+    application_id = workflow.enqueue("https://jobs.example.com/flags")["application_id"]
+    workflow.set_state(application_id, "NEEDS_USER", thread_id="thread")
+    workflow.action_needed(application_id, "look", commands=["resume x"])
+    assert sent and all("flags" not in p and p.get("embeds") for p in sent)
