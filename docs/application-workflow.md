@@ -174,8 +174,12 @@ uv run autopilot browser status
 ```
 
 `workflow resume` and `workflow defer` are local owner operations equivalent to the
-Discord commands. Delivery records are written before Discord mutations; a Discord outage
-keeps entries pending for the next flush. An ambiguous forum creation is held for
+Discord commands. Delivery records are written before Discord mutations. Thread entries and the
+action-needed and shortlist cards are stored first and posted after; a failed post is
+logged to `logs/delivery-failures.log` under the state root and retried on every worker
+tick. Each tick also re-checks queued feed jobs against the approved exclusion rules and
+defers the ones that now match, with the reason in the queue record; a link you pasted
+is never pruned that way. An ambiguous forum creation is held for
 reconciliation. The worker holds the only processing lock, so a `PREPARING` application
 older than fifteen minutes is a crashed run and is handed back to the owner. When the
 local model server is down the worker starts it once and otherwise leaves the queue

@@ -6,7 +6,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 
-from . import workflow
+from . import matching, workflow
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
 from .resumes import prepare_resume
@@ -516,6 +516,30 @@ def run_approved_submissions() -> list[dict]:
     return results
 
 
+def prune_excluded() -> int:
+    """Queued feed jobs are re-checked against the approved rules before the browser opens.
+
+    A link the owner pasted is theirs to decide and is never pruned.
+    """
+    with workflow.db() as conn:
+        rows = conn.execute(
+            "SELECT id,title FROM application_queue WHERE status='QUEUED' AND source!='owner_link'"
+        ).fetchall()
+    if not rows:
+        return 0
+    prefs = matching.read_approved()["profile"]["preferences"]
+    pruned = 0
+    for row in rows:
+        company, _, title = row["title"].partition(" — ")
+        if not title:
+            company, title = "", row["title"]
+        reason = matching.excluded_by_rules(title, company, prefs)
+        if reason:
+            workflow.set_state(row["id"], "DEFERRED", error="excluded by your rules: " + reason)
+            pruned += 1
+    return pruned
+
+
 def next_queued(max_waiting: int):
     with workflow.db() as conn:
         # An explicit owner resume/proceed is processed even while other
@@ -548,6 +572,8 @@ def tick() -> dict:
         except BlockingIOError:
             return {"already_running": True}
         poll_commands()
+        workflow.flush_pending()
+        prune_excluded()
         recover_interrupted()
         submitted = run_approved_submissions()
         if submitted:

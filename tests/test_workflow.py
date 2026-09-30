@@ -514,3 +514,75 @@ def test_cards_are_posted_without_the_suppress_embeds_flag(state, monkeypatch):
     workflow.set_state(application_id, "NEEDS_USER", thread_id="thread")
     workflow.action_needed(application_id, "look", commands=["resume x"])
     assert sent and all("flags" not in p and p.get("embeds") for p in sent)
+
+
+def test_owner_cards_are_durable_and_retried_on_the_next_tick(state, monkeypatch):
+    import httpx
+
+    calls = []
+
+    def flaky(method, path, payload=None):
+        calls.append((method, path))
+        if len(calls) == 1:
+            request = httpx.Request("POST", "https://discord.example")
+            response = httpx.Response(503, request=request, text="upstream")
+            raise httpx.HTTPStatusError("down", request=request, response=response)
+        return {"id": f"m{len(calls)}"}
+
+    monkeypatch.setattr(workflow, "discord", flaky)
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {"enabled": True, "action_channel_id": "action", "guild_id": "g"},
+    )
+    item = workflow.enqueue(
+        "https://jobs.example.com/intern", source="keryx", title="Example — Software Intern"
+    )
+    workflow.action_needed(
+        item["application_id"], "A question needs you", commands=["resume x"], headline="Needs you"
+    )
+    with workflow.db() as conn:
+        assert conn.execute("SELECT delivery FROM owner_notices").fetchone()[0] == "pending"
+    log = (state / "logs/delivery-failures.log").read_text()
+    assert "notice" in log and "503" in log
+    workflow.flush_pending()
+    with workflow.db() as conn:
+        assert tuple(conn.execute("SELECT delivery,message_id FROM owner_notices").fetchone()) == (
+            "sent",
+            "m2",
+        )
+    assert calls[-1] == ("POST", "/channels/action/messages")
+
+
+def test_queued_feed_jobs_are_deferred_when_approved_rules_exclude_them(state, monkeypatch):
+    from erga_autopilot import matching, worker
+
+    prefs = {
+        "excluded_title_keywords": ["machine learning"],
+        "excluded_companies": ["Example Corp"],
+    }
+    monkeypatch.setattr(matching, "read_approved", lambda: {"profile": {"preferences": prefs}})
+    feed = workflow.enqueue(
+        "https://jobs.example.com/ml",
+        source="keryx",
+        title="GDIT — Summer 2027 AI/ML Software Development Internship",
+    )
+    company = workflow.enqueue(
+        "https://jobs.example.com/corp", source="keryx", title="Example Corp — Software Intern"
+    )
+    kept = workflow.enqueue(
+        "https://jobs.example.com/swe", source="keryx", title="Acme — Software Engineer Intern"
+    )
+    pasted = workflow.enqueue(
+        "https://jobs.example.com/pasted", title="Summer 2027 AI/ML Software Internship"
+    )
+    assert worker.prune_excluded() == 2
+    status = lambda item: workflow.get(item["application_id"])["status"]
+    assert [status(i) for i in (feed, company, kept, pasted)] == [
+        "DEFERRED",
+        "DEFERRED",
+        "QUEUED",
+        "QUEUED",
+    ]
+    assert "machine learning" in workflow.get(feed["application_id"])["error"]
+    assert worker.prune_excluded() == 0

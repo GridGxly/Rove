@@ -47,6 +47,10 @@ def db():
       CREATE TABLE IF NOT EXISTS live_submission_attempts(
         application_id TEXT PRIMARY KEY, package_hash TEXT NOT NULL,
         owner_message_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS owner_notices(
+        id INTEGER PRIMARY KEY, application_id TEXT NOT NULL, channel TEXT NOT NULL,
+        data TEXT NOT NULL, created_at TEXT NOT NULL,
+        delivery TEXT NOT NULL DEFAULT 'pending', message_id TEXT);
     """)
     return conn
 
@@ -649,9 +653,10 @@ def flush_events(application_id: str):
                         "enforce_nonce": True,
                     },
                 )
-        except (httpx.HTTPError, OSError):
+        except (httpx.HTTPError, OSError) as error:
             # Discord is down or rate-limiting: keep the entry pending and try again on
-            # the next flush. The application keeps working; the record stays durable.
+            # the next tick. The application keeps working; the record stays durable.
+            delivery_failed("event", row["id"], error)
             with db() as conn:
                 conn.execute(
                     "UPDATE application_events SET delivery='pending' WHERE id=?", (row["id"],)
@@ -659,6 +664,120 @@ def flush_events(application_id: str):
             return
         with db() as conn:
             conn.execute("UPDATE application_events SET delivery='sent' WHERE id=?", (row["id"],))
+
+
+def delivery_failed(kind: str, row_id, error: Exception):
+    """One private line per failed Discord delivery, so a stuck card is diagnosable."""
+    detail = ""
+    response = getattr(error, "response", None)
+    if response is not None:
+        detail = f"{response.status_code} {response.text[:200]}"
+    line = " ".join(f"{now()} {kind} {row_id} {type(error).__name__} {detail}".split())
+    log = state_root() / "logs/delivery-failures.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a") as handle:
+        handle.write(line + "\n")
+
+
+NOTICE_CHANNELS = {"action": "action_channel_id", "shortlist": "shortlist_channel_id"}
+
+
+def notice(application_id: str, channel: str, payload: dict):
+    """A durable owner-channel card: recorded first, delivered now or on a later tick."""
+    if channel not in NOTICE_CHANNELS:
+        raise ValueError("Unknown notice channel")
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO owner_notices(application_id,channel,data,created_at) VALUES(?,?,?,?)",
+            (application_id, channel, json.dumps(payload), now()),
+        )
+    flush_notices()
+
+
+def notice_embed(application_id: str, channel: str, payload: dict) -> dict:
+    item = get(application_id)
+    link = forum_url(application_id)
+    fields = [("Application", f"`{application_id}`", True)]
+    if link:
+        fields.append(("Forum", link, True))
+    if channel == "action":
+        if payload.get("questions"):
+            fields.append(("Questions", question_lines(payload["questions"]), False))
+        if payload.get("commands"):
+            fields.append(("Reply with", command_block(payload["commands"]), False))
+        return embed(
+            payload.get("headline") or f"{clip(display_title(item), 90)} · needs you",
+            clip(payload.get("reason", ""), 1200),
+            color="needs",
+            url=link or item["url"],
+            fields=fields,
+        )
+    if payload.get("items"):
+        fields.append(("Why", "\n".join("• " + clip(i, 160) for i in payload["items"][:8]), False))
+    if payload.get("commands"):
+        fields.append(("Reply with", command_block(payload["commands"]), False))
+    return embed(
+        "Your call · " + clip(display_title(item), 150),
+        clip(payload.get("reason", ""), 800),
+        color="needs",
+        url=item["url"],
+        fields=fields,
+    )
+
+
+def flush_notices():
+    settings = config()
+    if not settings.get("enabled"):
+        return
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM owner_notices WHERE delivery='pending' ORDER BY id"
+        ).fetchall()
+    for row in rows:
+        channel = settings.get(NOTICE_CHANNELS[row["channel"]])
+        if not channel:
+            with db() as conn:
+                conn.execute("UPDATE owner_notices SET delivery='skipped' WHERE id=?", (row["id"],))
+            continue
+        card = notice_embed(row["application_id"], row["channel"], json.loads(row["data"]))
+        try:
+            sent = discord(
+                "POST",
+                f"/channels/{channel}/messages",
+                {
+                    "embeds": [card],
+                    "allowed_mentions": {"parse": []},
+                    "nonce": f"notice:{row['id']}",
+                    "enforce_nonce": True,
+                },
+            )
+        except (httpx.HTTPError, OSError) as error:
+            delivery_failed("notice", row["id"], error)
+            return
+        with db() as conn:
+            conn.execute(
+                "UPDATE owner_notices SET delivery='sent', message_id=? WHERE id=?",
+                (str(sent.get("id", "")), row["id"]),
+            )
+
+
+def flush_pending():
+    """Retry every undelivered thread entry and owner-channel card; the worker calls this each tick."""
+    with db() as conn:
+        waiting = [
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT application_id FROM application_events "
+                "WHERE delivery='pending' AND kind!='forum_creation_attempt'"
+            )
+        ]
+    for application_id in waiting:
+        try:
+            flush_events(application_id)
+        except (RuntimeError, httpx.HTTPError, OSError):
+            # An uncertain forum creation waits for reconciliation; a failed one is retried later.
+            continue
+    flush_notices()
 
 
 def action_needed(
@@ -670,7 +789,6 @@ def action_needed(
     headline: str | None = None,
 ):
     """One card in the thread and one in action-needed: what happened, what to reply."""
-    settings = config()
     item = get(application_id)
     payload = {
         "reason": reason,
@@ -680,69 +798,17 @@ def action_needed(
     }
     record(application_id, "needs_action", payload)
     flush_events(application_id)
-    if settings.get("enabled") and settings.get("action_channel_id"):
-        fields = [("Application", f"`{application_id}`", True)]
-        link = forum_url(application_id)
-        if link:
-            fields.append(("Forum", link, True))
-        if payload["questions"]:
-            fields.append(("Questions", question_lines(payload["questions"]), False))
-        if payload["commands"]:
-            fields.append(("Reply with", command_block(payload["commands"]), False))
-        discord(
-            "POST",
-            f"/channels/{settings['action_channel_id']}/messages",
-            {
-                "embeds": [
-                    embed(
-                        headline or f"{clip(display_title(item), 90)} · needs you",
-                        clip(reason, 1200),
-                        color="needs",
-                        url=link or item["url"],
-                        fields=fields,
-                    )
-                ],
-                "allowed_mentions": {"parse": []},
-            },
-        )
+    notice(application_id, "action", payload)
     apply_tags(application_id, STATE_TAGS.get(item["status"], ["Preparing", "Needs Action"]))
     sync_note(application_id)
 
 
 def shortlist(application_id: str, reason: str, items=(), commands=()):
     """A borderline job goes to the owner's shortlist with the reasons, once."""
-    settings = config()
-    item = get(application_id)
     payload = {"reason": reason, "items": list(items), "commands": list(commands)}
     record(application_id, "shortlisted", payload)
     flush_events(application_id)
-    if settings.get("enabled") and settings.get("shortlist_channel_id"):
-        fields = [("Application", f"`{application_id}`", True)]
-        link = forum_url(application_id)
-        if link:
-            fields.append(("Forum", link, True))
-        if payload["items"]:
-            fields.append(
-                ("Why", "\n".join("• " + clip(i, 160) for i in payload["items"][:8]), False)
-            )
-        if payload["commands"]:
-            fields.append(("Reply with", command_block(payload["commands"]), False))
-        discord(
-            "POST",
-            f"/channels/{settings['shortlist_channel_id']}/messages",
-            {
-                "embeds": [
-                    embed(
-                        "Your call · " + clip(display_title(item), 150),
-                        clip(reason, 800),
-                        color="needs",
-                        url=item["url"],
-                        fields=fields,
-                    )
-                ],
-                "allowed_mentions": {"parse": []},
-            },
-        )
+    notice(application_id, "shortlist", payload)
 
 
 def status() -> dict:

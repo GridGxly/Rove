@@ -23,6 +23,18 @@ def contains(text: str, phrase: str) -> bool:
     return any(f" {needle} " in haystack for needle in wanted)
 
 
+def excluded_by_rules(title: str, company: str = "", prefs: dict | None = None) -> str:
+    """The approved exclusion a job trips, or an empty string. Rules can change after intake."""
+    prefs = prefs or read_approved()["profile"]["preferences"]
+    for word in prefs.get("excluded_title_keywords", []):
+        if contains(title, word):
+            return f"title matches your excluded keyword '{word}'"
+    for name in prefs.get("excluded_companies", []):
+        if company and contains(company, name):
+            return f"company matches your exclusion '{name}'"
+    return ""
+
+
 def review_matches(limit: int = 10, *, preview_draft: bool = False) -> dict:
     if not 1 <= limit <= 25:
         raise ValueError("Use a limit of 1–25")

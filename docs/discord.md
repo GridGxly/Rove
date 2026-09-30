@@ -254,4 +254,5 @@ entry with its source), each Qwen draft with its approve command, lifecycle tran
 with their trigger, submit attempts, and receipts. Owner-only `answer`, `use`, `resume`,
 `defer`, `proceed`, `account`, `submit`, and `reconcile` commands are handled by
 deterministic code, independently of model wording. A job-fit hold is also posted to `shortlist` with its
-reasons. Recruiting-mail lifecycle updates are still unimplemented.
+reasons. Action-needed and shortlist cards are recorded before they are posted, and a
+failed post is retried on the next worker tick. Recruiting-mail lifecycle updates are still unimplemented.
