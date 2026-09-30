@@ -56,7 +56,9 @@ JOB_FIT_PROMPT = (
     "does not claim the applicant currently lives there. Any recruiting term is acceptable when "
     "the approved preferences say so. Use conflict only for an explicit contradiction with an "
     "approved fact, unknown for missing information. No tools, application answers, profile "
-    "edits or submission authority. Keep the whole response under 900 words."
+    "edits or submission authority. Do not repeat a graduation, authorization or sponsorship "
+    "comparison in unknowns; unknowns are only for requirements you could not map or verify. "
+    "Keep the whole response under 900 words."
 )
 
 

@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Annotated, Literal
@@ -21,7 +22,7 @@ from .runtime import state_root, write_private
 
 # Bump when the prompts in scripts/recruiting_reasoning.py change so cached
 # reviews produced by an older prompt are never reused silently.
-PROMPT_VERSION = "2026-09-30.1"
+PROMPT_VERSION = "2026-09-30.2"
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 
 
@@ -198,10 +199,44 @@ def evaluate_requirements(requirements: list[dict], profile: dict) -> list[dict]
     return checked
 
 
-def decide(requirements: list[dict], unknowns: list[str]) -> str:
+# Qwen is told not to judge these, so an "unknown" that only restates a kind code
+# already compared is noise, not a hold. Anything else becomes a review item.
+CODE_KIND_TERMS = {
+    "graduation_window": r"graduat",
+    "work_authorization": r"authoriz|eligib",
+    "sponsorship": r"sponsor",
+}
+
+
+def merge_unknowns(requirements: list[dict], unknowns: list[str]) -> tuple[list, list, list]:
+    resolved_kinds = {r["kind"] for r in requirements if r["checked_by"] == "code"}
+    kept, resolved = [], []
+    for text in unknowns:
+        if any(
+            re.search(pattern, text, re.IGNORECASE)
+            for kind, pattern in CODE_KIND_TERMS.items()
+            if kind in resolved_kinds
+        ):
+            resolved.append(text)
+            continue
+        kept.append(text)
+        requirements.append(
+            {
+                "kind": "other",
+                "requirement": text[:400],
+                "evidence": "",
+                "status": "unknown",
+                "checked_by": "qwen",
+                "note": "Listed by Qwen as unresolved",
+            }
+        )
+    return requirements, kept, resolved
+
+
+def decide(requirements: list[dict]) -> str:
     if any(r["status"] == "conflict" and r["checked_by"] == "code" for r in requirements):
         return "not_fit"
-    if unknowns or any(r["status"] != "satisfied" for r in requirements):
+    if any(r["status"] != "satisfied" for r in requirements):
         return "needs_review"
     return "fit"
 
@@ -244,8 +279,11 @@ def review_job(application_id: str, page: dict) -> dict:
         raise
     result = parsed.model_dump()
     result["requirements"] = evaluate_requirements(result["requirements"], approved["profile"])
+    result["requirements"], result["unknowns"], result["resolved_unknowns"] = merge_unknowns(
+        result["requirements"], result["unknowns"]
+    )
     result["qwen_decision"] = result["decision"]
-    result["decision"] = decide(result["requirements"], result["unknowns"])
+    result["decision"] = decide(result["requirements"])
     result.update(
         context_hash=context_hash,
         prompt_version=PROMPT_VERSION,

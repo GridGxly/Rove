@@ -54,12 +54,26 @@ def test_authorization_sponsorship_and_relocation_use_approved_facts():
 
 def test_decision_escalates_qwen_doubt_but_only_code_conflicts_reject():
     ok = {**requirement("program", "satisfied"), "checked_by": "qwen"}
-    assert reasoning.decide([ok], []) == "fit"
-    assert reasoning.decide([ok], ["unclear degree"]) == "needs_review"
+    assert reasoning.decide([ok]) == "fit"
     doubt = {**requirement("skills", "conflict"), "checked_by": "qwen"}
-    assert reasoning.decide([ok, doubt], []) == "needs_review"
+    assert reasoning.decide([ok, doubt]) == "needs_review"
     hard = {**requirement("graduation_window", "conflict"), "checked_by": "code"}
-    assert reasoning.decide([ok, hard], []) == "not_fit"
+    assert reasoning.decide([ok, hard]) == "not_fit"
+
+
+def test_unknowns_already_compared_by_code_do_not_hold_the_application():
+    window = {**requirement("graduation_window", "satisfied"), "checked_by": "code"}
+    ok = {**requirement("program", "satisfied"), "checked_by": "qwen"}
+    requirements, kept, resolved = reasoning.merge_unknowns(
+        [window, ok], ["Whether the December 2027 graduation falls within the window"]
+    )
+    assert kept == [] and len(resolved) == 1 and len(requirements) == 2
+    assert reasoning.decide(requirements) == "fit"
+    requirements, kept, _ = reasoning.merge_unknowns(
+        [window, ok], ["Must hold a security clearance"]
+    )
+    assert kept and requirements[-1]["status"] == "unknown"
+    assert reasoning.decide(requirements) == "needs_review"
 
 
 def test_harness_stop_is_not_a_model_answer():
