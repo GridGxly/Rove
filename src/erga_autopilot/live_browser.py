@@ -4,6 +4,7 @@ The agent can open a job, follow an observed application link, observe, and prep
 known fields. It cannot execute JS, choose a file, invent an answer or submit.
 """
 
+import contextlib
 import fcntl
 import hashlib
 import ipaddress
@@ -267,16 +268,27 @@ def front_app() -> tuple[str, str]:
         return "", ""
 
 
-def restore_front(previous: tuple[str, str]):
-    """Give focus back to whatever the owner was using; launching a browser activates it."""
+def restore_front(previous: tuple[str, str], watch_seconds: float = 6.0) -> dict:
+    """Give focus back to whatever the owner was using; a launching app activates itself.
+
+    Chrome activates a moment after its DevTools port answers, so watch for a few
+    seconds and hand focus back each time it is taken. Nothing here needs a permission.
+    """
     asn, bundle = previous
+    outcome = {"previous": bundle, "restored": 0}
     if not asn or not bundle:
-        return
+        return outcome
+    deadline = time.monotonic() + watch_seconds
     try:
-        if subprocess.check_output(["lsappinfo", "front"], timeout=5).decode().strip() != asn:
-            subprocess.run(["open", "-b", bundle], check=False, capture_output=True, timeout=10)
+        while time.monotonic() < deadline:
+            front = subprocess.check_output(["lsappinfo", "front"], timeout=5).decode().strip()
+            if front != asn:
+                subprocess.run(["open", "-b", bundle], check=False, capture_output=True, timeout=10)
+                outcome["restored"] += 1
+            time.sleep(0.5)
     except (OSError, subprocess.SubprocessError):
         pass
+    return outcome
 
 
 def free_port() -> int:
@@ -357,12 +369,17 @@ class ChromeLauncher:
             time.sleep(0.5)
         else:
             raise RuntimeError("The recruiting browser did not expose its local DevTools port")
+        focus = restore_front(previous)
         write_private(
             self.session,
-            {"port": port, "app": app, "bundle": bundle, "started_at": workflow.now()},
+            {
+                "port": port,
+                "app": app,
+                "bundle": bundle,
+                "started_at": workflow.now(),
+                "focus": focus,
+            },
         )
-        time.sleep(0.8)
-        restore_front(previous)
         return port
 
 
@@ -426,7 +443,6 @@ class RecruitingBrowser:
                 self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
             )
             self.cdp = self.browser.new_browser_cdp_session()
-        self.context.route("**/*", self._route)
         self.context.set_default_timeout(12000)
         self.context.add_init_script(PREPARE_GUARD)
 
@@ -441,6 +457,21 @@ class RecruitingBrowser:
                 {"url": "about:blank", "newWindow": first, "background": True},
             )
         return created.value
+
+    @contextlib.contextmanager
+    def guarded(self, page):
+        """Destination policy only while this daemon drives the page.
+
+        A route handler runs only while the daemon is inside a browser call, so a
+        context-wide route would stall every tab the owner browses by hand whenever the
+        daemon sits idle. The guard is attached per operation and removed afterwards.
+        """
+        page.route("**/*", self._route)
+        try:
+            yield page
+        finally:
+            with contextlib.suppress(PlaywrightError):
+                page.unroute("**/*")
 
     def close_run(self, run_id: str) -> dict:
         page = self.pages.pop(run_id, None)
@@ -494,13 +525,14 @@ class RecruitingBrowser:
         """One patient retry after a block: pause, enter through the front door, observe."""
         self.check(run_id)
         pace(12, 30)
-        self.warm(self.run["target_url"], force=True)
-        try:
-            self.page.goto(self.run["target_url"], wait_until="domcontentloaded", timeout=45000)
-            self.settle()
-        except PlaywrightError as error:
-            self.run["navigation_error"] = type(error).__name__
-        result = self.observe()
+        with self.guarded(self.page):
+            self.warm(self.run["target_url"], force=True)
+            try:
+                self.page.goto(self.run["target_url"], wait_until="domcontentloaded", timeout=45000)
+                self.settle()
+            except PlaywrightError as error:
+                self.run["navigation_error"] = type(error).__name__
+            result = self.observe()
         workflow.record(
             run_id,
             "browser_retry",
@@ -647,14 +679,15 @@ class RecruitingBrowser:
         workflow.set_state(run_id, "PREPARING", run_id=run_id)
         workflow.ensure_forum(run_id)
         self.save()
-        self.warm(target)
-        try:
-            self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
-            self.page.locator("body").wait_for()
-            self.settle()
-        except PlaywrightError as error:
-            self.run["navigation_error"] = type(error).__name__
-        result = self.observe()
+        with self.guarded(self.page):
+            self.warm(target)
+            try:
+                self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
+                self.page.locator("body").wait_for()
+                self.settle()
+            except PlaywrightError as error:
+                self.run["navigation_error"] = type(error).__name__
+            result = self.observe()
         result["feed_lookup"] = lookup_job_link(target)
         if not existing["title"]:
             workflow.set_state(run_id, "PREPARING", title=result["title"][:300])
@@ -681,22 +714,24 @@ class RecruitingBrowser:
             ).hostname and not approved_ats(item["url"]):
                 raise PermissionError("Unexpected application destination; owner review needed")
         old_pages = list(self.context.pages)
-        self.click(locator)
-        try:
-            self.page.wait_for_function(
-                "old => location.href !== old || !!document.querySelector('input:not([type=hidden]),select,textarea,[role=dialog]')",
-                arg=self.observation["url"],
-                timeout=2500,
-            )
-        except PlaywrightError:
-            pass
+        with self.guarded(self.page):
+            self.click(locator)
+            try:
+                self.page.wait_for_function(
+                    "old => location.href !== old || !!document.querySelector('input:not([type=hidden]),select,textarea,[role=dialog]')",
+                    arg=self.observation["url"],
+                    timeout=2500,
+                )
+            except PlaywrightError:
+                pass
         fresh = [p for p in self.context.pages if p not in old_pages]
         if fresh:
             self.page = fresh[-1]
             self.pages[run_id] = self.page
-        self.page.wait_for_load_state("domcontentloaded", timeout=30000)
-        self.settle()
-        result = self.observe()
+        with self.guarded(self.page):
+            self.page.wait_for_load_state("domcontentloaded", timeout=30000)
+            self.settle()
+            result = self.observe()
         workflow.record(
             run_id, "application_link", {"clicked": item["label"], "url": result["url"]}
         )
@@ -833,6 +868,10 @@ class RecruitingBrowser:
 
     def prepare(self, run_id: str) -> dict:
         self.check(run_id)
+        with self.guarded(self.page):
+            return self._prepare(run_id)
+
+    def _prepare(self, run_id: str) -> dict:
         before = self.observe()
         if not approved_ats(before["url"]) or job_scope(before["url"]) != job_scope(
             self.run.get("target_url", workflow.get(run_id)["url"])

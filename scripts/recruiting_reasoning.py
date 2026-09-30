@@ -62,7 +62,9 @@ JOB_FIT_PROMPT = (
     "term notes, co-op leave) settles schedule and commitment questions; do not raise them as "
     "unknowns. Do not repeat a graduation, authorization or sponsorship "
     "comparison in unknowns; unknowns are only for requirements you could not map or verify. "
-    "Keep the whole response under 900 words."
+    "List at most 10 requirements, each quoted in at most 25 words, and keep every string on one line "
+    "with no raw line breaks. Keep the whole response under 600 words. If the input names a "
+    "previous_output_problem, fix exactly that defect."
 )
 
 

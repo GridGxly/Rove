@@ -413,10 +413,10 @@ def run_approved_submissions() -> list[dict]:
             if workflow.get(application_id)["status"] == "READY_FOR_REVIEW":
                 workflow.action_needed(
                     application_id,
-                    "Submission was not attempted: "
-                    + str(error)[:600]
-                    + f". Nothing was sent. Reply `resume {application_id}` to prepare and review "
-                    "the form again, then approve the new package hash.",
+                    "Submission was not attempted: " + str(error)[:600] + ". Nothing was sent. "
+                    "Prepare and review again, then approve the new package hash.",
+                    commands=[f"resume {application_id}"],
+                    headline="Submission not attempted",
                 )
         with workflow.db() as conn:
             conn.execute(
@@ -491,7 +491,9 @@ def tick() -> dict:
                 queued,
                 f"Preparation stopped during {failure.phase.replace('_', ' ')}: "
                 + type(failure.error).__name__
-                + f". Private details saved locally; no application was submitted. Reply `resume {queued}` to retry.",
+                + ". Details are saved locally; nothing was submitted.",
+                commands=[f"resume {queued}", f"defer {queued}"],
+                headline="Preparation stopped",
             )
             result = {
                 "application_id": queued,

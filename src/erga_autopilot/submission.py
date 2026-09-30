@@ -313,6 +313,11 @@ def reconcile(application_id: str, outcome: str, owner_message_id: str):
 
 def submit(browser, application_id: str, package_hash: str, owner_message_id: str) -> dict:
     browser.check(application_id)
+    with browser.guarded(browser.page):
+        return _submit(browser, application_id, package_hash, owner_message_id)
+
+
+def _submit(browser, application_id: str, package_hash: str, owner_message_id: str) -> dict:
     current = browser.observe()
     adapter = enabled_adapter(current["url"])
     package = preflight(application_id, package_hash, current)

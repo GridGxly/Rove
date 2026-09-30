@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import workflow
 from .evidence import career_evidence
@@ -53,7 +53,7 @@ class Requirement(BaseModel):
         "skills",
         "other",
     ]
-    requirement: str = Field(min_length=1, max_length=400)
+    requirement: str = Field(min_length=1, max_length=300)
     evidence: str = Field(default="", max_length=400)
     status: Literal["satisfied", "unknown", "conflict"]
     graduation_start: Month | None = None
@@ -81,6 +81,14 @@ def strip_fence(raw: str) -> str:
         if text.rstrip().endswith("```"):
             text = text.rstrip()[:-3]
     return text.strip()
+
+
+def load_json(text: str):
+    """Parse model JSON leniently: raw newlines inside strings are common in local output."""
+    try:
+        return json.loads(strip_fence(text), strict=False)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Qwen returned invalid JSON: {error.msg} at char {error.pos}") from error
 
 
 def completed_response(generated: dict) -> str:
@@ -319,8 +327,17 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
                 workflow.flush_events(application_id)
             return current
     try:
-        generated = generate(directory, context, "job-reasoning")
-        parsed = JobReview.model_validate_json(strip_fence(completed_response(generated)))
+        generated, parsed = None, None
+        for attempt in range(2):
+            generated = generate(directory, context, "job-reasoning")
+            try:
+                parsed = JobReview.model_validate(load_json(completed_response(generated)))
+                break
+            except (ValueError, ValidationError) as error:
+                if attempt:
+                    raise
+                # One retry with the defect named; a second bad answer is a failure.
+                context = {**context, "previous_output_problem": str(error)[:300]}
     except Exception as error:
         workflow.record(
             application_id,
@@ -348,7 +365,7 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
 
 
 def parse_review(raw: str, observed_keys: set[str]) -> dict:
-    result = Review.model_validate_json(strip_fence(raw)).model_dump()
+    result = Review.model_validate(load_json(raw)).model_dump()
     seen = set()
     for answer in result["answers"]:
         if answer["key"] not in observed_keys or answer["key"] in seen:
@@ -405,8 +422,16 @@ def review_application(application_id: str, page: dict) -> dict:
         if cached.get("context_hash") == context_hash:
             return cached
     try:
-        generated = generate(directory, context, "reasoning")
-        result = parse_review(completed_response(generated), {q["key"] for q in questions})
+        generated, result = None, None
+        for attempt in range(2):
+            generated = generate(directory, context, "reasoning")
+            try:
+                result = parse_review(completed_response(generated), {q["key"] for q in questions})
+                break
+            except (ValueError, ValidationError) as error:
+                if attempt:
+                    raise
+                context = {**context, "previous_output_problem": str(error)[:300]}
     except Exception as error:
         workflow.record(
             application_id,
