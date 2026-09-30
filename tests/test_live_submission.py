@@ -24,6 +24,37 @@ FORM = b"""<!doctype html><title>Synthetic Board</title><form id="application-fo
   if (r.ok) { location.assign(location.pathname + '/confirmation'); }
   else { document.querySelector('#error').textContent = 'rejected'; }
 });</script>"""
+YESNO = (
+    '<div class="yesno"><button type="button" aria-pressed="false" data-option="yes">Yes</button>'
+    '<button type="button" aria-pressed="false" data-option="no">No</button>'
+    '<input type="checkbox" name="{name}" tabindex="-1" style="display:none"></div>'
+)
+ASHBY_FORM = (
+    """<!doctype html><title>Synthetic Board</title>
+<div class="entry"><label class="title required" for="_name">Name</label><input id="_name" name="name" required></div>
+<div class="entry"><label class="title required" for="_email">Email</label><input id="_email" name="email" type="email" required></div>
+<div class="entry"><label class="title required" for="_resume">Resume</label><input id="_resume" name="resume" type="file"></div>
+<div class="entry"><label class="title required" for="_location">Location</label><div><input role="combobox" placeholder="Start typing..." aria-haspopup="listbox"></div></div>
+<div class="entry"><label class="title required" for="q1">Are you legally authorized to work in the United States?</label>"""
+    + YESNO.format(name="q1")
+    + """</div>
+<div class="entry"><label class="title required" for="q2">Will you now or in the future, require sponsorship for employment visa status (e.g., H1B visa status)?</label>"""
+    + YESNO.format(name="q2")
+    + """</div>
+<div class="entry"><label class="title required" for="q3">Are you comfortable working out of our NYC Office 5 days/week?</label>"""
+    + YESNO.format(name="q3")
+    + """</div>
+<div class="entry"><label class="title required" for="q4">Describe a project you built</label><textarea id="q4" name="q4"></textarea></div>
+<fieldset class="entry"><label class="title required" for="g1">What is your expected graduation year?</label>
+<div><input type="radio" id="g1-0" name="g1"><label for="g1-0">December 2026</label></div>
+<div><input type="radio" id="g1-1" name="g1"><label for="g1-1">Spring 2027</label></div>
+<div><input type="radio" id="g1-2" name="g1"><label for="g1-2">December 2027</label></div>
+<div><input type="radio" id="g1-3" name="g1"><label for="g1-3">Other</label></div></fieldset>
+<button type="button">Submit Application</button>
+<script>document.querySelectorAll('.yesno').forEach(box=>box.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+box.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed','false'));b.setAttribute('aria-pressed','true');
+box.querySelector('input').checked=b.dataset.option==='yes';})));</script>"""
+).encode()
 CONFIRMATION = b"""<!doctype html><title>Thanks</title><div class="confirmation">
 <div class="confirmation__content"><h1>Thank you for applying to Acme.</h1></div></div>"""
 
@@ -33,7 +64,12 @@ class Board(BaseHTTPRequestHandler):
     reject: ClassVar[set[str]] = set()
 
     def do_GET(self):
-        body = CONFIRMATION if self.path.endswith("/confirmation") else FORM
+        if self.path.endswith("/confirmation"):
+            body = CONFIRMATION
+        elif self.path.endswith("/jobs/9"):
+            body = ASHBY_FORM
+        else:
+            body = FORM
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -70,6 +106,16 @@ def board(tmp_path, monkeypatch):
         digest(draft()),
     )
     propose("evidence", {"resume_path": str(pdf)}, digest(draft()))
+    propose(
+        "education",
+        {"schools": [{"school": "Example University", "graduation_month": "2027-12"}]},
+        digest(draft()),
+    )
+    propose(
+        "eligibility",
+        {"us_work_authorized": True, "sponsorship_now": False, "sponsorship_future": False},
+        digest(draft()),
+    )
     approve(digest(draft()))
     server = ThreadingHTTPServer(("127.0.0.1", 0), Board)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -165,3 +211,55 @@ def test_rejected_submission_stays_unknown_until_the_owner_reconciles(board):
     submission.reconcile(run_id, "not-submitted", "msg-2")
     assert workflow.get(run_id)["status"] == "NEEDS_USER"
     assert Board.posts == ["/acme/jobs/8"]
+
+
+def test_unassociated_labels_radio_groups_and_button_choices_resolve_from_approved_facts(board):
+    runtime, base, state = board
+    opened = runtime.open(f"{base}/acme/jobs/9")
+    kinds = {f["label"]: f["kind"] for f in opened["fields"]}
+    assert kinds["Location"] == "text"
+    assert kinds["Are you legally authorized to work in the United States?"] == "choice"
+    assert kinds["What is your expected graduation year?"] == "radio_group"
+    run_id = opened["run_id"]
+    directory = state / "applications" / run_id
+    (directory / "resume.pdf").write_bytes(b"%PDF-1.4 frozen synthetic resume")
+    sha = hashlib.sha256((directory / "resume.pdf").read_bytes()).hexdigest()
+    (directory / "resume-manifest.json").write_text(
+        json.dumps({"ready": True, "resume_sha256": sha})
+    )
+    result = runtime.prepare(run_id)
+    filled = {f["label"]: f.get("value") for f in result["filled"]}
+    assert filled["Are you legally authorized to work in the United States?"] == "Yes"
+    assert (
+        filled[
+            "Will you now or in the future, require sponsorship for employment visa status (e.g., H1B visa status)?"
+        ]
+        == "No"
+    )
+    assert filled["What is your expected graduation year?"] == "December 2027"
+    assert filled["Name"] == "Alex Example" and "Resume" in filled
+    pending = {q["label"]: q for q in result["pending"]}
+    assert pending["Are you comfortable working out of our NYC Office 5 days/week?"]["options"] == [
+        "Yes",
+        "No",
+    ]
+    assert "Location" in pending and "Describe a project you built" in pending
+    assert all(label not in pending for label in ("December 2026", "Spring 2027", "Other"))
+    assert (
+        runtime.page.locator("#g1-2").is_checked()
+        and not runtime.page.locator("#g1-0").is_checked()
+    )
+    assert (
+        runtime.page.locator("input[name=q1]").is_checked()
+        and not runtime.page.locator("input[name=q2]").is_checked()
+    )
+    assert result["status"] == "NEEDS_USER"
+    # A reviewed owner answer for the button question is applied on the next preparation.
+    nyc = pending["Are you comfortable working out of our NYC Office 5 days/week?"]
+    worker.apply_command(
+        {"kind": "answer", "application_id": run_id, "field_key": nyc["key"], "value": "Yes"},
+        "msg-nyc",
+    )
+    again = runtime.prepare(run_id)
+    assert {f["label"]: f.get("value") for f in again["filled"]}[nyc["label"]] == "Yes"
+    assert runtime.page.locator("input[name=q3]").is_checked()

@@ -15,6 +15,7 @@ import socket
 import socketserver
 import subprocess
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -148,22 +149,20 @@ def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
             name == "when is your expected graduation date month year"
             and school["graduation_month"]
         ):
-            from datetime import UTC, datetime
-
             return datetime.strptime(school["graduation_month"], "%Y-%m").replace(
                 tzinfo=UTC
             ).strftime("%B %Y"), "education.schools.0.graduation_month"
     eligible = profile["eligibility"]
     if (
-        re.fullmatch(r"are you legally authorized to work in the u s(?: for [a-z ]+)?", name)
+        re.fullmatch(
+            r"are you legally authorized to work in (?:the )?(?:u s|us|usa|united states)(?: for [a-z ]+)?",
+            name,
+        )
         and eligible["us_work_authorized"] is not None
     ):
         return "Yes" if eligible["us_work_authorized"] else "No", "eligibility.us_work_authorized"
     if (
-        re.fullmatch(
-            r"will you now or in the future require [a-z ]+ sponsorship for employment visa status e g h1 b or other employment based immigration case",
-            name,
-        )
+        re.match(r"will you now or in the future require .*sponsorship", name)
         and eligible["sponsorship_now"] is False
         and eligible["sponsorship_future"] is False
     ):
@@ -173,19 +172,49 @@ def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
+def resolve_choice(label: str, options: list[dict], profile: dict) -> tuple[str | None, str | None]:
+    """Pick exactly one option from an approved fact; never a guess among options."""
+    labels = [o["label"] for o in options]
+    value, source = resolve_known(label, profile)
+    candidates = set()
+    if value is not None:
+        candidates = {normalized(str(value))}
+    elif "graduat" in normalized(label):
+        schools = profile["education"]["schools"]
+        month = schools[0]["graduation_month"] if len(schools) == 1 else None
+        if month:
+            when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
+            candidates = {normalized(when.strftime(f)) for f in ("%B %Y", "%b %Y", "%Y")}
+            source = "education.schools.0.graduation_month"
+    matches = [x for x in labels if normalized(x) in candidates]
+    if len(matches) == 1:
+        return matches[0], source
+    return None, None
+
+
 OBSERVE = r"""() => {
  const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden' && e.getAttribute('aria-hidden')!=='true';
+ const owns=(l,e)=>!l.htmlFor||!document.getElementById(l.htmlFor)||document.getElementById(l.htmlFor)===e;
+ const nearest=e=>{let p=e.parentElement;for(let d=0;p&&d<4;d++,p=p.parentElement){const ls=[...p.querySelectorAll('label')].filter(l=>!l.contains(e)&&owns(l,e));if(ls.length)return ls[0].innerText.trim();}return '';};
  const label=e=>[...(e.labels||[])].map(x=>x.innerText).join(' ').trim() || e.getAttribute('aria-label') ||
-   (e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ').trim() || e.getAttribute('placeholder') || '';
+   (e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ').trim() || nearest(e) || e.getAttribute('placeholder') || '';
+ const groupOf=e=>{if(e.type!=='radio'&&e.type!=='checkbox')return '';const f=e.closest('fieldset,[role=radiogroup],[role=group]');if(!f)return '';
+   const t=f.querySelector('legend')||[...f.querySelectorAll('label')].find(l=>owns(l,e)&&l.control!==e);return t?t.innerText.trim():'';};
  const fields=[...document.querySelectorAll('input,textarea,select')].filter(e=>visible(e)||e.type==='file').map((e,i)=>{
    e.setAttribute('data-autopilot-field',String(i));
-   return {ref:String(i),label:label(e),name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),
+   return {ref:String(i),label:label(e),group:groupOf(e),name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||null,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
     required:e.required || e.getAttribute('aria-required')==='true',disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
     value:(['password','hidden','file'].includes(e.type)?null:e.value),
     options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,100):[]};
  }).filter(e=>e.kind!=='hidden');
+ const boxes=[...new Set([...document.querySelectorAll('button[aria-pressed]')].filter(visible).map(b=>b.parentElement))].filter(c=>c.querySelectorAll(':scope > button[aria-pressed]').length>=2);
+ const choices=boxes.map((c,i)=>{c.setAttribute('data-autopilot-choice',String(i));const buttons=[...c.querySelectorAll(':scope > button[aria-pressed]')];const box=c.querySelector('input');
+   return {ref:String(i),label:nearest(c),group:'',name:box?.name||'',id:box?.id||'',kind:'choice',tag:'buttons',role:'choice',selected:null,selection_code:null,
+    required:!!(c.parentElement&&[...c.parentElement.querySelectorAll('label')].some(l=>/required/i.test(l.className)||/\*\s*$/.test(l.innerText))),disabled:false,readonly:false,checked:false,
+    value:buttons.find(b=>b.getAttribute('aria-pressed')==='true')?.innerText.trim()||'',options:buttons.map(b=>({label:b.innerText.trim(),value:b.getAttribute('data-option')||b.innerText.trim()}))};});
+ fields.push(...choices);
  const links=[...document.querySelectorAll('a[href],button,[role="button"]')].filter(visible).filter(e=>
    /^(apply( now| for this (job|position))?|apply on (the )?(employer|company) (site|website)|apply for this job|start application|continue application)$/i.test(e.innerText.trim())).map((e,i)=>{
    e.setAttribute('data-autopilot-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
@@ -285,6 +314,37 @@ class RecruitingBrowser:
         self.run["title"] = data["title"]
         self.run["last_observation"] = version
         self.save()
+        groups = {}
+        for field in data["fields"]:
+            if field["kind"] == "radio" and field.get("name"):
+                groups.setdefault(field["name"], []).append(field)
+        for name, members in groups.items():
+            if len(members) < 2:
+                continue
+            # One question with options, not one question per radio button.
+            group = {
+                "ref": None,
+                "label": next((m["group"] for m in members if m.get("group")), "")
+                or members[0]["label"],
+                "group": "",
+                "name": name,
+                "id": "",
+                "kind": "radio_group",
+                "tag": "radios",
+                "role": "radio_group",
+                "selected": None,
+                "selection_code": None,
+                "required": any(m["required"] for m in members),
+                "disabled": all(m["disabled"] for m in members),
+                "readonly": False,
+                "checked": False,
+                "value": next((m["label"] for m in members if m["checked"]), ""),
+                "options": [
+                    {"label": m["label"], "value": m.get("value") or m["label"]} for m in members
+                ],
+                "member_refs": [m["ref"] for m in members],
+            }
+            data["fields"].append(group)
         for field in data["fields"]:
             field["key"] = workflow.field_key(field)
         # Secrets/identity steps are kept out of saved screenshots and model context.
@@ -506,6 +566,36 @@ class RecruitingBrowser:
         locator.press("Escape")
         return verified
 
+    def select_choice(self, field: dict, label: str) -> bool:
+        """Select one observed option of a radio group or button group and verify it."""
+        if field["kind"] == "radio_group":
+            index = next(i for i, o in enumerate(field["options"]) if o["label"] == label)
+            member = self.page.locator(
+                f'[data-autopilot-field="{int(field["member_refs"][index])}"]'
+            )
+            try:
+                member.check(timeout=3000)
+            except PlaywrightError:
+                # Styled radios hide the input; its associated label is the visible target.
+                target = member.get_attribute("id")
+                if target:
+                    self.page.locator(f'label[for="{target}"]').first.click()
+            return member.is_checked()
+        container = self.page.locator(f'[data-autopilot-choice="{int(field["ref"])}"]')
+        button = container.get_by_role("button", name=label, exact=True)
+        if button.count() != 1:
+            return False
+        button.click()
+        try:
+            self.page.wait_for_function(
+                "({ref,label})=>[...document.querySelector('[data-autopilot-choice=\"'+ref+'\"]').querySelectorAll('button[aria-pressed]')].some(b=>b.innerText.trim()===label&&b.getAttribute('aria-pressed')==='true')",
+                arg={"ref": field["ref"], "label": label},
+                timeout=3000,
+            )
+        except PlaywrightError:
+            return False
+        return True
+
     def prepare(self, run_id: str) -> dict:
         self.check(run_id)
         before = self.observe()
@@ -537,11 +627,59 @@ class RecruitingBrowser:
         pending = []
         filled = []
         answers = workflow.approved_answers(run_id)
+        grouped = {f["name"] for f in before["fields"] if f["kind"] == "radio_group"}
         for field in before["fields"]:
             if field["disabled"] or field["readonly"]:
                 continue
             if self.page.url != before["url"]:
                 raise PermissionError("Page changed before fill")
+            if field["kind"] == "radio" and field.get("name") in grouped:
+                continue  # handled once as its group
+            if field["kind"] in {"radio_group", "choice"}:
+                owner_answer = answers.get(field["key"])
+                if (
+                    owner_answer
+                    and owner_answer["value"].lower() == "skip"
+                    and not field["required"]
+                ):
+                    continue
+                if owner_answer:
+                    value, source = owner_answer["value"], owner_answer["source"]
+                else:
+                    value, source = resolve_choice(
+                        field["label"], field["options"], approved["profile"]
+                    )
+                chosen = next(
+                    (
+                        o
+                        for o in field["options"]
+                        if value is not None and normalized(o["label"]) == normalized(str(value))
+                    ),
+                    None,
+                )
+                if chosen is not None and self.select_choice(field, chosen["label"]):
+                    filled.append(
+                        {
+                            "label": field["label"],
+                            "value": chosen["label"],
+                            "source": source,
+                            "key": field["key"],
+                            "control": field["kind"],
+                        }
+                    )
+                    continue
+                pending.append(
+                    {
+                        "label": field["label"],
+                        "key": field["key"],
+                        "required": field["required"],
+                        "options": [o["label"] for o in field["options"]],
+                        "reason": "Needs reviewed answer or supported control adapter"
+                        if chosen is None
+                        else "Selection could not be verified",
+                    }
+                )
+                continue
             locator = self.page.locator(f'[data-autopilot-field="{int(field["ref"])}"]')
             if field["kind"] == "file":
                 # Resume uploads are a separate, explicit preparation action, using a
@@ -709,6 +847,11 @@ class RecruitingBrowser:
                     field["kind"] in ("text", "email", "tel", "url", "textarea")
                     and entry.get("control") != "combobox"
                     and field["value"] != entry["value"]
+                ):
+                    raise ValueError("Post-batch verification mismatch")
+                if (
+                    entry.get("control") in {"radio_group", "choice"}
+                    and field.get("value") != entry["value"]
                 ):
                     raise ValueError("Post-batch verification mismatch")
         seen = {f["key"] for f in before["fields"]}
