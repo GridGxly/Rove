@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 from pydantic import BaseModel, ConfigDict
 
 from .runtime import state_root, write_private

@@ -13,7 +13,7 @@ import re
 import shutil
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Error as PlaywrightError
+from patchright.sync_api import Error as PlaywrightError
 
 from . import workflow
 from .onboarding import digest, read_approved
@@ -276,8 +276,10 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
 def reconcile(application_id: str, outcome: str, owner_message_id: str):
     """Owner-verified resolution of an unknown attempt; never inferred by code."""
     item = workflow.get(application_id)
-    if item["status"] != "UNKNOWN_SUBMISSION":
-        raise PermissionError("Only an unknown submission can be reconciled")
+    if item["status"] not in {"UNKNOWN_SUBMISSION", "MANUAL_TAKEOVER"}:
+        raise PermissionError(
+            "Only an unknown submission or a manual application can be reconciled"
+        )
     if outcome == "applied":
         finish_attempt(
             application_id,
@@ -287,7 +289,9 @@ def reconcile(application_id: str, outcome: str, owner_message_id: str):
                 "package_hash": item["package_hash"],
                 "status": "APPLIED",
                 "confirmed_at": workflow.now(),
-                "reason": "Owner verified the employer confirmation independently",
+                "reason": "Owner verified the employer confirmation independently"
+                if item["status"] == "UNKNOWN_SUBMISSION"
+                else "Owner applied manually outside the recruiting browser",
                 "owner_message_id": owner_message_id,
             },
         )
@@ -357,7 +361,7 @@ def submit(browser, application_id: str, package_hash: str, owner_message_id: st
     try:
         # The code-owned preparation guard is armed for this one observed click only.
         browser.page.evaluate("() => { window.__ergaSubmitArmed = true }")
-        locator.click(timeout=12000)
+        browser.click(locator)
         try:
             browser.page.wait_for_url(
                 re.compile(r"/confirmation/?(\?.*)?$"), timeout=CONFIRMATION_TIMEOUT_MS
@@ -395,4 +399,6 @@ def submit(browser, application_id: str, package_hash: str, owner_message_id: st
         browser.page.remove_listener("response", observe_response)
         result["responses"] = responses
         finish_attempt(application_id, result["status"], result)
+    if result["status"] == "APPLIED":
+        browser.close_run(application_id)
     return result

@@ -131,7 +131,12 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(
         workflow,
         "config",
-        lambda: {"enabled": False, "submission_enabled": True, "submit_adapters": ["synthetic_v1"]},
+        lambda: {
+            "enabled": False,
+            "submission_enabled": True,
+            "submit_adapters": ["synthetic_v1"],
+            "human_pacing": False,
+        },
     )
     monkeypatch.setitem(submission.ADAPTERS, "synthetic_v1", SyntheticV1)
     monkeypatch.setattr(

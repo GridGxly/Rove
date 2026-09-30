@@ -9,18 +9,20 @@ import hashlib
 import ipaddress
 import json
 import os
+import random
 import re
 import shutil
 import socket
 import socketserver
 import subprocess
 import time
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import Error as PlaywrightError
+from patchright.sync_api import sync_playwright
 
 from . import workflow
 from .jobs import lookup_job_link, public_link
@@ -234,6 +236,133 @@ PREPARE_GUARD = (
     "e.preventDefault();e.stopImmediatePropagation();}},true)"
 )
 
+BLOCK_MARKERS = re.compile(
+    r"access denied|pardon our interruption|request unsuccessful|verify (?:that )?you are (?:a )?human"
+    r"|just a moment\.\.\.|attention required|are you a robot|checking your browser"
+    r"|blocked by (?:the )?(?:site|website) administrator|reference #\s?[0-9a-f.]{6,}",
+    re.IGNORECASE,
+)
+
+
+def pacing_enabled() -> bool:
+    return bool(workflow.config().get("human_pacing", True))
+
+
+def pace(low: float = 0.35, high: float = 1.2):
+    """Randomized, human-scale pauses between actions; off in tests."""
+    if pacing_enabled():
+        time.sleep(random.uniform(low, high))
+
+
+def front_app() -> tuple[str, str]:
+    """(process serial, bundle id) of the frontmost macOS app, without any permission."""
+    try:
+        asn = subprocess.check_output(["lsappinfo", "front"], timeout=5).decode().strip()
+        info = subprocess.check_output(["lsappinfo", "info", "-only", "bundleid", asn], timeout=5)
+        match = re.search(r'bundleID="([^"]+)"', info.decode())
+        return asn, (match.group(1) if match else "")
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
+
+
+def restore_front(previous: tuple[str, str]):
+    """Give focus back to whatever the owner was using; launching a browser activates it."""
+    asn, bundle = previous
+    if not asn or not bundle:
+        return
+    try:
+        if subprocess.check_output(["lsappinfo", "front"], timeout=5).decode().strip() != asn:
+            subprocess.run(["open", "-b", bundle], check=False, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def devtools_alive(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as reply:
+            return reply.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+class ChromeLauncher:
+    """Start the recruiting browser as its own app instance and reach it over local CDP.
+
+    Launching it ourselves means no automation flag is ever set (navigator.webdriver stays
+    false), the window survives daemon restarts, and new tabs open in the background.
+    The DevTools port binds to localhost only; the local account is trusted by design.
+    """
+
+    def __init__(self):
+        self.session = state_root() / "browser/session.json"
+
+    def app(self, playwright) -> tuple[str, str]:
+        preference = workflow.config().get("browser_app", "chrome")
+        chrome = Path("/Applications/Google Chrome.app")
+        if preference == "chrome" and chrome.is_dir():
+            return str(chrome), "com.google.Chrome"
+        executable = Path(playwright.chromium.executable_path)
+        bundle = next((p for p in executable.parents if p.suffix == ".app"), None)
+        if bundle is None:
+            raise RuntimeError("No launchable Chrome application bundle was found")
+        return str(bundle), "com.google.chrome.for.testing"
+
+    def running_port(self) -> int | None:
+        if not self.session.is_file():
+            return None
+        try:
+            port = int(json.loads(self.session.read_text())["port"])
+        except (ValueError, KeyError, TypeError):
+            return None
+        return port if devtools_alive(port) else None
+
+    def ensure_running(self, profile: Path, playwright) -> int:
+        port = self.running_port()
+        if port:
+            return port
+        app, bundle = self.app(playwright)
+        port = free_port()
+        previous = front_app()
+        subprocess.run(
+            [
+                "open",
+                "-n",
+                "-a",
+                app,
+                "--args",
+                f"--user-data-dir={profile}",
+                f"--remote-debugging-port={port}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--no-startup-window",
+                "--disable-background-networking",
+                "--window-size=1280,900",
+                "--lang=en-US",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        for _ in range(60):
+            if devtools_alive(port):
+                break
+            time.sleep(0.5)
+        else:
+            raise RuntimeError("The recruiting browser did not expose its local DevTools port")
+        write_private(
+            self.session,
+            {"port": port, "app": app, "bundle": bundle, "started_at": workflow.now()},
+        )
+        time.sleep(0.8)
+        restore_front(previous)
+        return port
+
 
 class RecruitingBrowser:
     def __init__(self, headless: bool = False):
@@ -246,6 +375,10 @@ class RecruitingBrowser:
         self.dns = {}
         self.runs = {}
         self.pages = {}
+        self.browser = None
+        self.cdp = None
+        self.warmed = set()
+        self.launcher = ChromeLauncher()
 
     def _route(self, route):
         url = route.request.url
@@ -260,25 +393,119 @@ class RecruitingBrowser:
         except (ValueError, PermissionError, OSError):
             route.abort()
 
+    def connected(self) -> bool:
+        if self.browser is not None:
+            return self.browser.is_connected()
+        return bool(self.context and self.context.browser and self.context.browser.is_connected())
+
     def ensure(self):
-        if self.context and self.context.browser and self.context.browser.is_connected():
+        if self.context and self.connected():
             return
         if self.playwright:
             self.playwright.stop()
         self.playwright = sync_playwright().start()
         directory = state_root() / "browser/recruiting-profile"
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.context = self.playwright.chromium.launch_persistent_context(
-            str(directory),
-            headless=self.headless,
-            viewport=None,
-            service_workers="block",
-            args=["--start-maximized", "--disable-background-networking"],
-            accept_downloads=False,
-        )
+        self.browser = self.cdp = None
+        if self.headless:
+            self.context = self.playwright.chromium.launch_persistent_context(
+                str(directory),
+                headless=True,
+                viewport=None,
+                args=["--disable-background-networking"],
+                accept_downloads=False,
+            )
+        else:
+            port = self.launcher.ensure_running(directory, self.playwright)
+            self.browser = self.playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}", timeout=20000
+            )
+            self.context = (
+                self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+            )
+            self.cdp = self.browser.new_browser_cdp_session()
         self.context.route("**/*", self._route)
         self.context.set_default_timeout(12000)
         self.context.add_init_script(PREPARE_GUARD)
+
+    def new_page(self):
+        """A background tab (or a background window when none exists): never steals focus."""
+        if self.cdp is None:
+            return self.context.new_page()
+        first = not any(not page.is_closed() for page in self.context.pages)
+        with self.context.expect_page(timeout=15000) as created:
+            self.cdp.send(
+                "Target.createTarget",
+                {"url": "about:blank", "newWindow": first, "background": True},
+            )
+        return created.value
+
+    def close_run(self, run_id: str) -> dict:
+        page = self.pages.pop(run_id, None)
+        self.runs.pop(run_id, None)
+        if page is not None and not page.is_closed():
+            page.close()
+        if self.run and self.run["id"] == run_id:
+            self.page, self.run, self.observation = None, None, None
+        return {"closed": run_id}
+
+    def enforce_tab_limit(self, keep: str):
+        """Keep the recruiting window uncluttered; a closed tab reopens on resume."""
+        limit = int(workflow.config().get("max_open_tabs", 5))
+        open_runs = [r for r, page in self.pages.items() if not page.is_closed() and r != keep]
+        while len(open_runs) + 1 > limit and open_runs:
+            self.close_run(open_runs.pop(0))
+
+    def click(self, locator, timeout: int = 12000):
+        """Move to the element first, like a person would, then click."""
+        if pacing_enabled():
+            try:
+                locator.hover(timeout=3000)
+            except PlaywrightError:
+                pass
+            pace(0.2, 0.7)
+        locator.click(timeout=timeout)
+
+    def type_value(self, locator, value: str):
+        if pacing_enabled() and len(value) <= 80:
+            locator.click()
+            locator.fill("")
+            locator.press_sequentially(value, delay=random.uniform(25, 65))
+        else:
+            locator.fill(value)
+
+    def warm(self, url: str, force: bool = False):
+        """Visit the site's front door first; a cold deep link is what bot managers flag."""
+        host = urlsplit(url).hostname or ""
+        if not pacing_enabled() or (host in self.warmed and not force):
+            return
+        self.warmed.add(host)
+        try:
+            self.page.goto(f"https://{host}/", wait_until="domcontentloaded", timeout=30000)
+            self.settle(5000)
+            self.page.mouse.move(random.randint(200, 900), random.randint(200, 600), steps=12)
+            pace(1.0, 2.2)
+        except PlaywrightError:
+            pass
+
+    def reopen(self, run_id: str) -> dict:
+        """One patient retry after a block: pause, enter through the front door, observe."""
+        self.check(run_id)
+        pace(12, 30)
+        self.warm(self.run["target_url"], force=True)
+        try:
+            self.page.goto(self.run["target_url"], wait_until="domcontentloaded", timeout=45000)
+            self.settle()
+        except PlaywrightError as error:
+            self.run["navigation_error"] = type(error).__name__
+        result = self.observe()
+        workflow.record(
+            run_id,
+            "browser_retry",
+            {"url": result["url"], "blocked": result.get("blocked", False)},
+        )
+        workflow.flush_events(run_id)
+        return result
 
     def save(self):
         write_private(state_root() / f"applications/{self.run['id']}/run.json", self.run)
@@ -298,9 +525,12 @@ class RecruitingBrowser:
         if self.page is None or self.page.is_closed():
             raise ValueError("No live job page. Open a link first.")
         data = self.page.evaluate(OBSERVE)
+        marker = BLOCK_MARKERS.search(data.get("title", "") + "\n" + data.get("text", "")[:3000])
         data.update(
             url=self.page.url,
             run_id=self.run["id"],
+            blocked=bool(marker) and not data.get("fields"),
+            block_marker=marker.group(0) if marker else None,
             visible_browser=True,
             submission_enabled=False,
             profile_hash=self.run["profile_hash"],
@@ -402,7 +632,8 @@ class RecruitingBrowser:
                 )
         else:
             write_private(prior_profile, approved)
-        self.page = self.context.new_page()
+        self.enforce_tab_limit(keep=run_id)
+        self.page = self.new_page()
         manifest_path = directory / "resume-manifest.json"
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text())
@@ -414,6 +645,7 @@ class RecruitingBrowser:
         workflow.set_state(run_id, "PREPARING", run_id=run_id)
         workflow.ensure_forum(run_id)
         self.save()
+        self.warm(target)
         try:
             self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
             self.page.locator("body").wait_for()
@@ -447,7 +679,7 @@ class RecruitingBrowser:
             ).hostname and not approved_ats(item["url"]):
                 raise PermissionError("Unexpected application destination; owner review needed")
         old_pages = list(self.context.pages)
-        locator.click()
+        self.click(locator)
         try:
             self.page.wait_for_function(
                 "old => location.href !== old || !!document.querySelector('input:not([type=hidden]),select,textarea,[role=dialog]')",
@@ -586,7 +818,7 @@ class RecruitingBrowser:
         button = container.get_by_role("button", name=label, exact=True)
         if button.count() != 1:
             return False
-        button.click()
+        self.click(button)
         try:
             self.page.wait_for_function(
                 "({ref,label})=>[...document.querySelector('[data-autopilot-choice=\"'+ref+'\"]').querySelectorAll('button[aria-pressed]')].some(b=>b.innerText.trim()===label&&b.getAttribute('aria-pressed')==='true')",
@@ -634,6 +866,7 @@ class RecruitingBrowser:
                 continue
             if self.page.url != before["url"]:
                 raise PermissionError("Page changed before fill")
+            pace()
             if field["kind"] == "radio" and field.get("name") in grouped:
                 continue  # handled once as its group
             if field["kind"] in {"radio_group", "choice"}:
@@ -829,7 +1062,7 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            locator.fill(value)
+            self.type_value(locator, value)
             if locator.input_value() != value:
                 raise ValueError("Field verification failed")
             filled.append(
@@ -904,6 +1137,11 @@ def serve():
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     socket_path().unlink(missing_ok=True)
     browser = RecruitingBrowser()
+    try:
+        # Launch at service start (login), when the one-time activation bothers no one.
+        browser.ensure()
+    except Exception as error:  # noqa: BLE001 -- the first request retries with a clear error
+        write_private(state_root() / "browser/launch-error.json", {"error": str(error)[:500]})
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
@@ -923,6 +1161,10 @@ def serve():
                     )
                 elif action == "prepare":
                     result = browser.prepare(request["run_id"])
+                elif action == "close":
+                    result = browser.close_run(request["run_id"])
+                elif action == "reopen":
+                    result = browser.reopen(request["run_id"])
                 elif action == "submit":
                     # Only the worker calls this, with an authenticated owner approval
                     # for one exact package; the model has no submit tool.
@@ -937,7 +1179,10 @@ def serve():
                 elif action == "status":
                     result = {
                         "daemon_running": True,
-                        "browser_open": bool(browser.page and not browser.page.is_closed()),
+                        "browser_connected": browser.connected(),
+                        "open_tabs": sorted(
+                            r for r, page in browser.pages.items() if not page.is_closed()
+                        ),
                         "run_id": browser.run["id"] if browser.run else None,
                     }
                 else:

@@ -1,5 +1,6 @@
 """Single-application local worker and authenticated Discord review commands."""
 
+import contextlib
 import fcntl
 import json
 import re
@@ -52,16 +53,29 @@ def process(application_id: str) -> dict:
             if not page.get("fields"):
                 # The posting itself; application-form labels are never requirements.
                 posting_text = page.get("text", "") or posting_text
-            if page.get("title", "").strip().lower() == "access denied":
-                reason = "The employer denied browser access. No application was submitted. The visible page is available for manual inspection."
-                workflow.set_state(application_id, "MANUAL_TAKEOVER")
-                workflow.action_needed(application_id, reason)
-                return {
-                    "application_id": application_id,
-                    "status": "MANUAL_TAKEOVER",
-                    "reason": reason,
-                    "submitted": False,
-                }
+            if page.get("blocked"):
+                phase = "blocked_retry"
+                workflow.record(
+                    application_id,
+                    "browser_access_blocked",
+                    {"url": page.get("url"), "marker": page.get("block_marker"), "retry": "once"},
+                )
+                page = browser_call("reopen", run_id=application_id)
+                if page.get("blocked"):
+                    reason = "The employer's site blocked the recruiting browser twice. Nothing was submitted. If you want this one, apply in your own browser and tell me."
+                    workflow.set_state(application_id, "MANUAL_TAKEOVER")
+                    workflow.action_needed(
+                        application_id,
+                        reason,
+                        commands=[f"reconcile {application_id} applied", f"defer {application_id}"],
+                        headline="Blocked by the employer's site",
+                    )
+                    return {
+                        "application_id": application_id,
+                        "status": "MANUAL_TAKEOVER",
+                        "reason": reason,
+                        "submitted": False,
+                    }
             if page.get("manual_takeover_required"):
                 reason = (
                     "Login or identity verification needs you in the visible browser. Complete it, then reply `resume "
@@ -212,8 +226,10 @@ def apply_command(command: dict, message_id: str):
         ).fetchone():
             return
         if command["kind"] == "reconcile":
-            if item["status"] != "UNKNOWN_SUBMISSION":
-                raise PermissionError("Only an unknown submission can be reconciled")
+            if item["status"] not in {"UNKNOWN_SUBMISSION", "MANUAL_TAKEOVER"}:
+                raise PermissionError(
+                    "Only an unknown submission or a blocked application can be reconciled"
+                )
         elif item["status"] in {"APPLIED", "SUBMITTING", "UNKNOWN_SUBMISSION"}:
             raise PermissionError("This application cannot be prepared again")
         if command["kind"] == "submit" and (
@@ -289,6 +305,8 @@ def apply_command(command: dict, message_id: str):
         workflow.set_state(application_id, "QUEUED")
     elif command["kind"] == "defer":
         workflow.set_state(application_id, "DEFERRED")
+        with contextlib.suppress(Exception):  # a tab that is already gone is fine
+            browser_call("close", run_id=application_id)
     elif command["kind"] == "reconcile":
         from .submission import reconcile
 

@@ -1,6 +1,6 @@
 """Real browser regression: display text is not necessarily a selected value."""
 
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 
 from erga_autopilot.live_browser import RecruitingBrowser
 
@@ -41,4 +41,25 @@ def test_uploaded_file_can_be_verified_after_widget_removes_input(tmp_path):
         page.locator("input").set_input_files(str(pdf))
         assert page.locator("input").count() == 0
         assert control.evaluate("e=>e.files.length===1 && e.files[0].name==='resume.pdf'")
+        browser.close()
+
+
+def test_block_pages_are_recognized_and_never_treated_as_forms(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path))
+    from erga_autopilot import live_browser
+
+    monkeypatch.setattr(live_browser.workflow, "config", lambda: {"human_pacing": False})
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            "<title>Access Denied</title><h1>Access Denied</h1><p>You don't have permission. Reference #18.4f1c</p>"
+        )
+        runtime = RecruitingBrowser(headless=True)
+        runtime.page = page
+        runtime.run = {"id": "abcdef012345", "profile_hash": "x"}
+        seen = runtime.observe()
+        assert seen["blocked"] and seen["block_marker"].lower() == "access denied"
+        page.set_content("<title>Apply</title><label for=a>Email</label><input id=a>")
+        assert not runtime.observe()["blocked"]
         browser.close()

@@ -40,7 +40,7 @@ def install():
             "StandardOutPath": str(logs / (name + ".out.log")),
             "StandardErrorPath": str(logs / (name + ".err.log")),
             "ProcessType": "Interactive" if name == "browser" else "Background",
-            "RunAtLoad": name != "browser",
+            "RunAtLoad": True,
         }
         if name != "browser":
             data["StartInterval"] = 900 if name == "feed" else 30

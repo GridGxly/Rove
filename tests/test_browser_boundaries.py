@@ -4,7 +4,7 @@ import threading
 from http.server import ThreadingHTTPServer
 
 import pytest
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 
 from erga_autopilot import browser
 
