@@ -397,6 +397,36 @@ class ChromeLauncher:
         return port
 
 
+FIELDS_JS = "() => !!document.querySelector('input:not([type=hidden]),select,textarea')"
+RENDERED_JS = FIELDS_JS + " || document.body.innerText.trim().length > 200"
+# A visible loading indicator means the shell painted before the form: keep waiting.
+BUSY_JS = """() => {
+  if (document.querySelector('input:not([type=hidden]),select,textarea')) return true;
+  const busy = document.querySelectorAll(
+    '[role=progressbar],[aria-busy=true],[class*="spinner" i],[class*="loading" i],[class*="loader" i]');
+  return ![...busy].some(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+}"""
+# The declining control of a cookie banner, recognised by the banner's own wording. Accept is never chosen.
+CONSENT_JS = """() => {
+  const label = el => (el.innerText || el.textContent || '').trim();
+  const decline = /^(reject( all)?( cookies)?|decline( all)?( cookies)?|refuse( all)?|deny( all)?|necessary( cookies)? only|only (necessary|essential|required)( cookies)?|essential( cookies)? only|reject (non-essential|optional)( cookies)?)$/i;
+  for (const button of document.querySelectorAll('button,[role=button],a')) {
+    if (!decline.test(label(button))) continue;
+    const box = button.getBoundingClientRect();
+    if (!box.width || !box.height) continue;
+    let holder = button.parentElement;
+    for (let depth = 0; holder && depth < 8; depth++, holder = holder.parentElement) {
+      const text = label(holder);
+      if (/cookie|consent/i.test(text) && text.length < 2000) {
+        button.setAttribute('data-autopilot-consent', '1');
+        return label(button);
+      }
+    }
+  }
+  return null;
+}"""
+
+
 class RecruitingBrowser:
     def __init__(self, headless: bool = False):
         self.headless = headless
@@ -595,12 +625,38 @@ class RecruitingBrowser:
         write_private(state_root() / f"applications/{self.run['id']}/run.json", self.run)
 
     def settle(self, timeout: int = 10000):
-        """Bounded wait for a rendered page: single-page job boards paint after load."""
+        """Bounded wait for a rendered page.
+
+        Single-page job boards paint a shell, a cookie banner and a loading indicator
+        before the form; the banner alone reads as "rendered" text, so the wait also
+        declines the banner and waits out a visible indicator.
+        """
         try:
+            self.page.wait_for_function(RENDERED_JS, timeout=timeout)
+        except PlaywrightError:
+            pass
+        self.dismiss_consent()
+        try:
+            self.page.wait_for_function(BUSY_JS, timeout=timeout)
+        except PlaywrightError:
+            pass
+
+    def wait_for_fields(self, timeout: int = 8000):
+        try:
+            self.page.wait_for_function(FIELDS_JS, timeout=timeout)
+        except PlaywrightError:
+            pass
+
+    def dismiss_consent(self):
+        """A cookie banner gets the privacy-preserving choice, found by its own wording."""
+        try:
+            if not self.page.evaluate(CONSENT_JS):
+                return
+            self.click(self.page.locator('[data-autopilot-consent="1"]').first, timeout=3000)
             self.page.wait_for_function(
-                "() => !!document.querySelector('input:not([type=hidden]),select,textarea')"
-                " || document.body.innerText.trim().length > 200",
-                timeout=timeout,
+                "() => { const b = document.querySelector('[data-autopilot-consent]');"
+                " return !b || !b.getBoundingClientRect().height; }",
+                timeout=3000,
             )
         except PlaywrightError:
             pass
@@ -791,6 +847,15 @@ class RecruitingBrowser:
             self.page.wait_for_load_state("domcontentloaded", timeout=30000)
             self.settle()
             result = self.observe()
+            if not (
+                result["fields"]
+                or result["application_links"]
+                or result["auth_controls"]
+                or result.get("blocked")
+            ):
+                # The application page painted its shell first: one bounded chance for the form.
+                self.wait_for_fields()
+                result = self.observe()
         workflow.record(
             run_id, "application_link", {"clicked": item["label"], "url": result["url"]}
         )

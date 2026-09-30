@@ -136,6 +136,14 @@ After an action, wait for the event or state the application actually needs, wit
 
 Long waits should be evidence-driven rather than the default.
 
+Page settling is one such wait. A single-page board often paints its shell, a cookie
+banner and a loading indicator before the form, and the banner text alone looks like a
+rendered page. The runtime waits for fields or body text, then declines a cookie banner
+it recognises by the banner's own wording (Reject, Decline, Necessary only; never
+Accept), then waits out a visible loading indicator, each with a ten-second bound. After
+an application-start link, a page with no fields, links or sign-in controls gets one more
+bounded wait for fields before it is reported as having no form.
+
 ## Normalize the form before filling it
 
 The browser should inspect a form as a group rather than asking Qwen to choose one field at a time.

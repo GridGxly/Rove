@@ -71,6 +71,19 @@ TWO_STEP = b"""<!doctype html><title>Two steps</title><form id="s1">
 <label for="e">Email</label><input id="e" name="email" type="email" required>
 <button type="button" id="next">Continue</button></form>
 <script>document.getElementById('next').onclick=()=>{document.body.innerHTML='<form><label for="l">Last name</label><input id="l" name="last" required><button type="button">Submit Application</button></form>'}</script>"""
+LATE_FORM = b"""<!doctype html><title>Late Board</title>
+<nav>Careers Explore Jobs Manufacturing Internships About Us Profile Help</nav>
+<div id="consent"><p>Help us improve our website with cookies. We use cookies and process data from
+your device to analyze website performance, personalize ad content, and improve your experience.
+View cookie settings for more information.</p>
+<button type="button" onclick="choose('accepted')">Accept</button>
+<button type="button" onclick="choose('rejected')">Reject</button></div>
+<div class="spinner" style="width:40px;height:40px">loading</div>
+<script>
+function choose(v){document.documentElement.dataset.consent=v;document.querySelector('#consent').remove();}
+setTimeout(()=>{document.querySelector('.spinner').remove();
+document.body.insertAdjacentHTML('beforeend','<form id="application-form"><label for="f">First name</label><input id="f" name="first" required><label for="e">Email</label><input id="e" name="email" required><label for="r">Resume</label><input id="r" name="resume" type="file"><button type="submit">Submit application</button></form>');},1500);
+</script>"""
 CONFIRMATION = b"""<!doctype html><title>Thanks</title><div class="confirmation">
 <div class="confirmation__content"><h1>Thank you for applying to Acme.</h1></div></div>"""
 
@@ -90,6 +103,8 @@ class Board(BaseHTTPRequestHandler):
             body = REGISTER
         elif self.path.endswith("/jobs/12"):
             body = LOGIN
+        elif self.path.endswith("/jobs/14"):
+            body = LATE_FORM
         else:
             body = FORM
         self.send_response(200)
@@ -344,3 +359,10 @@ def test_multi_page_forms_are_filled_step_by_step_until_the_final_control(board)
             ).fetchone()[0]
             == 1
         )
+
+
+def test_late_rendered_forms_wait_out_the_spinner_and_decline_cookies(board):
+    runtime, base, _state = board
+    opened = runtime.open(f"{base}/acme/jobs/14")
+    assert {f["label"] for f in opened["fields"]} == {"First name", "Email", "Resume"}
+    assert runtime.page.evaluate("document.documentElement.dataset.consent") == "rejected"
