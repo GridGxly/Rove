@@ -228,6 +228,55 @@ def month_evidenced(month: str, requirement: str, posting: str) -> bool:
     return any(text in haystack for text in spelled) or str(when.year) in requirement
 
 
+# A class standing names when the applicant graduates relative to the internship summer:
+# a rising senior in summer Y graduates between December Y and August Y+1.
+CLASS_STANDING_MONTHS = {
+    "rising senior": (5, 15),
+    "rising junior": (17, 27),
+    "rising sophomore": (29, 39),
+}
+
+
+def internship_year(text: str) -> int:
+    """The internship's calendar year from the posting, else the next summer."""
+    from datetime import UTC, datetime
+
+    match = re.search(
+        r"(?:summer|spring|fall|winter|intern[a-z]*)\D{0,20}(20\d\d)", text, re.IGNORECASE
+    )
+    if match:
+        return int(match.group(1))
+    today = datetime.now(UTC)
+    return today.year + 1 if today.month >= 8 else today.year
+
+
+def class_standing(
+    requirement: str, graduation: str | None, posting: str
+) -> tuple[str, str] | None:
+    """Code's verdict on "rising senior" style requirements, or None when not applicable."""
+    match = re.search(r"rising (senior|junior|sophomore)", requirement, re.IGNORECASE)
+    if not match or not graduation:
+        return None
+    low, high = CLASS_STANDING_MONTHS["rising " + match.group(1).lower()]
+    year = internship_year(requirement + "\n" + posting)
+    grad_year, grad_month = (int(x) for x in graduation.split("-"))
+    months_after_june = (grad_year - year) * 12 + (grad_month - 6)
+    if low <= months_after_june <= high:
+        return (
+            "satisfied",
+            f"Approved graduation {graduation} makes a {match.group(0).lower()} in summer {year}",
+        )
+    if months_after_june < 0:
+        return (
+            "conflict",
+            f"Approved graduation {graduation} is before the summer {year} internship",
+        )
+    return (
+        "unknown",
+        f"Approved graduation {graduation} is outside the usual {match.group(0).lower()} range for summer {year}; owner review",
+    )
+
+
 def evaluate_requirements(requirements: list[dict], profile: dict, posting: str = "") -> list[dict]:
     """Deterministic checks for exact facts; Qwen's judgment stands only where code cannot."""
     education = profile["education"]["schools"]
@@ -236,7 +285,11 @@ def evaluate_requirements(requirements: list[dict], profile: dict, posting: str 
     checked = []
     for item in requirements:
         entry = {**item, "checked_by": "qwen"}
-        if item["kind"] == "graduation_window" and not re.search(
+        standing = class_standing(item.get("requirement", ""), graduation, posting)
+        if standing:
+            entry["status"], entry["note"] = standing
+            entry["checked_by"] = "code" if standing[0] != "unknown" else "qwen"
+        elif item["kind"] == "graduation_window" and not re.search(
             GRADUATION_WORDS, item.get("requirement", ""), re.IGNORECASE
         ):
             # An internship term ("Winter/Spring 2027") is not a graduation requirement.

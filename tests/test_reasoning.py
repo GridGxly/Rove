@@ -42,7 +42,7 @@ def test_inclusive_graduation_window_is_decided_by_code_not_qwen():
         "conflict",
         graduation_start="2027-05",
         graduation_end="2027-08",
-        requirement="Rising seniors graduating from a CS or STEM degree program",
+        requirement="Students graduating from a CS or STEM degree program",
     )
     guessed = reasoning.evaluate_requirements([invented], PROFILE, "Rising seniors welcome")[0]
     assert guessed["status"] == "unknown" and "not stated" in guessed["note"]
@@ -429,3 +429,41 @@ def test_an_internship_term_is_not_a_graduation_window():
     posting = "Eligibility: graduating between May 2027 and May 2028"
     checked = reasoning.evaluate_requirements([window], PROFILE, posting)[0]
     assert (checked["status"], checked["checked_by"]) == ("satisfied", "code")
+
+
+def test_class_standing_is_decided_by_code_from_the_graduation_month():
+    from erga_autopilot.reasoning import class_standing, evaluate_requirements
+
+    assert class_standing("Rising seniors in a CS program", "2027-12", "Summer 2027 internship")[
+        0
+    ] == ("satisfied")
+    assert class_standing("Rising seniors in a CS program", "2026-12", "Summer 2027 internship")[
+        0
+    ] == ("conflict")
+    assert class_standing("Rising juniors welcome", "2028-12", "Summer 2027 internship")[0] == (
+        "satisfied"
+    )
+    assert class_standing("Bachelor's degree", "2027-12", "") is None
+    profile = {
+        "education": {"schools": [{"graduation_month": "2027-12"}]},
+        "eligibility": {
+            "us_work_authorized": True,
+            "sponsorship_now": False,
+            "sponsorship_future": False,
+        },
+        "preferences": {"relocate": True, "work_styles": ["onsite"]},
+    }
+    checked = evaluate_requirements(
+        [
+            {
+                "kind": "program",
+                "requirement": "Rising seniors enrolled in a CS or STEM degree program",
+                "evidence": "",
+                "status": "conflict",
+                "checked_by": "qwen",
+            }
+        ],
+        profile,
+        "10-week Summer 2027 internship in NYC",
+    )
+    assert checked[0]["status"] == "satisfied" and checked[0]["checked_by"] == "code"

@@ -36,7 +36,9 @@ ANSWER_PROMPT = (
     "field is appropriate when those options exist. A question about being local to, relocating "
     "to, commuting to or working onsite in a city is answered Yes when the approved preferences "
     "say relocate anywhere in the US and include onsite work, unless that city is in the "
-    "excluded locations; otherwise it is needs_user. A proposal remains subject to owner review."
+    "excluded locations; otherwise it is needs_user. Fields named profile link, profile URL, website, portfolio, LinkedIn or GitHub take the "
+    "approved identity links; names, email, phone, city and location take the approved "
+    "identity facts; never mark those needs_user. A proposal remains subject to owner review."
 )
 
 JOB_FIT_PROMPT = (

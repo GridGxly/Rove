@@ -1107,3 +1107,36 @@ def test_a_site_that_says_already_applied_stops_before_anything_is_sent(state, m
             (app,),
         ).fetchone()
     assert f"reconcile {app} applied" in row["data"] and "already" in row["data"]
+
+
+def test_profile_facts_resolve_from_the_meaning_of_a_label_not_its_exact_wording():
+    from erga_autopilot.live_browser import phone_variants, resolve_known
+
+    profile = {
+        "identity": {
+            "legal_first_name": "Alex",
+            "legal_last_name": "Example",
+            "email": "alex@example.invalid",
+            "phone": "+1 555-010-0199",
+            "linkedin": "https://www.linkedin.com/in/alex-example",
+            "github": "https://github.com/alex-example",
+            "portfolio": "https://alex.example",
+            "postal_code": "00000",
+        },
+        "education": {"schools": []},
+        "eligibility": {},
+        "preferences": {},
+    }
+    assert resolve_known("Profile Link (Optional)", profile) == (
+        "https://alex.example",
+        "identity.portfolio",
+    )
+    assert resolve_known("LinkedIn Profile URL", profile)[1] == "identity.linkedin"
+    assert resolve_known("Your GitHub", profile)[1] == "identity.github"
+    assert resolve_known("Personal Website", profile)[1] == "identity.portfolio"
+    assert resolve_known("Mobile Number *", profile)[1] == "identity.phone"
+    assert resolve_known("Zip / Postal Code", profile)[1] == "identity.postal_code"
+    assert resolve_known("Favorite color", profile) == (None, None)
+    assert phone_variants("+1 555-010-0199") == ["5550100199", "+15550100199"]
+    assert phone_variants("5550100199") == ["5550100199", "+15550100199"]
+    assert phone_variants("+44 20 7946 0958") == ["+44 20 7946 0958"]

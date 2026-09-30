@@ -107,6 +107,17 @@ def option_matches(option_label: str, value) -> bool:
     return a == b or (a in COUNTRY_ALIASES and b in COUNTRY_ALIASES)
 
 
+def phone_variants(value) -> list[str]:
+    """National digits first (sites with their own +1 selector reject a repeated code),
+    then the international form; a non-US number is left as written."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) == 11 and digits.startswith("1"):
+        return [digits[1:], "+" + digits]
+    if len(digits) == 10:
+        return [digits, "+1" + digits]
+    return [str(value or "")]
+
+
 def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
     identity = profile["identity"]
     # "(Optional)" and "(Required)" qualify the field; they are not part of its name.
@@ -157,6 +168,39 @@ def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
     if name in keys:
         key = keys[name]
         return identity[key], "identity." + key
+    # A label that contains the fact's name means that fact: "Profile Link (Optional)" is
+    # the portfolio, "LinkedIn Profile URL" is LinkedIn. Order puts the specific first.
+    contains = (
+        ("linkedin", "linkedin"),
+        ("github", "github"),
+        ("portfolio", "portfolio"),
+        ("personal website", "portfolio"),
+        ("personal site", "portfolio"),
+        ("website", "portfolio"),
+        ("profile link", "portfolio"),
+        ("profile url", "portfolio"),
+        ("online profile", "portfolio"),
+        ("given name", "legal_first_name"),
+        ("first name", "legal_first_name"),
+        ("family name", "legal_last_name"),
+        ("surname", "legal_last_name"),
+        ("last name", "legal_last_name"),
+        ("email", "email"),
+        ("mobile", "phone"),
+        ("phone", "phone"),
+        ("zip", "postal_code"),
+        ("postal", "postal_code"),
+    )
+    # Only a short, plain label is trusted this way: a label carrying instructions or
+    # naming someone else (a reference, a manager) is never an identity fact.
+    plain = len(name.split()) <= 5 and not re.search(
+        r"reference|manager|supervisor|emergency|employer|company|recruiter|contact person"
+        r"|upload|verify|ignore|instruction",
+        name,
+    )
+    for needle, key in contains:
+        if plain and needle in name and identity.get(key):
+            return identity[key], "identity." + key
     if name in {"name", "full name", "legal name", "legal full name"}:
         return " ".join(
             identity[k]
@@ -753,6 +797,26 @@ class RecruitingBrowser:
             self.page.wait_for_function(BUSY_JS, timeout=timeout)
         except PlaywrightError:
             pass
+
+    def retype_phone(self, observation: dict) -> bool:
+        """The site rejected the phone: try the other format once."""
+        for field in observation["fields"]:
+            if (
+                field["kind"] in ("text", "tel")
+                and re.search(r"phone|mobile", field["label"] or "", re.IGNORECASE)
+                and field.get("value")
+            ):
+                current = re.sub(r"\D", "", field["value"])
+                alternative = next(
+                    (v for v in phone_variants(field["value"]) if re.sub(r"\D", "", v) != current),
+                    None,
+                )
+                if not alternative:
+                    return False
+                locator = self.page.locator(f'[data-autopilot-field="{int(field["ref"])}"]')
+                self.type_value(locator, alternative)
+                return True
+        return False
 
     def wait_for_fields(self, timeout: int = 8000):
         try:
@@ -1465,6 +1529,10 @@ class RecruitingBrowser:
                     {"label": field["label"], "value": value, "source": source, "key": field["key"]}
                 )
                 continue
+            if re.search(r"phone|mobile", field["label"], re.IGNORECASE) and not re.search(
+                r"country code", field["label"], re.IGNORECASE
+            ):
+                value = phone_variants(value)[0]
             self.type_value(locator, value)
             if not same_value(value, locator.input_value()):
                 raise ValueError(f"Field verification failed: {field['label'][:80]}")
@@ -1532,11 +1600,22 @@ class RecruitingBrowser:
             self.wait_for_fields()
             before = self.observe()
             workflow.record(run_id, "form_step", {"clicked": nav[0]["label"], "url": before["url"]})
+            stuck = before["url"] in pages and before["fields"] == result["fields"]
+            error = str(before.get("ats_markers", {}).get("form_error") or "")
             if (
-                not before["fields"]
-                or before["url"] in pages
-                and before["fields"] == result["fields"]
+                stuck
+                and error
+                and re.search(r"phone", error, re.IGNORECASE)
+                and self.retype_phone(before)
             ):
+                workflow.record(
+                    run_id, "form_step", {"clicked": "retyped phone", "url": before["url"]}
+                )
+                before = self.observe()
+                stuck = False
+            if stuck and error:
+                self.run["form_error"] = error[:300]
+            if not before["fields"] or stuck:
                 break
         self.run["pending"] = pending
         self.save()
@@ -1567,10 +1646,16 @@ class RecruitingBrowser:
         workflow.flush_events(run_id)
         status = "READY_FOR_REVIEW" if ready else "NEEDS_USER"
         if not pending and not ready:
+            error = self.run.pop("form_error", "")
             result = {
                 **result,
-                "reason": "The form's last step with its Submit control was not reached. Check "
-                "the recruiting browser, then resume.",
+                "reason": (
+                    f"The site rejected a value on this step: {error}. Check it in the "
+                    "recruiting browser, then resume."
+                    if error
+                    else "The form's last step with its Submit control was not reached. Check "
+                    "the recruiting browser, then resume."
+                ),
             }
         return {**result, **package, "status": status}
 
@@ -1602,6 +1687,8 @@ def serve():
                 if action == "open":
                     result = browser.open(request["url"])
                 elif action == "observe":
+                    if request.get("run_id"):
+                        browser.check(request["run_id"])
                     result = browser.observe()
                 elif action == "follow":
                     result = browser.follow(
