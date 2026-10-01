@@ -1,304 +1,218 @@
 # Application workflow
 
-The local workflow joins Keryx discovery and owner-pasted links in one durable queue,
-prepares each application in a background recruiting browser, drafts answers with Qwen
-through Hermes, and submits one reviewed package per owner approval on supported boards.
-Recruiting mail from Zoho moves a sent application through OA, interview, offer and
-rejected (see [Recruiting mail](#recruiting-mail)); unattended submission is an owner policy (see below).
+This page follows one application from intake to the mail that arrives after it is sent. Cards and replies are covered in [Discord](discord.md), form mechanics in [Browser automation](browser-automation.md), files and tables in [Memory and storage](memory-and-storage.md), and configuration keys in [Requirements](requirements.md#local-configuration).
 
-## Intake and visibility
+## Where jobs come from
 
-`rove feed tick` checks the fixed Keryx source. An unchanged revision does not
-redownload the snapshot. New matching internships enter a deduplicated notification
-outbox and application queue; each job is announced once, and later Keryx metadata
-changes to a known job do not re-post it. Each tick publishes the newest pending
-matches first, at most `batch_size` (default 10) of them, one card per job (title,
-company, location, cycle, track, and a "Queued" footer). Before posting, pending announcements
-beyond the newest `max_pending` (default 40) are expired unposted, so a long gap
-between ticks does not flood the channel. A posting that closes in Keryx parks its queued
-application and leaves a note on any application already in progress. Tracking
-parameters (`utm_*`, `gh_src`, `ref`, and similar) are stripped so the same posting
-reached through two links is one application.
+Two sources feed one queue in SQLite.
 
-`start_job_application(url)` accepts owner-requested public HTTPS links independently
-of the feed. A Jobright identifier is never treated as a Keryx identifier. Verified
-source-to-employer aliases live in SQLite; unknown redirects need review. Queue
-uniqueness prevents a second application for the same canonical URL.
+The feed service, `rove feed tick`, runs every 15 minutes. It checks the [Keryx](https://github.com/GodlyDonuts/keryx) repository for a new commit and downloads the job snapshot only when the commit changed. An open internship is a match when its title contains one of the approved title keywords and neither the title nor the company trips an approved exclusion. Each match is queued and announced once in the jobs channel as a card with the title, company, location, cycle and track. Keryx rewrites metadata for known jobs often, and those changes do not post a job again.
 
-## The recruiting browser
+A tick posts the newest pending matches first, at most `batch_size` of them (default 10). Before posting, pending announcements beyond the newest `max_pending` (default 40) are expired without being posted, so a long gap between ticks does not flood the channel. When Keryx marks a posting closed, its queued application is parked. An application that is already waiting on the owner gets a line in its thread instead.
 
-The browser daemon launches Google Chrome (or Chrome for Testing) as its own instance
-with the dedicated recruiting profile and drives it over a localhost DevTools port using
-Patchright, a Playwright fork that removes the control-protocol leaks bot managers
-fingerprint. Because the browser is launched by the daemon and not by an automation
-library, no automation flag is ever set and `navigator.webdriver` stays false.
+The owner can also hand Rove a link. The Hermes tool `start_job_application(url)` and the command `rove workflow enqueue --url` both accept a public HTTPS link, whether or not Keryx lists it. Tracking parameters (`utm_*`, `gh_src`, `lever-source`, `ref`, `refid`, `src`, `source`, `fbclid`, `gclid`, `mc_cid`, `mc_eid`) are stripped, and the queue is unique on the resulting URL, so the same posting reached through two links is one application. The table `job_link_aliases` maps a source link to the employer link it was verified to lead to. Code reads that table and nothing fills it automatically.
 
-- Launch happens once, at service start. Chrome activates itself on launch; the daemon
-  watches for a few seconds and hands focus back to whatever the owner was using.
-- Every application gets a background tab. Tabs never take focus. The window sits behind
-  the owner's work and opens from the Dock (the recruiting Chrome shows its own icon).
-- Finished tabs close on applied or deferred, and the window is capped at
-  `max_open_tabs` (default 5); a closed tab reopens on `go`.
-- The browser outlives the daemon: a daemon restart reconnects and re-associates the open
-  tabs with their applications. Only one client may drive that Chrome; a second
-  Playwright client on the same instance stalls it.
-- Actions are paced like a person (`human_pacing`, default on): short random pauses,
-  mouse travel before clicks, typed short values, and a visit to the site's front page
-  before a deep link.
-- The destination guard (public HTTPS only, verified employer or ATS, no private
-  networks) attaches to a page only while the daemon drives it, so tabs the owner
-  browses by hand are never stalled.
+Queueing records the hash of the approved profile. If the approved profile changes before or during preparation, the run stops instead of mixing versions.
 
-A block page ("Access Denied", "Pardon our interruption", a Cloudflare interstitial, or a
-reference number) is recognized. The daemon waits, enters through the site's front door,
-and tries once more. A second block hands the application to the owner with the direct
-link (`MANUAL_TAKEOVER`); replying `applied` in the thread then records a manual application.
-CAPTCHAs are never solved by the workflow; the owner completes them in the browser.
+## Queue order
 
-## Job-fit review before any applicant data
+The worker, `rove workflow tick`, runs every 30 seconds under a file lock and handles one application at a time. Each tick it:
 
-When the worker reaches an application form it asks Qwen to extract the posting's hard
-requirements as structured items. The review reads the posting text captured before the
-Apply link was followed; the form's own labels are passed separately as questions, never
-as requirements. Qwen judges what code cannot: program type, degree field, required
-skills, location rules, explicit conditions. Trusted code performs the exact comparisons
-and can overrule Qwen's arithmetic:
+1. reads the owner's new replies in Discord
+2. retries Discord posts that failed earlier
+3. parks queued feed jobs that now match an approved exclusion, with the reason in the queue record
+4. hands back a preparation that has been running for more than fifteen minutes, as a crashed run
+5. runs approved submissions, and ends the tick if any ran
 
-- graduation windows are compared inclusively with the approved graduation month, and
-  a window month counts only when the posting or the quoted requirement states it
-- work-authorization and sponsorship requirements are compared with approved facts
-- approved nationwide relocation plus accepted onsite work settles location rules
+Nothing new starts while an application is being prepared, is being submitted, or has an unclear submission. An unclear submission holds the whole queue until the owner settles it.
 
-The decision is computed by code from the requirement statuses, and only a conflict on
-an eligibility requirement (program, graduation window, work authorization,
-sponsorship, location, degree) changes it. A code-verified conflict is `not_fit`; a
-conflict only Qwen claims is `needs_review`; otherwise the job is `fit`. Eligibility
-the posting states but code cannot check against the profile does not hold the job:
-the thread's job-fit card lists it as stated by the posting, and the ready-to-submit
-card repeats it under Why, so you decide once, at submit time. Skills, dates, and
-other wishes never affect the decision either; they are left to the resume and the
-written answers. A requirement Qwen files as a graduation window that never mentions
-graduating (an internship term, for example) is reclassified as dates. Either non-fit
-decision holds a feed job with one card in the thread and one in the shortlist channel
-(nothing goes to action-needed for a fit hold) and waits for `go` or `park it`. The
-card's summary and reasons are the conflicting requirements themselves, plus any
-unchecked eligibility, not Qwen's prose. A link you pasted is never held on fit. Qwen's
-raw extraction is kept, so improved code rules re-evaluate old reviews without another
-model call. Reviews cache on posting text, profile version, and prompt version.
+Otherwise the worker picks, in this order:
 
-## Preparation and questions
+1. an application the owner told to continue (`go` or `create account`)
+2. a pasted link, oldest first, however many applications are waiting and whatever the daily cap says
+3. the newest queued feed job, unless `max_waiting_applications` (default 1) applications are already waiting on the owner, or unattended sending has reached its cap or gap
 
-The worker creates an application forum post before preparation. It opens the posting,
-follows bounded observed application-start controls, uses Erga's supported job intake
-(falling back to the approved base PDF with a warning when tailoring fails), and fills
-deterministic approved fields as a batch. The observer reads associated labels first and
-falls back to the nearest label that owns no other control, reports a radio group as one
-question with options, and reports a Yes/No button group as one choice. Code selects an
-option only when an approved fact matches exactly one option and verifies the selection.
-Typed values are verified too: a site that trims whitespace or prefixes a phone number
-with its country code still passes; any other difference stops preparation with a card
-that names the field.
-A page whose known fields are complete and that shows a Next/Continue control instead of
-a final submit is advanced once and filled again, for at most four steps.
+## Job-fit review
 
-Unfamiliar questions go to **Qwen through Hermes**. The request is trimmed to the local
-model's window, runs as one non-streamed call with at most one harness continuation, and
-is retried once when the answer is malformed; a run that still does not finish is a
-`qwen_failure` card, never a draft. A proposed option that is not on the form's list
-becomes a question for the owner.
+The review runs when the worker reaches the application form, before any applicant data is typed. Qwen reads the posting text captured on the pages before the form and returns the posting's hard requirements as structured items. The form's own labels are passed separately as questions and never count as requirements.
 
-Written drafts follow two public rule sets, [Unslop](https://github.com/theclaymethod/unslop)
-and [Humanizer](https://github.com/blader/humanizer). The drafting prompt carries their
-rules in a few sentences. Every draft is scanned for their tells: jargon, "not X but Y",
-run-ups, closers that restate the answer, hedge stacks, lists of three for rhythm, dashes
-as connectors, inflated words, borrowed authority, chatbot leftovers, curly quotes. A hard
-tell, or two soft ones, gets one bounded Qwen repair that must keep every number and
-name; the card shows the cleaned text with a before/after summary. The Unslop scanners run
-from a local clone when `unslop_path` is set; the Humanizer digest is built in and runs
-either way. A phrase from the posting goes into a draft only when the approved evidence
-shows it, so the words an applicant-tracking system matches on stay true.
+Qwen judges what code cannot: the program type, required skills, location rules and other explicit conditions. Code makes the exact comparisons and can overrule Qwen:
 
-If the vault has `Rove/Story/Voice.md`, about 2,500 characters of it go to Qwen
-as `owner_voice`: the draft follows its sentence rhythm, plain words, first person and
-concrete detail without copying its sentences, and the note is never a source of facts.
-Rove reads that note and never writes it; the draft is re-made when it changes.
+- A graduation window is compared inclusively with the approved graduation month. A window month counts only when the posting or the quoted requirement states it.
+- A class standing such as "rising senior" is decided from the approved graduation month and the internship year.
+- Work authorization and sponsorship requirements are compared with the approved facts.
+- A requirement for computer science or a related field is satisfied when the approved major is a computing degree.
+- A location rule is satisfied when the approved preferences say relocate and include onsite work.
+- A requirement Qwen files as a graduation window that never mentions graduating, such as an internship term, is reclassified as dates.
 
-Before Qwen drafts, trusted code gathers company research once per application. It reads
-at most three public pages from the employer's own site: the home page, the about or
-company page it links to, and the careers or culture page (`/about` and `/careers` when
-the home page links to neither). Plain HTTPS with a browser-like agent string, a
-ten-second timeout, 400 KB per page, the same site only (`www.` counts), no sign-in, no
-cookies kept, and nothing about the applicant in the request; a redirect off the site is
-not followed. The employer site is the posting's host when the posting is on the
-employer's own site (a `careers.`, `jobs.` or `www.` label dropped), otherwise the
-employer host the posting text links to most often. A posting on an ATS host or a job
-board that names no employer link gets no research, and the draft says only what the
-posting says about the company. Scripts, navigation, footers and hidden elements are
-never read. The pages are reduced to the sentences that say what the company does, how
-big or old it is, what it sells and what it values, about 1,800 characters, and go to Qwen
-as `company_research`. Any line that reads as an instruction to a model (ignore,
-instruction, you are, system prompt, assistant and the like) is dropped first, which also
-drops a few true sentences. Qwen is told to use the text only to say true things about
-the company and to tie the approved evidence to them, never to claim the applicant did
-anything with the company, and never as instructions. The result is cached under the
-application (`research.json`, with the URLs and the fetch time) and copied to
-`Rove/Research/<employer host>.md` in the vault, marked untrusted. A site that
-does not answer is noted privately and tried once more on a later preparation; the draft
-goes without research, and research never stops a run.
+Code computes the decision from the requirement statuses. Only a conflict on an eligibility requirement (program, graduation window, work authorization, sponsorship, location, degree) changes it. A conflict that code verified is `not_fit`. A conflict that only Qwen claims is `needs_review`. Everything else is `fit`. Skills, dates and other wishes never change the decision.
 
-Boards that need an account are recognized. Your policy asks first: the card offers
-`create account`; on approval the daemon fills the application email and a
-generated password, accepts the site's terms checkbox, clicks the create control, and
-stores the credential encrypted on this Mac. Later sign-in pages on that host are
-completed with the stored account. Email verification, CAPTCHA, MFA, and identity checks
-stay with the owner in the recruiting browser.
+Eligibility the posting states but code cannot check against the profile does not hold the job. The job-fit card in the thread lists it, and the ready-to-submit card repeats it under Why.
 
-## Replying in the thread
+A feed job that is not `fit` waits with one card in the thread and one in the shortlist channel. The card names the conflicting requirements, and says so plainly when Qwen matched the role to one of the owner's excluded kinds. The replies are `go` and `park it`. A link the owner pasted is never held on fit.
 
-You reply inside the application's own forum thread, where the bot already knows which
-application is meant, so a reply is a word or a number. Replies are accepted only from
-the configured numeric owner; they are matched by deterministic code, case-insensitively,
-as the whole message, with trailing punctuation ignored:
+Qwen's raw extraction is saved with the review. When nothing the review reads has changed (the posting text, the profile, the evidence excerpts and the prompt version), a later run re-evaluates the saved extraction with the current code rules and makes no model call.
 
-```text
-go · proceed · continue · resume    carry on: prepare again, or accept a job-fit hold
-park it · park · defer · later · skip   park it and let the queue continue
-send it · send · submit · apply · apply now   send the reviewed package once
-use draft 2 · draft 2 · use 2       approve Qwen's second draft, exactly as shown
-2: value · 2 = value · answer 2: value   answer question 2 from the hold card
-2: skip                              leave an optional question blank
-applied · i applied · done · sent it myself   you applied or confirmed it yourself
-not sent · not submitted · nothing sent       you verified nothing was sent
-create account · make an account · account    allow one account on this board
-```
+### How Qwen is called
 
-Questions are numbered on the hold card; the numbers count every question the form
-asked beyond your approved facts, in form order, whether it is open, drafted by Qwen, or
-already answered with a draft under your policy. Drafts are numbered separately, in the
-order Qwen wrote them; each draft card names its own `use draft N` reply. `send it` binds
-to the package that is ready right now and is refused while nothing is ready. Any other
-text in a thread is ignored. A reply that cannot apply (`send it` when nothing is ready,
-`use draft 3` when there are two) gets one plain line in the thread saying why.
+Every Qwen call from the worker goes through Hermes as one request with no tools, streaming off, thinking off, temperature zero, and a 2,048-token output ceiling. The input is trimmed to about 40,000 characters, longest text first.
 
-The control channel has no implied application, so the explicit forms work there and in
-any thread: `resume|defer|proceed APPLICATION_ID`, `account APPLICATION_ID create`,
-`submit APPLICATION_ID PACKAGE_HASH`, `reconcile APPLICATION_ID applied|not-submitted`,
-`use APPLICATION_ID FIELD_KEY PROPOSAL_HASH`, and `answer APPLICATION_ID FIELD_KEY = value`.
-The hashes accept a prefix of 8 to 64 hex characters of the current value and are rejected
-when they do not match the current draft or package. The ids live in `system-log`.
+For the job-fit review and for drafting, a run that does not finish is retried once, and an answer that is not valid JSON for the expected schema is retried once with the defect named. A second failure is recorded as a failed run and stops preparation with a card. It is never parsed as a draft.
 
-Every hold is one card in the thread and one in an owner channel (action-needed, or
-shortlist for a fit hold): what happened, why, the numbered questions, and the replies
-in a code block. The "Answers needed" card lists the questions only you can answer under
-"Only you can answer" and the ones Qwen drafted under "Qwen drafted" (with the `use draft
-N` reply that approves each, or the `N: your text` reply that replaces a draft already
-used), then a bare `N: ` line for the first four open questions, `go`, and `park it`.
+When the local model server is down, the worker starts it once and waits up to a minute. If it stays down, the application goes back to the queue without a card and is tried again later.
 
-`action-needed` and `shortlist` are to-do lists. An application has at most one live
-card in each; a new card replaces the previous one, and the cards are withdrawn as
-soon as the application stops waiting on you (any state other than `NEEDS_USER`,
-`READY_FOR_REVIEW`, `MANUAL_TAKEOVER`, or `UNKNOWN_SUBMISSION`). The thread's first
-post is edited into a live status card (headline, one line, the reply commands) so the
-forum list previews the current state; the entries below it stay the full
-chronological record. Routine steps there (opened, clicked Apply, resume ready, your
-replies, lifecycle changes, the submit click) are one-line messages; cards are kept for
-decisions, drafts, job fit, the filled form, submission results, and failures. Sources
-are shown in words ("your profile", "your reply", "your evidence", "the posting"),
-never as internal keys.
+## Resume
 
-A label is matched to a profile fact by its meaning when it is short and plain: "Profile
-Link (Optional)" is the portfolio, "LinkedIn Profile URL" is LinkedIn, "Mobile Number" is
-the phone. A label that carries instructions or names another person is never matched.
-A US phone is typed as ten national digits first, because sites with their own country
-selector reject a repeated code; if the site still rejects it, the international form is
-tried once. A draft must fit its field: the observation records each field's character
-limit, Qwen is told it, one retry asks for a shorter answer, and a remaining overflow is
-cut at a sentence boundary and marked as shortened. A "rising senior" style requirement
-is decided by code from the approved graduation month and the internship year.
+The resume is prepared once per application. Rove calls Erga's `intake_job_url` and passes the posting text the job-fit review read, so Erga can tailor from it even when the careers site refuses Erga's own fetch.
 
-A typeahead (a text input with an autocomplete hint or a "start typing" placeholder) is
-treated like a combobox: the value is typed and the matching suggestion is picked; when
-the suggestion list has no ARIA roles, the first suggestion is taken and accepted only if
-the committed text still names the approved city. When a site rejects a form naming a
-"required field", that label is remembered for the application and treated as required on
-the next preparation. A text the site silently truncates is cut to what the field keeps,
-at a sentence boundary, and the form card says so.
+- If Erga returns a PDF inside its configured output folder, Rove validates it again through Erga's `validate_tailored_resume`. A PDF that passes is used. One that fails, or has no source file beside it, stops the run with a "Resume needs review" card.
+- If Erga's intake fails, or Erga returns no PDF because the tailored draft failed its layout check, the approved base PDF from the profile is used and the thread carries the warning.
+- If there is no approved base PDF either, the run stops with the same card.
 
-A field counts as required when the input says so or when its label carries a
-"required" class or a trailing asterisk, which is how Ashby and Lever mark it. A place
-typeahead (location, city) is typed into and the one suggestion that starts with the
-approved "City, State" is chosen. After a Next control the runtime waits for the next
-step's fields before reading it, and a form whose last step with its Submit control was
-never reached is handed back with "Final step not reached", never called ready. A visible
-CAPTCHA challenge stops the run and asks the owner to solve it in the recruiting browser.
+The chosen file is copied into the application's private folder and its SHA-256 is recorded. Only that file is uploaded, and its hash is checked again before sending. The thread gets a line saying which resume it is and the PDF itself. When Erga produced a tailored draft that failed validation, Rove renders that draft with Tectonic and posts it too, marked as not sent, with the reason.
 
-Optional fields with no approved fact and no Qwen draft are left blank and noted in one
-line; only required questions reach the owner. A phone-type field defaults to Mobile and
-the form card shows that source as a default. Country selects match the approved country
-under its common spellings, and an observed select keeps up to 300 options so long lists
-such as countries are not cut off. "(Optional)" and "(Required)" in a label are ignored
-when a field is matched to a profile fact.
+## Filling the form
 
-## Submission
+Applicant data is typed only when the form's host is on the code's list of applicant-tracking hosts and the page belongs to the same job as the queued link. Otherwise the run stops with a card. [Browser automation](browser-automation.md#where-applicant-data-may-be-typed) has the list and the rule.
 
-Submission runs only from an authenticated `send it` reply (or an explicit `submit`
-command) bound to the current package hash of a `READY_FOR_REVIEW` application, and only when private
-`config/workflow.json` sets `submission_enabled` and lists an adapter in
-`submit_adapters`. The model has no submit tool.
+Each field is resolved in this order:
 
-Before the click, trusted code re-observes the live page and requires the same URL and
-job scope, the same form state and final control, the current approved profile version,
-the frozen resume bytes present and uploaded, and every required answer or committed
-selection. It records the attempt in SQLite, sets `SUBMITTING`, arms the preparation
-guard for that single click through a DOM attribute, and clicks once.
+1. an answer the owner gave for this application, including a draft the owner approved
+2. an approved profile fact, matched by the field's label
+3. an answer the owner gave to the same question on an earlier form, or, for a voluntary self-identification question (gender, race or ethnicity, veteran or disability status), the form's own decline option when exactly one option reads as a decline
+4. a Qwen draft, or a question for the owner
 
-`greenhouse_v1` covers the public Greenhouse job board. Its client posts JSON to
-`boards.greenhouse.io/{board}/jobs/{id}` and, only on success, navigates to
-`/{board}/jobs/{id}/confirmation`, which renders `.confirmation__content`. The attempt is
-`APPLIED` only when all hold: a 2xx POST to that path, no rejected POST, the confirmation
-URL, the confirmation block, and no form left. The receipt keeps the confirmation URL and
-text, screenshots before and after, response statuses without bodies, and the package
-hash. The application is confirmed in Erga and the tag becomes `Applied`. Anything else
-stays `UNKNOWN_SUBMISSION` until the owner reconciles; nothing retries.
+Code chooses an option only when the value matches exactly one option, and it reads every filled value back. A value the site changed stops the run with a card naming the field. A complete page that shows Next or Continue is advanced and the next page is filled, for at most four pages.
 
-Public Greenhouse boards run an invisible reCAPTCHA on submit. A challenge or an emailed
-security code is recorded as an unknown submission for the owner to finish and reconcile.
+An optional field with no fact and no draft is left blank and listed in one line in the thread. Only required questions reach the owner.
 
-`lever_v1` covers public Lever postings (`jobs.lever.co/{company}/{posting}/apply`). The
-apply page is one multipart form. Its "Submit application" button runs hCaptcha first;
-when the CAPTCHA hands the page a token, the page posts the form itself. The attempt is
-`APPLIED` only when all hold: the page landed on `/{company}/{posting}/thanks` for the
-same posting, it shows the "Application submitted!" heading, and no form is left. The
-status of the form's POST (a redirect to the thanks page on success) is kept in the
-receipt as evidence; it confirms nothing on its own. When the page comes back as the
-emptied form under "There was an error verifying your application", Lever's CAPTCHA
-rejected the send and nothing was stored: the attempt is recorded as not submitted, the
-tab stays open on the form, and the application is handed to you (`MANUAL_TAKEOVER`)
-with one card: solve the CAPTCHA in the recruiting browser, press Submit yourself, then
-reply `applied` (`park it` also works). A form that stays open with a new validation
-message is not submitted either and goes back to "needs you" like any rejected form.
-Anything else is an unknown submission. The form, the submit button and the thanks page
-were checked against the live public DOM; what Lever shows when hCaptcha rejects a send
-has not been observed in a live run, so that path follows Lever's reported wording until
-one confirms it. Employers can refuse repeat applications; a page that says you already
-applied stops the run before anything is sent.
+### Remembered answers
 
-`generic_v1` covers employer sites without an ATS contract. List it last in
-`submit_adapters`: the first listed adapter that matches the page wins, so Greenhouse
-boards and Lever postings keep their stricter contracts. It clicks the one observed final
-control and waits, within the same bound, until the page leaves, the form disappears, or
-a success or validation message shows that was not there before the click. It then reads
-the page once and compares it with the observation taken before the click. The attempt is
-`APPLIED` only when all three hold:
+An answer the owner types in Discord, such as `3: 5 months`, is stored in the `answer_memory` table under a fingerprint of the question's wording (without "(Optional)", "(Required)" and asterisks) and, when the question has options, its options. Any later form that asks the same question is filled from it, with the source shown as "your earlier answer". When the new form offers options, the remembered value is used only if it is one of them. `skip` is never remembered, and an approved Qwen draft is not remembered either.
 
-- at least one new confirmation signal: the URL path or query newly matches the `url`
-  pattern below; the page text newly matches the `sentence` pattern; or a visible
-  `[role=alert]`, `[role=status]`, `.confirmation`, or `.success` element newly matches
-  the `sentence` pattern
+A readable copy is kept in `Answers.md` in the vault. See [Memory and storage](memory-and-storage.md#remembered-answers).
+
+### Drafts from Qwen
+
+The questions still open after the steps above go to Qwen in one call. Qwen sees the frozen profile, approved stories, up to three approved evidence excerpts from Erga, the answers already given for this application, and the text of the form page. For each question it returns either a draft with its sources or a note that only the owner can answer.
+
+Code checks the result before anything is shown:
+
+- Every question is answered exactly once and no unknown question appears.
+- A draft has a value and at least one source.
+- A draft for a question with options must be one of the options. If it is not, the question goes to the owner with the options listed.
+- A draft must fit its field. Qwen is told each field's character limit. An answer over the limit or over 150 words gets one retry, and what still overflows is cut at a sentence boundary and marked as shortened.
+
+Each draft is posted as its own card with the reply that approves it. A question for the owner is posted as one line.
+
+### Draft cleanup
+
+Written drafts follow two public rule sets, [Unslop](https://github.com/theclaymethod/unslop) and [Humanizer](https://github.com/blader/humanizer). The drafting prompt carries a short digest of both.
+
+Every draft longer than 60 characters is scanned. The built-in scan looks for Unslop's hard tells and for a digest of Humanizer's patterns: jargon, "not X but Y", run-ups, hedge stacks, inflated words, borrowed authority, chatbot leftovers, connector dashes, lists of three, repeated sentence openers, questions and curly quotes. When `unslop_path` points at a local clone of Unslop, its phrase and structure scanners run in place of the built-in Unslop list. The Humanizer digest runs either way.
+
+One hard tell, or two findings of any kind, triggers one repair call to Qwen. Structure scores alone never trigger it. The repair is kept only if every number and capitalized name survives, no new number appears, and the text did not grow by more than about 15 percent. Otherwise the original stands. The card shows the final text. The scan summary is saved with the draft and appears in the application's vault note.
+
+### Voice note
+
+If the vault has `Rove/Story/Voice.md`, about 2,500 characters of it go to Qwen as a style sample. The draft follows its sentence rhythm and plain words and does not copy its sentences. The note is never a source of facts, Rove never writes it, and a change to it causes the drafts to be made again on the next preparation.
+
+### Company research
+
+Before Qwen drafts, code gathers company research once per application. It reads at most three public pages from the employer's own site: the home page, the about or company page it links to, and the careers or culture page (`/about` and `/careers` when the home page links to neither).
+
+The employer site is the posting's host when the posting is on the employer's own site, with a leading label such as `careers.`, `jobs.` or `www.` dropped. Otherwise it is the employer host the posting text links to most often. A posting on an applicant-tracking host or a job board that names no employer link gets no research, and the draft can say only what the posting says about the company.
+
+The reads are plain HTTPS with a desktop browser agent string, a ten-second timeout, 400 KB per page and eight requests in total. Only the employer's site is read, and a redirect off the site is not followed. No cookies are kept, and nothing about the applicant is in the request. Scripts, navigation, footers, forms and hidden elements are skipped.
+
+The pages are reduced to the sentences that say what the company does, how big or old it is, what it sells and what it values, about 1,800 characters in total. Any line that reads as an instruction to a model is dropped first, which also drops a few true sentences. Qwen is told to use the text only to say true things about the company, never to claim the applicant did anything with the company, and never as instructions.
+
+The result is cached in the application's folder and copied to a note in the vault marked untrusted. A site that does not answer is tried once more on a later preparation. Research never stops a run.
+
+## When Rove stops for the owner
+
+Every stop is one card in the thread and one in an owner channel, with the replies it accepts. When a browser screenshot exists from the last half hour, it is attached to the thread.
+
+| Card | Cause | Replies |
+| --- | --- | --- |
+| Your call on fit | A feed job conflicts with an approved fact. Posted to the shortlist channel. | `go`, `park it` |
+| Answers needed | Required questions have no answer, or drafts wait for approval. | `N: answer`, `use draft N`, then `go` |
+| Account needed | The board wants an account and the owner has not allowed one for this application. | `create account`, `park it` |
+| Verify the account email | The account was created and the site wants the email verified. | `go` after opening the link |
+| Sign-in needs you | A sign-in page with no stored account, or the stored sign-in failed. | `go` after signing in |
+| Manual step in the browser | The page has a field labeled social security, passport, bank account or verification code. | `go` after finishing it |
+| CAPTCHA needs you | A CAPTCHA challenge is visible. | `go` after solving it |
+| Blocked by the employer's site | The site showed a block page twice. | `applied`, `park it` |
+| The site says you already applied | The page says an application already exists. | `applied`, `park it` |
+| Resume needs review | No validated tailored PDF and no approved base PDF. | `go`, `park it` |
+| Apply control not found | No Apply control on the page. | `go` after reaching the form |
+| Navigation stopped | Six page steps passed without reaching a form. | `go`, `park it` |
+| Final step not reached | The last step with its Submit control was never reached, or the site rejected a value on a step. | `go` |
+| Browser needs a look | Anything else, including a form on a host or job that does not match the queued link. | `go`, `park it` |
+| Preparation stopped | A step raised an error. The card names the step. | `go`, `park it` |
+| Preparation interrupted | The worker found a preparation older than fifteen minutes. | `go`, `park it` |
+| Ready to submit | The form is complete and an adapter is enabled. Not posted when `auto_submit` is on. | `send it`, `go` |
+| Ready · send it yourself | The form is complete, and either submission is off or no enabled adapter matches the site. | `applied`, `park it` |
+| Submission not attempted | The check before the click failed. Nothing was sent. | `go` |
+| The site rejected the form | After the click the form stayed open with a validation error. Nothing was sent. | `go`, `park it` |
+| The site's CAPTCHA rejected the send | Lever's CAPTCHA refused the send. | `applied` after sending by hand, `park it` |
+| Submission unclear | One click happened and no confirmation was read. | `applied`, `not sent` |
+
+A posting whose page says it no longer accepts applications is parked with a line in the thread and no card.
+
+Rove never solves a CAPTCHA, never completes MFA, and never types a password it did not generate itself. It uses no proxies.
+
+### Accounts
+
+When a board needs an account, the card offers `create account`. After that reply the browser daemon fills the application email and a generated password, ticks the terms checkbox, fills text fields it can resolve from the profile such as the name, clicks the create control, and stores the credential encrypted on the Mac. Later sign-in pages on that host are completed with the stored account. Email verification, CAPTCHA, MFA and identity checks stay with the owner in the recruiting browser.
+
+## Sending
+
+Three things must be true before a Submit click:
+
+- private `config/workflow.json` sets `submission_enabled`
+- an adapter listed in `submit_adapters` matches the page (the first listed match wins)
+- an approval exists for the exact package: the owner's `send it` reply in the thread, an explicit `submit` command, or the `auto_submit` policy
+
+The model has no submit tool. Only the browser daemon clicks, when the worker relays an approval.
+
+### The check before the click
+
+The daemon observes the live page again and refuses to click unless all of this holds:
+
+- the package on disk still hashes to the approved hash, and the application is ready for review
+- no question is open and the page has exactly one final control, with the same label as reviewed
+- the frozen profile is unchanged and is still the approved version
+- no CAPTCHA is visible, the URL is the reviewed one, and the page is not a sign-in or identity step
+- every field has the same identity, state and value as in the reviewed package
+- the frozen resume file has the recorded hash and was uploaded
+- no required field is empty and every required dropdown has a committed selection
+
+If the check fails, nothing is sent and the owner gets a "Submission not attempted" card with the reason.
+
+When it passes, the daemon records the attempt in SQLite and marks the application as submitting in one transaction. A second attempt is refused unless the first was recorded as not submitted. It then arms the page's submit guard for one click, clicks once, waits up to 45 seconds for the adapter's signal, and reads the page once.
+
+### Outcomes
+
+Applied: the adapter saw its full confirmation contract. The receipt keeps the confirmation URL and text, screenshots before and after, the status codes of matching POST responses without headers or bodies, the adapter name and the package hash. Erga is told through `confirm_application_submission` when the resume manifest links an Erga application. The tag becomes `Applied` and the tab closes.
+
+Not submitted: the form stayed open and named a new validation error. The application goes back to the owner with the site's message, and a later `go` prepares a new package. When the message names a required field, that label is remembered for the application and treated as required on the next preparation. Only `lever_v1` and `generic_v1` can report this outcome.
+
+Unclear: anything else, including an error after the click. The card says not to click again. The owner checks the browser and their email and replies `applied` or `not sent`. `applied` records the application as sent on the owner's word. `not sent` releases the attempt. With `auto_submit` on the application is then prepared again without another reply. With it off the owner gets a card and replies `go`. Code never infers the outcome and never retries the click. A recruiting mail about the application also settles it, as described under [Recruiting mail](#recruiting-mail).
+
+For any outcome other than applied, the thread gets the screenshot of the form just before the click and the page after it.
+
+### Adapters
+
+`greenhouse_v1` covers public Greenhouse boards at `job-boards.greenhouse.io/{board}/jobs/{id}`. The board's client posts to `boards.greenhouse.io/{board}/jobs/{id}` and, on success, navigates to `/{board}/jobs/{id}/confirmation`, which renders `.confirmation__content`. The attempt is applied only when all of these hold: a 2xx POST to that path, no rejected POST, the confirmation URL, the confirmation block, and no form left. Anything else is unclear. If the board answers the click with a challenge or an emailed security code, no confirmation appears and the attempt is unclear.
+
+`lever_v1` covers public Lever postings at `jobs.lever.co/{company}/{posting}/apply`. The Submit button runs hCaptcha, and the page posts the form itself when the CAPTCHA hands it a token. The attempt is applied only when the page landed on `/{company}/{posting}/thanks` for the same posting, shows the "Application submitted!" heading, and has no form left. The status of the form's POST is kept in the receipt as evidence and confirms nothing on its own. When the page comes back as the form under "There was an error verifying your application", the CAPTCHA rejected the send: the attempt is recorded as not submitted, the tab stays open, and the owner sends it by hand and replies `applied`. A form that stays open with a new validation message is not submitted either.
+
+`generic_v1` matches any HTTPS page and has no request to watch. List it last in `submit_adapters` so the stricter adapters win on their own sites. It clicks the one final control and waits until the page leaves, the form disappears, or a success or validation message appears that was not there before the click. It then compares the page with the observation taken before the click. The attempt is applied only when all three hold:
+
+- at least one new confirmation signal: the URL path or query newly matches the `url` pattern, the page text newly matches the `sentence` pattern, or a visible `[role=alert]`, `[role=status]`, `.confirmation` or `.success` element newly matches the `sentence` pattern
 - the form left: no fields and no final control, or a different URL
-- no new validation message: visible text in `[role=alert]`, `.error`, or the message
-  beside an `[aria-invalid=true]` field that matches the `error` pattern and differs from
-  what was there before the click
+- no new validation message: visible text in `[role=alert]`, `.error`, or the message beside an `[aria-invalid=true]` field that matches the `error` pattern and differs from what was there before the click
 
 The patterns, all case-insensitive:
 
@@ -311,92 +225,41 @@ sentence  thank you for (applying|your (application|interest))
 error     required|invalid|error|could not|try again
 ```
 
-Wording or URL tokens already present before the click never count, so a careers page
-that opens with "thank you for your interest" cannot confirm itself, and a thank-you
-sentence under a form that is still open is not a confirmation. A new validation
-message means the form rejected the attempt: the tab stays open and the application is
-`UNKNOWN_SUBMISSION` with the message in the reason. Anything else within the bound is
-`UNKNOWN_SUBMISSION` as well. POST responses to the page's host are kept in the receipt
-as evidence; they confirm nothing on their own. The receipt carries the same fields as a
-Greenhouse receipt, so cards and the Erga confirmation work unchanged.
+Wording and URL tokens already present before the click never count. A careers page that opens with "thank you for your interest" cannot confirm itself, and a thank-you sentence under a form that is still open is not a confirmation. A new validation message on a form that stayed on the same URL is the not-submitted outcome. Anything else is unclear.
 
-### Remembered answers
+## Unattended sending
 
-A fact the owner answers once in Discord (`3: 5 months`) is stored under a fingerprint of
-the question's wording without qualifiers plus its options, and filled on any later form
-that asks the same question, with the source "your earlier answer". When the new form
-offers options, the remembered value is used only if it is one of them. `skip` is never
-remembered. The exact store is the `answer_memory` table in SQLite; a readable copy is
-`Answers.md` in the vault's `Rove` folder. Approved profile facts come first,
-remembered answers second, Qwen drafts third; only what none of them covers reaches the
-owner.
+Unattended sending is an owner policy in private `config/workflow.json`. It is off unless set.
 
-### Unattended sending as an owner policy
+`auto_use_drafts` makes Qwen's drafts the answers without a `use draft` reply. The draft cards stay in the thread, each used draft gets a line naming its question number, and a `N: your text` reply before sending replaces it. When the key is absent it takes the value of `auto_submit`.
 
-Two private `config/workflow.json` keys turn the review step into an after-the-fact one:
+`auto_submit` sends a complete package on the tick that prepared it. The thread shows "Auto-submit is on · sending it once" and then the result. No card is posted to the action-needed channel for a package that completes.
 
-- `auto_use_drafts`: Qwen's drafts become the answers without a per-draft `use draft`
-  reply. The draft cards stay in the thread, each used draft gets a line naming the
-  question's number, and a `N: your text` reply before sending still overrides.
-- `auto_submit`: a complete package is sent once, on the tick that prepared it, through
-  the enabled adapter for that site. The thread records "auto-submit is on · sending
-  once", then the result card. `max_submissions_per_day` (default 10) and
-  `min_minutes_between_submissions` (default 8) pace unattended sending the way one
-  person would apply; an application the owner resumed or pasted is never capped.
+Two keys pace it. `max_submissions_per_day` (default 10) counts the submission attempts recorded on the current UTC date. `min_minutes_between_submissions` (default 8) is the gap since the last attempt. While either limit applies, the worker starts no new feed job. An application the owner resumed and a link the owner pasted are worked anyway.
 
-Two defaults keep unattended runs from stalling on routine questions. A voluntary
-self-identification question (gender, race or ethnicity, veteran or disability status)
-takes the form's own decline option, recorded with the source
-`policy.decline_self_identification`; a form without a decline option stays with the
-owner. A page that says the applicant already applied stops the run before anything is
-sent and asks the owner to mark it applied or park it.
-
-What still stops and asks: a required question only the owner can answer, an
-eligibility conflict on a feed job, a sign-in or account wall, a blocked site, a
-CAPTCHA or identity step, a site with no enabled adapter, and any unclear submission
-result. Nothing is ever sent twice for the same package.
-
-When the site keeps the form open and names a validation error after the single click,
-nothing was sent: the attempt is recorded as not submitted, the application goes back to
-"needs you" with the site's message, and a later `go` prepares a new package. A send that
-Lever's CAPTCHA rejected is not submitted either, but it is handed to you instead, since
-only a person can satisfy the CAPTCHA. Only an
-outcome the page cannot settle (navigation without a confirmation, a timeout, a crash)
-becomes "unclear" and blocks all sending until the owner reconciles it.
-
-### Debugging a stop
-
-Every stop is visible without opening the Mac. The thread gets the browser screenshot
-taken when the run stopped, the resume PDF as it was sent, and, when Erga tailored a
-resume that failed its layout check, that rejected draft rendered to PDF with the reason
-(for example the share of the page it fills). A send that did not confirm posts the form
-just before the click and the page after it. Identifiers, adapters and package hashes go
-to `system-log`. Privately, under the application's folder in the state root, the daemon
-keeps `failure.png` for any action that raised, and for a picker that refused a value a
-`picker-<field>.json` with what was typed, the options it listed and what it kept, plus a
-screenshot.
+Everything in [When Rove stops for the owner](#when-rove-stops-for-the-owner) still stops an unattended run, except the ready-to-submit card.
 
 ## Recruiting mail
 
-`rove mail tick` runs every 15 minutes as its own launchd service and is off until
-private `config/mail.json` sets `enabled` and the private env holds the four Zoho values
-(see [Requirements](requirements.md#zoho-mail)). Each tick refreshes a Zoho access token,
-lists the Inbox messages newer than the checkpoint (`mail_checkpoints` in SQLite; the first
-tick looks back `lookback_days`, default 3), and reads each message's body as plain text.
-A message is handled once (`mail_messages`), and the checkpoint advances past each one.
+Mail tracking is optional. `rove mail tick` runs every 15 minutes and does nothing until private `config/mail.json` sets `enabled` and the private env file holds the four Zoho values. [Requirements](requirements.md#zoho-mail) has the setup.
 
-Mail is matched to a sent application (`APPLIED` or later, or an unclear submission)
-before anything else happens:
+### What is read
 
-- strong: the sender's domain is the employer's domain from the posting URL, or the sender
-  is a known recruiting host (Greenhouse, Lever, Ashby, Workday, HackerRank, and the like)
-  and the company name appears in the subject or body
-- weak: the company name appears in the subject only, from any other sender; this counts
-  only when the rules below recognise the mail
-- anything else is ignored and leaves no trace but its message id
+Each tick refreshes a Zoho access token, finds the Inbox folder, lists messages newer than the checkpoint, and reads each new message's body as plain text. The first tick looks back `lookback_days` (default 3). A tick reads at most 500 message headers. The integration only reads. It never sends, moves or deletes mail.
 
-When two applications match (two roles at one company), the role's own words in the mail
-decide; a tie goes to the most recently updated one.
+A message is handled once, and the checkpoint advances past each handled message.
+
+### Matching a mail to an application
+
+Only applications that were sent, or whose submission is unclear, can match.
+
+- Strong: the sender's domain is the employer's domain from the posting URL, or the sender is a known recruiting host (Greenhouse, Lever, Ashby, Workday, HackerRank and similar) and the company name appears in the subject or body.
+- Weak: the company name appears in the subject, from any other sender. A weak match counts only when the rules below recognise the mail.
+- Anything else is ignored. SQLite keeps one row with its id and sender domain so it is not read again.
+
+When two applications match, the role's own words in the mail decide, and a tie goes to the most recently updated one.
+
+### Classification
 
 The label comes from fixed rules, in this order of precedence:
 
@@ -413,121 +276,60 @@ acknowledgement  thank you for applying · we received your application · appli
                  submitted / received / under review · we will be in touch
 ```
 
-A rejection outranks everything it mentions; an offer outranks the interviews before it.
-When a mail matches both interview and assessment wording (an invitation that mentions the
-assessment it followed, or an assessment that promises interviews), the subject line
-decides; when the subject names neither, the mail is ambiguous. Only an ambiguous mail
-from a strong match goes to Qwen, with a sanitized excerpt (links, addresses, markup and
-any sentence that talks to a model or about secrets removed, 2,500 characters at most) and
-a prompt that lets it pick one of the six labels and nothing else; a deadline Qwen quotes
-counts only when the text contains it. When the local model is down, the tick stops at
-that mail and resumes there next time. A Qwen answer that is not a label files the mail as
-"other", from the sender alone.
+A rejection outranks everything it mentions, and an offer outranks the interviews before it. When a mail matches both interview and assessment wording, the subject line decides. If the subject names neither, the mail is ambiguous.
 
-What a classified mail does:
+Only an ambiguous mail from a strong match goes to Qwen. Qwen reads a sanitized excerpt of at most 2,500 characters with links, addresses, markup and any sentence that talks to a model or mentions secrets removed. It may pick one of the six labels (the five above and `other`) and nothing else. A deadline Qwen quotes counts only when the excerpt contains it. An answer that is not a label files the mail as `other`. When the local model is down, the tick stops at that mail and resumes there next time.
 
-- the thread gets a `recruiting_mail` card: the label, the sender's domain, the subject
-  clipped, and the deadline as the mail states it (a regex quotes "by October 9, 2026 at
-  11:59 PM PT" or "within 72 hours"; nothing is computed), never the body
-- the application moves forward when the label is a step forward: `APPLIED → OA →
-  INTERVIEW → OFFER`, and `REJECTED` from any of them; the lifecycle line names the trigger
-  `recruiting mail: <label>`; a label behind the current state (an assessment reminder
-  during interviews) is recorded without a move, and nothing moves a `REJECTED` application
-- the `recruiting` channel gets one line: the label in words, the application, the
-  sender's domain, the subject and a link to the thread
-- Erga is asked to `update_application_status` with its own word (`oa`, `interview`,
-  `offer`, `rejected`) when the resume manifest links an Erga application; the result or
-  the error type is kept in the card's data, and a failure changes nothing locally
-- a mail of any of the five kinds for an `UNKNOWN_SUBMISSION` application settles it: the
-  attempt is confirmed `APPLIED` with the mail (its id, sender, subject and the private
-  copy) as the receipt's evidence, and an assessment or interview then moves it on
+### What a classified mail does
 
-Nothing in a mail can queue, prepare, submit or re-prepare an application, and an
-application that was sent is never moved back into preparation, whatever a thread reply
-says. The full text of each handled mail is kept privately under `mail/messages/<id>/` in
-the state root, with Qwen's input and output beside it when it ran.
+- The thread gets a card with the label, the sender's domain, the clipped subject and the deadline as the mail states it. A regex quotes phrases such as "by October 9, 2026 at 11:59 PM PT" or "within 72 hours". Nothing is computed, and the body is never posted.
+- The application moves when the label is a step forward: Applied to OA to Interview to Offer, and Rejected from any of them. A label behind the current state is recorded without a move, and nothing moves a rejected application.
+- The recruiting channel gets one line with a link to the thread.
+- Erga's `update_application_status` is called with `oa`, `interview`, `offer` or `rejected` when the resume manifest links an Erga application. A failure there changes nothing locally.
+- A mail with any label except `other` settles an unclear submission. The attempt is recorded as applied with the mail as the receipt's evidence, and an assessment or interview then moves it on.
 
-`rove mail status` shows the switches, the checkpoint and the message counts
-without any secret.
+The states mail can set are OA, Interview, Offer and Rejected. Nothing in a mail can queue, prepare, submit or re-prepare an application, and a sent application is never moved back into preparation.
 
-## Records outside Discord
+`rove mail status` shows the switches, the checkpoint and the message counts without any secret.
 
-SQLite holds the queue, events, answers, commands, and attempts. Private per-application
-directories hold the observation, package, resume, receipts, screenshots, the company
-research cache, and Qwen input and output. The vault gets one readable note per application under
-`Rove/Applications/` (status, links, job fit, filled values with sources, open
-questions with drafts, timeline), rewritten on every change; it mirrors local state and is
-never a candidate fact. Company research goes to one note per employer site under
-`Rove/Research/`, marked untrusted. Credentials live only in the encrypted local
-store.
-
-## Local configuration
-
-Private `config/workflow.json` maps `guild_id`, `forum_channel_id`, `control_channel_id`,
-`action_channel_id`, `source_channel_id`, `shortlist_channel_id`, `system_channel_id`,
-and lifecycle `tags`. `system_channel_id` and `recruiting_channel_id` are optional: when
-one is missing, the worker (or the mail service) looks the `system-log` or `recruiting`
-channel up by name once and writes the id into the file; without such a channel those
-lines stay off. It also supplies `hermes_python`, an explicit `enabled` flag, `submission_enabled`,
-`submit_adapters`, `max_waiting_applications` (default 1), `browser_app` (`chrome` or
-`chromium`), `max_open_tabs` (default 5), `human_pacing` (default true), and an optional
-`unslop_path` pointing at a local clone of the Unslop repository. Private
-`config/feed.json` holds the feed's `enabled` flag, the jobs channel's `channel_id`,
-`batch_size` (cards per feed tick, default 10), and `max_pending` (pending
-announcements kept, default 40). Private `config/mail.json` holds the mail service's
-`enabled` flag and `lookback_days` (default 3, used by the first tick only); the four Zoho
-values live in the private env file, never in JSON.
+## Commands
 
 ```sh
-uv run rove install-services
-uv run rove feed seed
 uv run rove workflow status
 uv run rove workflow enqueue --url https://jobs.example.com/internship
 uv run rove workflow tick
 uv run rove workflow resume --id APPLICATION_ID
+uv run rove workflow defer --id APPLICATION_ID
+uv run rove feed seed
+uv run rove feed tick
 uv run rove browser status
 uv run rove mail status
 uv run rove mail tick
 ```
 
-`workflow resume` and `workflow defer` are local owner operations equivalent to the
-Discord commands. Delivery records are written before Discord mutations. Thread entries and the
-action-needed and shortlist cards are stored first and posted after; a failed post is
-logged to `logs/delivery-failures.log` under the state root and retried on every worker
-tick. A failed card withdrawal or status-card edit is logged there too, but not retried.
-Each tick also re-checks queued feed jobs against the approved exclusion rules and
-defers the ones that now match, with the reason in the queue record; a link you pasted
-is never pruned that way. The worker takes an application you told to go on (`go` or
-`create account`) first, then a pasted link before a feed job, and
-otherwise the newest queued job. An ambiguous forum creation is held for
-reconciliation. The worker holds the only processing lock, so a `PREPARING` application
-older than fifteen minutes is a crashed run and is handed back to the owner. When the
-local model server is down the worker starts it once and otherwise leaves the queue
-waiting instead of failing applications. After updating browser code, restart the
-browser service (`launchctl kickstart -k gui/$UID/dev.rove.browser`); the
-Chrome window and its tabs survive the restart.
+`workflow resume` and `workflow defer` are local owner operations equal to the `go` and `park it` replies. `feed seed` queues up to 25 current matches for announcement so the first run has something to post. The services that run the ticks on a schedule are listed in [Requirements](requirements.md#services).
 
-## Hermes tools
-
-The production include list contains thirteen narrow tools: the nine onboarding,
-discovery and evidence tools from [Onboarding and jobs](onboarding-and-jobs.md) plus
-`start_job_application`, `application_workflow_status`, `inspect_application_browser`,
-and `refresh_job_feed`. None of them fills, approves, or submits.
+The Hermes agent gets four tools for this workflow, `start_job_application`, `application_workflow_status`, `inspect_application_browser` and `refresh_job_feed`. None of them fills, approves or submits. The full tool list is in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection).
 
 ## Limits
 
-Three submission adapters: `greenhouse_v1`, with a request-level contract for public
-Greenhouse boards; `lever_v1`, which needs Lever's thanks page and its heading and whose
-handling of a CAPTCHA-rejected send is untested on the live site; and `generic_v1`, which
-reads only the page and confirms nothing without new confirmation wording. Lever's own
-inline field messages use a class the shared error read does not cover, so a Lever form
-kept open by a field error without the verification sentence is "unclear", not "not
-sent", until a live run shows what Lever renders. Multi-page support advances only on
-Next/Continue controls after a complete page. Account creation covers email, password,
-terms checkbox and known name fields; anything else on a registration page is a hold.
-No CAPTCHA solving (a visible challenge stops and asks), no proxies. Recruiting mail covers
-the Inbox of one Zoho account and the five labels above; mail about a job that was never
-applied to through Rove is ignored, and `Accepted` and `Withdrawn` are not set by
-code yet. Unattended submission is an owner policy with a daily cap and a minimum gap.
-Only the word, number, and explicit replies above are understood; a sentence in a thread
-is ignored, never interpreted.
+- Forms are filled only on the hosts in the code's applicant-tracking list, and only for the same job as the queued link. `generic_v1` therefore reaches only those hosts.
+- `lever_v1`'s handling of a CAPTCHA-rejected send follows Lever's reported wording and has not been observed in a live run. Lever's inline field messages use a class the shared error read does not cover, so a Lever form kept open by a field error without the verification sentence is unclear, not "not submitted".
+- Multi-page support advances only on Next, Continue, "Save and continue" and "Next step" controls, after a complete page, for at most four pages.
+- Account creation covers email, password, a terms checkbox and text fields the profile resolves. Anything else on a registration page is a stop.
+- Code does not yet stop a Qwen draft on a legal or sensitive question from becoming the answer under `auto_use_drafts`. The prompt tells Qwen to leave unknown personal facts to the owner, and a code gate is in progress.
+- Mail tracking reads the Inbox of one Zoho account. Mail about a job that was not applied to through Rove is ignored.
+- The `Accepted` and `Withdrawn` states are not set by code. There are no reminders or calendar entries.
+- Only the replies listed in [Discord](discord.md#replies) are understood. A sentence is not interpreted.
+- One application is worked at a time.
+
+## In progress
+
+These are being built now and are not described above. Each will be documented here when it lands.
+
+- Question handling and a gate for sensitive answers
+- The `#memory` channel
+- Timing measurements and `rove bench`
+- Adapters for Paylocity, Workable, JazzHR and BambooHR
+- Scored intake with a daily digest
+- Per-platform pacing
