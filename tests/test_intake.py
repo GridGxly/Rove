@@ -219,6 +219,10 @@ def test_other_hard_rules_company_track_and_place():
     # Towns that share a name with somewhere abroad are not abroad.
     assert not score(job("x", location="Ontario, CA"))["skip"]
     assert not score(job("x", location="London, KY, United States"))["skip"]
+    assert not score(job("x", location="Albuquerque, New Mexico"))["skip"]
+    # A term still ahead is kept; last fall is over.
+    assert not score(job("x", f"Software Engineer Co-op, Winter {NOW.year + 1}"))["skip"]
+    assert score(job("x", f"Software Engineer Co-op, Fall {NOW.year - 1}"))["skip"]
     excluding = {**PROFILE, "preferences": {**PREFERENCES, "excluded_locations": ["Denver"]}}
     assert score(job("x", location="Denver, CO"), excluding)["skip"] == "location"
     assert not score(job("x", location="Denver, CO; Austin, TX"), excluding)["skip"]
@@ -233,6 +237,18 @@ def test_an_excluded_kind_listed_among_options_is_capped_for_the_owner_to_decide
         result = score(job("ml", title, company="Northwind Example"))
         assert (result["score"], result["tier"]) == (intake.QUEUE_AT - 1, 2), title
         assert "mentions machine learning, which you exclude" in result["reason"]
+
+
+def test_a_field_word_names_the_team_of_a_software_role_but_the_job_of_a_neighbouring_one():
+    team = score(job("x", "Software Engineer Intern, Finance Platform"))
+    assert team["tier"] == 1 and team["score"] == score(job("x"))["score"]
+    discipline = score(job("x", "Software Defined Radio Hardware Intern"))
+    assert discipline["score"] == score(job("x"))["score"] + W["role_off_field"]
+    assert discipline["tier"] == 2 and "radio work" in discipline["reason"]
+    # Another family may be the better reading of the title: the core role wins.
+    assert score(job("x", "Technology Intern - Software Engineering"))["tier"] == 1
+    assert score(job("x", "Future IT Leaders Intern"))["reason"].startswith("IT role")
+    assert score(job("x", "Make it happen Intern"))["family"] is None
 
 
 def test_caps_points_for_pay_company_class_and_account_first_boards():
@@ -251,14 +267,12 @@ def test_caps_points_for_pay_company_class_and_account_first_boards():
     }
     fits = score(job("x", location="Denver, CO", academic_eligibility=window))
     assert fits["score"] == base + W["class_fits"]
-    missed = score(
-        job(
-            "x",
-            location="Denver, CO",
-            academic_eligibility={**window, "graduation_end": f"{NOW.year + 1}-12"}
-            | {"graduation_start": f"{NOW.year + 1}-01"},
-        )
-    )
+    earlier = {
+        "requirement_level": "required",
+        "graduation_start": f"{NOW.year + 1}-01",
+        "graduation_end": f"{NOW.year + 1}-12",
+    }
+    missed = score(job("x", location="Denver, CO", academic_eligibility=earlier))
     assert missed["tier"] == 2 and "different graduation date" in missed["reason"]
     workday = score(job("x", url="https://example.wd5.myworkdayjobs.com/careers/job/R-12345"))
     assert workday["tier"] == 2 and "needs an account before applying" in workday["reason"]

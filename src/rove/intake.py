@@ -79,13 +79,17 @@ ROLE_FAMILIES = (
     ("computer-engineering", "adjacent", "computer engineering role", r"computer engineer\w*"),
     ("infrastructure", "adjacent", "infrastructure role", r"infrastructure|cloud"),
     ("analytics-engineering", "adjacent", "analytics engineering role", r"analytics engineer\w*"),
-    ("technology", "adjacent", "general technology role", r"technology|tech"),
+    ("technology", "adjacent", "general technology role", r"technology"),
 )
-OFF_FIELD = (
+# Another engineering discipline in the role itself: even a software title loses points.
+OTHER_DISCIPLINES = "mechanical|civil|electrical|chemical|hardware|radio|layout"
+# Other lines of work. Next to a software role these name the team ("Software Engineer
+# Intern, Finance Platform"); next to a neighbouring family they name the job ("Tax
+# Technology Intern"), which is then not a wanted role at all.
+OTHER_FIELDS = (
     "tax|audit|accounting|accountant|finance|financial|marketing|sales|legal|paralegal"
-    "|mechanical|civil|electrical|chemical|industrial|manufacturing|construction|hardware"
-    "|radio|layout|supply chain|human resources|recruiting|business|forensic|advisory"
-    "|help desk|product (?:management|manager|marketing|design|analyst)"
+    "|industrial|manufacturing|construction|supply chain|human resources|recruiting|business"
+    "|forensic|advisory|help desk|product (?:management|manager|marketing|design|analyst)"
 )
 SENIORITY = r"(?<!rising )senior|sr|staff|principal|director"
 GRADUATE = re.compile(
@@ -94,7 +98,9 @@ GRADUATE = re.compile(
 UNDERGRADUATE = re.compile(
     r"\b(?:BS|B\.S\.?|BA|B\.A\.?|(?i:bachelors?|bachelor['’]s|undergrad\w*))(?![A-Za-z])"
 )
-SEASON_STARTS = {"winter": 1, "spring": 1, "summer": 6, "fall": 9}
+# The month a term is under way. Late on purpose: a skipped job is never shown, so a
+# winter or spring posting is kept until the term has clearly begun.
+SEASON_STARTS = {"winter": 12, "spring": 2, "summer": 6, "fall": 9}
 SEASON = r"(spring|summer|fall|autumn|winter)"
 TERM = re.compile(rf"{SEASON}\W{{0,3}}(20\d\d)|(20\d\d)\W{{0,3}}{SEASON}", re.IGNORECASE)
 NON_US = (
@@ -126,6 +132,18 @@ US_STATES = frozenset(
         r"[a-z]{2}",
         "al ak az ar ca co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms mo mt ne nv nh "
         "nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy dc",
+    )
+)
+US_STATE_NAMES = frozenset(
+    re.findall(
+        r"[a-z]+(?: [a-z]+)*",
+        "alabama, alaska, arizona, arkansas, california, colorado, connecticut, delaware, "
+        "florida, georgia, hawaii, idaho, illinois, indiana, iowa, kansas, kentucky, louisiana, "
+        "maine, maryland, massachusetts, michigan, minnesota, mississippi, missouri, montana, "
+        "nebraska, nevada, new hampshire, new jersey, new mexico, new york, north carolina, "
+        "north dakota, ohio, oklahoma, oregon, pennsylvania, rhode island, south carolina, "
+        "south dakota, tennessee, texas, utah, vermont, virginia, washington, west virginia, "
+        "wisconsin, wyoming, district of columbia, united states, usa, us",
     )
 )
 # Boards that list a job without being the employer's own application page.
@@ -256,7 +274,9 @@ def places(location) -> list[str]:
 def outside_us(place) -> bool:
     """A place that is clearly abroad. "Ontario, CA" and "London, KY" are American towns."""
     pieces = [plain(piece) for piece in str(place).split(",") if plain(piece)]
-    if any(piece in US_STATES or piece in {"united states", "usa", "us"} for piece in pieces[1:]):
+    if any(piece in US_STATES or piece in US_STATE_NAMES for piece in pieces[1:]):
+        return False
+    if pieces and pieces[0] in US_STATE_NAMES:
         return False
     if len(pieces) > 1 and pieces[-1] in CANADIAN_PROVINCES:
         return True
@@ -273,7 +293,9 @@ def studies_at_graduate_level(profile: dict) -> bool:
     return any(
         school.get("currently_enrolled") is not False
         and re.search(
-            r"master|m\.?s\.?\b|ph\.?d|doctor|mba", str(school.get("degree") or ""), re.IGNORECASE
+            r"master|\bm\.?s\.?\b|ph\.?d|doctor|\bmba\b",
+            str(school.get("degree") or ""),
+            re.IGNORECASE,
         )
         for school in schools
     )
@@ -384,9 +406,10 @@ def score_job(job: dict, profile: dict, *, today: date | None = None) -> dict:
     elif keyword:
         family = ("keyword:" + plain(keyword), "keyword", f"matches your keyword “{keyword}”")
         add("role", "role_keyword", family[2])
-    off_field = re.search(
-        rf"\b(?:{OFF_FIELD})\b", title_words(role_head(title) if family else title)
-    ) or (family and family[1] != "core" and re.search(rf"\b(?:{OFF_FIELD})\b", words))
+    if family and family[1] == "core":
+        off_field = re.search(rf"\b(?:{OTHER_DISCIPLINES})\b", title_words(role_head(title)))
+    else:
+        off_field = re.search(rf"\b(?:{OTHER_DISCIPLINES}|{OTHER_FIELDS})\b", words)
     if off_field:
         add("field", "role_off_field", f"{off_field[0]} work, outside what you asked for")
     if kind_word:
