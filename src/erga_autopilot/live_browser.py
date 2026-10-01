@@ -1093,8 +1093,14 @@ class RecruitingBrowser:
                 # text still names the city.
                 city = str(profile["identity"].get("city") or "")
                 try:
-                    self.page.wait_for_timeout(1200)
-                    if city and self.page.evaluate(SUGGESTION_JS, city):
+                    found = False
+                    for _ in range(12):
+                        # Place pickers geocode after a pause: poll for the suggestion.
+                        self.page.wait_for_timeout(500)
+                        if city and self.page.evaluate(SUGGESTION_JS, city):
+                            found = True
+                            break
+                    if found:
                         self.click(
                             self.page.locator('[data-autopilot-suggestion="1"]').first,
                             timeout=4000,
@@ -1107,6 +1113,13 @@ class RecruitingBrowser:
                 committed = normalized(locator.input_value())
                 if city and normalized(city) in committed:
                     return True
+                with contextlib.suppress(Exception):
+                    # Private evidence for the next fix: what the picker showed.
+                    self.page.screenshot(
+                        path=str(
+                            state_root() / f"applications/{self.run['id']}/typeahead-failed.png"
+                        )
+                    )
             locator.press("Escape")
             return False
         wanted = {normalized(value)}
