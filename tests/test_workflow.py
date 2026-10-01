@@ -1710,8 +1710,10 @@ def test_a_reply_on_a_card_in_action_needed_names_its_application(state, monkeyp
     reply = {"author": {"id": "owner"}, "content": "go", "message_reference": {"message_id": card}}
     command = worker.parse_command(reply, "owner", "action", {"action"}, {})
     assert command["application_id"] == app and command["kind"] == "resume"
+    # A bare word names no application in a shared channel, even with one live card.
     bare = {"author": {"id": "owner"}, "content": "park it"}
-    assert worker.parse_command(bare, "owner", "action", {"action"}, {})["kind"] == "defer"
+    with pytest.raises(ValueError, match="Which one"):
+        worker.parse_command(bare, "owner", "action", {"action"}, {})
     other = workflow.enqueue(
         "https://jobs.example.com/card2", source="keryx", title="Other — Intern"
     )["application_id"]

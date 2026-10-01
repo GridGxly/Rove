@@ -84,7 +84,7 @@ def main():
         elif args.action == "enqueue":
             if not args.url:
                 parser.error("enqueue requires --url")
-            result = workflow.enqueue(args.url)
+            result = workflow.enqueue(args.url, source="agent")
         elif args.action in {"resume", "defer"}:
             # Local owner operation, equivalent to the Discord command of the same name.
             if not args.id:

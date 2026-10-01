@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import matching, memory_channel, workflow
+from . import inbound, matching, memory_channel, workflow
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
 from .reasoning import GATE_KINDS
@@ -269,6 +269,16 @@ def process(application_id: str) -> dict:
     except Exception as error:
         raise PhaseError("forum", error) from error
     workflow.set_state(application_id, "PREPARING", error=None)
+    waits = workflow.intake_hold(item)
+    if waits:
+        # A link the agent queued opens no page until the owner has looked at it.
+        return held(
+            application_id,
+            "NEEDS_USER",
+            waits,
+            workflow.INTAKE_HEADLINE,
+            commands=["go", "park it"],
+        )
     phase = "open"
     final_state = "NEEDS_USER"
     posting_text = ""
@@ -519,7 +529,7 @@ def process(application_id: str) -> dict:
                         headline = "Ready · send it yourself"
                     else:
                         final_state = "READY_FOR_REVIEW"
-                        if settings.get("auto_submit"):
+                        if settings.get("auto_submit") and workflow.sends_unattended(item):
                             # Owner policy: send it; the thread is the record to review after.
                             workflow.set_state(application_id, "READY_FOR_REVIEW")
                             queue_auto_submit(application_id, page["package_hash"])
@@ -756,36 +766,37 @@ HELP_LINE = (
 
 
 def card_application(message: dict, channel: str) -> str | None:
-    """In action-needed or shortlist, a Discord reply to a card names its application; a
-    bare reply does too when exactly one card is live there."""
+    """In action-needed or shortlist, only a Discord reply on one of Rove's own live cards
+    in that channel names an application. A reply on anything else (someone's look-alike
+    card, a card already withdrawn) names none, and a bare word names none either, however
+    few cards are live: the shared channels have no implied application."""
     settings = workflow.config()
     names = {settings.get(key): name for name, key in workflow.NOTICE_CHANNELS.items()}
     if channel not in names:
         return None
-    referenced = (message.get("message_reference") or {}).get("message_id")
-    with workflow.db() as conn:
-        if referenced:
+    referenced = str((message.get("message_reference") or {}).get("message_id") or "")
+    if referenced:
+        with workflow.db() as conn:
             row = conn.execute(
-                "SELECT application_id FROM owner_notices WHERE message_id=? AND delivery='sent'",
-                (referenced,),
+                "SELECT application_id FROM owner_notices WHERE message_id=? AND channel=? "
+                "AND delivery='sent'",
+                (referenced, names[channel]),
             ).fetchone()
-            if row:
-                return row["application_id"]
-        live = [
-            r["application_id"]
-            for r in conn.execute(
-                "SELECT application_id FROM owner_notices WHERE channel=? AND delivery='sent'",
-                (names[channel],),
-            )
-        ]
-    if len(live) == 1:
-        return live[0]
-    word = " ".join(message.get("content", "").strip().strip("`").rstrip(".!?").split()).lower()
+        if row:
+            return row["application_id"]
+    word = " ".join(
+        str(message.get("content") or "").strip().strip("`").rstrip(".!?").split()
+    ).lower()
     if (
         word in WORDS
         or re.fullmatch(r"(?:use draft|draft|use) \d{1,2}", word)
         or re.match(r"(?:answer\s+)?\d{1,2}\s*[:=]", word)
     ):
+        if referenced:
+            raise ValueError(
+                "That is not one of my live cards, so nothing was done. Reply on a live "
+                "card, or answer in the application's thread."
+            )
         raise ValueError("Which one? Use Discord's reply on its card, or answer in its thread.")
     return None
 
@@ -989,15 +1000,23 @@ def poll_commands():
         for message in sorted(messages, key=lambda m: int(m["id"])):
             if not checkpoint:
                 continue
+            if not inbound.from_owner(message, owner):
+                # Nobody else's message is parsed, answered or acted on, in any channel.
+                continue
             try:
+                handled = inbound.owner_message(message, channel, settings, threads)
+                if handled is not None:
+                    # A pasted link, a reply on a mail card, or taking back a mail's step.
+                    if handled:
+                        discord(
+                            "POST",
+                            f"/channels/{channel}/messages",
+                            {"content": handled, "allowed_mentions": {"parse": []}},
+                        )
+                    continue
                 command = parse_command(message, owner, channel, channels, threads)
                 if not command:
-                    if (
-                        channel not in quiet
-                        and message.get("author", {}).get("id") == owner
-                        and not message.get("author", {}).get("bot")
-                        and message.get("content", "").strip()
-                    ):
+                    if channel not in quiet and str(message.get("content") or "").strip():
                         # The owner typed where nothing applies: say once how replies work.
                         discord(
                             "POST",

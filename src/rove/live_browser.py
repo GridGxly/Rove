@@ -1032,7 +1032,7 @@ class RecruitingBrowser:
         target = validate_destination(url.strip().strip("<>\"'"))
         approved = read_approved()
         self.ensure()
-        item = workflow.enqueue(target)
+        item = workflow.enqueue(target, source="agent")
         run_id = item["application_id"]
         target = item["url"]
         existing = workflow.get(run_id)

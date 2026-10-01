@@ -221,7 +221,121 @@ def owner_override(application_id: str, kind: str) -> bool:
     return bool(row)
 
 
+# ---------------------------------------------------------------------------
+# Who put a link in the queue decides what it may skip. Nothing a page, a mail or
+# the model says can raise a link's source; only a caller that names one can.
+#
+#   owner_link  a link code parsed out of the owner's own message in agent-control
+#   owner_pick  a job the owner picked from a digest
+#   feed        the configured job feed (stored as `keryx`)
+#   agent       anything else: a link the model queued through MCP, or a local command
+#
+# owner_decided  the owner already made the call: no fit hold, no exclusion pruning,
+#                worked ahead of the queue and its pacing
+# unattended     may be sent under the auto_submit policy without a reply
+# opens_unseen   the browser may open it before the owner has seen it
+# ---------------------------------------------------------------------------
+SOURCES = {
+    "owner_link": {"rank": 3, "owner_decided": True, "unattended": True, "opens_unseen": True},
+    "owner_pick": {"rank": 2, "owner_decided": True, "unattended": True, "opens_unseen": True},
+    "feed": {"rank": 1, "owner_decided": False, "unattended": True, "opens_unseen": True},
+    "agent": {"rank": 0, "owner_decided": False, "unattended": False, "opens_unseen": False},
+}
+SOURCE_ALIASES = {"keryx": "feed"}
+INTAKE_HEADLINE = "Link needs your OK"
+
+
+def source_policy(source) -> dict:
+    """What a queue row's source allows; a source nobody listed gets the least."""
+    name = str(source or "")
+    return SOURCES.get(SOURCE_ALIASES.get(name, name), SOURCES["agent"])
+
+
+def known_job_host(url: str) -> bool:
+    """A job board, or a host the feed lists or the owner has already sent a link to."""
+    from urllib.parse import urlsplit
+
+    from .live_browser import approved_ats
+
+    if approved_ats(url):
+        return True
+    host = (urlsplit(url).hostname or "").lower()
+    if not host:
+        return False
+    like = "https://" + re.sub(r"([\\%_])", r"\\\1", host) + "/%"
+    trusted = [name for name in (*SOURCES, *SOURCE_ALIASES) if source_policy(name)["rank"] > 0]
+    marks = ",".join("?" * len(trusted))
+    with db() as conn:
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM jobs WHERE url LIKE ? ESCAPE '\\' LIMIT 1", (like,)
+            ).fetchone()
+            or conn.execute(
+                f"SELECT 1 FROM application_queue WHERE source IN ({marks}) "
+                "AND (url LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\') LIMIT 1",
+                (*trusted, like, like),
+            ).fetchone()
+        )
+
+
+def owner_said_go(application_id: str) -> bool:
+    return owner_override(application_id, "resume") or owner_override(application_id, "proceed")
+
+
+def intake_hold(item: dict) -> str | None:
+    """Why the browser may not open this queued link yet, in the owner's words, or None.
+
+    A link the owner or the feed supplied opens as before. Any other link waits for the
+    owner's `go` when it carries a query string (a place to smuggle data out) or goes to
+    a host that is not a known job board or careers site.
+    """
+    if source_policy(item["source"])["opens_unseen"] or owner_said_go(item["id"]):
+        return None
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(item["url"])
+    host = re.sub(r"[^a-z0-9.-]", "", (parts.hostname or "").lower()) or "an unknown site"
+    if parts.query:
+        why = f"it carries extra data after a `?` (it goes to `{clip(host, 80)}`)"
+    elif not known_job_host(item["url"]):
+        why = f"`{clip(host, 80)}` is not a job board or careers site I know from the feed or from you"
+    else:
+        return None
+    return (
+        f"The agent queued this link, you did not paste it yourself, and {why}. Nothing was "
+        "opened. Check the link in the thread, then reply `go` to work it or `park it`."
+    )
+
+
+def sends_unattended(item: dict) -> bool:
+    """Whether the auto_submit policy covers this application: the owner's own links and
+    feed jobs, and anything else only after the owner replied `go` on it."""
+    return source_policy(item["source"])["unattended"] or owner_said_go(item["id"])
+
+
+def raise_source(row: dict, source: str) -> dict:
+    """A better-vouched source for a link that is already queued replaces the weaker one;
+    a weaker one never changes the row. A wait that existed only because of the old
+    source ends."""
+    if source_policy(source)["rank"] <= source_policy(row["source"])["rank"]:
+        return row
+    with db() as conn:
+        conn.execute(
+            "UPDATE application_queue SET source=?,updated_at=? WHERE id=?",
+            (source, now(), row["id"]),
+        )
+    if (
+        row["status"] == "NEEDS_USER"
+        and (latest_hold(row["id"]) or {}).get("headline") == INTAKE_HEADLINE
+    ):
+        set_state(row["id"], "QUEUED")
+    return get(row["id"])
+
+
 def enqueue(url: str, *, source: str = "owner_link", title: str = "") -> dict:
+    # Callers in src/ always name the source; the default serves tests that play the owner.
+    if source not in SOURCES and source not in SOURCE_ALIASES:
+        raise ValueError("Unknown intake source")
     safe = public_link(url.strip().strip("<>\"'"))
     if not safe:
         raise ValueError("Use a complete public HTTPS job link")
@@ -247,13 +361,20 @@ def enqueue(url: str, *, source: str = "owner_link", title: str = "") -> dict:
         row = dict(
             conn.execute("SELECT * FROM application_queue WHERE url=?", (target,)).fetchone()
         )
+    already_exists = row["id"] != application_id
+    if already_exists:
+        row = raise_source(row, source)
+    waits = row["status"] == "QUEUED" and intake_hold(row) is not None
     return {
         "application_id": row["id"],
         "status": row["status"],
         "url": row["url"],
-        "already_exists": row["id"] != application_id,
+        "already_exists": already_exists,
         "submission_enabled": False,
-        "next_action": "The local worker opens the visible browser and records preparation in the application forum.",
+        "waits_for_owner": waits,
+        "next_action": "The owner has to reply go on this link's card before the browser opens it."
+        if waits
+        else "The local worker opens the visible browser and records preparation in the application forum.",
     }
 
 
