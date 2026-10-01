@@ -306,8 +306,9 @@ def queue_wait(item: dict):
 def rows(last: int | None = None) -> list[dict]:
     """Recorded rows, oldest first; `last` keeps the most recent N applications.
 
-    Empty when nothing was recorded or the table cannot be read. Rows the browser service
-    wrote without an application are included when they fall inside the selected span.
+    Empty when nothing was recorded or the table cannot be read. A row the browser service
+    wrote without an application belongs to the browser round trip it happened inside, so
+    it is kept when one of the selected applications' round trips covers it.
     """
     try:
         if not (state_root() / "recruiting.sqlite3").exists():
@@ -331,12 +332,29 @@ def rows(last: int | None = None) -> list[dict]:
                 found = conn.execute(
                     f"SELECT * FROM stage_timings WHERE application_id IN ({marks})", ids
                 ).fetchall()
-                span = (min(r["started_at"] for r in found), max(r["started_at"] for r in found))
-                found += conn.execute(
-                    "SELECT * FROM stage_timings WHERE application_id='' "
-                    "AND started_at BETWEEN ? AND ?",
-                    span,
-                ).fetchall()
+                trips = [
+                    (start, start + timedelta(seconds=r["seconds"]))
+                    for r in found
+                    if r["stage"] == "browser"
+                    for start in [datetime.fromisoformat(r["started_at"])]
+                ]
+                if trips:
+                    unowned = conn.execute(
+                        "SELECT * FROM stage_timings WHERE application_id='' "
+                        "AND started_at BETWEEN ? AND ?",
+                        (
+                            min(t[0] for t in trips).isoformat(),
+                            max(t[1] for t in trips).isoformat(),
+                        ),
+                    ).fetchall()
+                    found += [
+                        r
+                        for r in unowned
+                        if any(
+                            start <= datetime.fromisoformat(r["started_at"]) <= end
+                            for start, end in trips
+                        )
+                    ]
             else:
                 found = conn.execute("SELECT * FROM stage_timings").fetchall()
         finally:

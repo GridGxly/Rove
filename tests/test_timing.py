@@ -295,6 +295,25 @@ def record_two_applications():
     sample(3600, OTHER, "pass", "", 110.0, model_calls=1, model_seconds=99.0)
 
 
+def test_a_row_the_browser_service_wrote_belongs_to_the_round_trip_that_covers_it(
+    state, monkeypatch
+):
+    sample(0, APP, "browser", "open", 10.0)
+    sample(100, OTHER, "browser", "open", 10.0)
+    monkeypatch.setattr(sys, "argv", ["rove", "browser", "serve"])
+    sample(4, "", "discord", "", 0.5)  # posted while the service worked for APP
+    sample(50, "", "discord", "", 0.5)  # between the two round trips: nobody's
+    sample(104, "", "discord", "", 0.5)  # posted while the service worked for OTHER
+    assert [r["stage"] for r in timing.rows()].count("discord") == 3
+    latest = timing.rows(last=1)
+    assert [(r["stage"], r["application_id"]) for r in latest] == [
+        ("browser", OTHER),
+        ("discord", ""),
+    ]
+    assert latest[1]["started_at"] == (BASE + timedelta(seconds=104)).isoformat()
+    assert len(timing.rows(last=2)) == 4
+
+
 def table_row(table: str, label: str) -> list[str]:
     """The numbers of one table row, found by its exact stage label."""
     return next(line for line in table.splitlines() if line[:26].strip() == label)[26:].split()
