@@ -1382,12 +1382,10 @@ class RecruitingBrowser:
                 continue  # handled once as its group
             if field["kind"] in {"radio_group", "choice"}:
                 owner_answer = answers.get(field["key"])
-                if (
-                    owner_answer
-                    and owner_answer["value"].lower() == "skip"
-                    and not field["required"]
-                ):
-                    continue
+                if owner_answer and owner_answer["value"].lower() == "skip":
+                    if not field["required"]:
+                        continue
+                    owner_answer = None
                 if owner_answer:
                     value, source = owner_answer["value"], owner_answer["source"]
                 else:
@@ -1501,8 +1499,11 @@ class RecruitingBrowser:
                 )
                 continue
             owner_answer = answers.get(field["key"])
-            if owner_answer and owner_answer["value"].lower() == "skip" and not field["required"]:
-                continue
+            if owner_answer and owner_answer["value"].lower() == "skip":
+                if not field["required"]:
+                    continue
+                # A blank recorded while the field looked optional is not an answer now.
+                owner_answer = None
             if owner_answer:
                 value, source = owner_answer["value"], owner_answer["source"]
             else:
