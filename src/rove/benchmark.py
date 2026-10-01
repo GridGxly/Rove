@@ -658,9 +658,11 @@ def run_fixture(root: Path) -> str:
     submission.ADAPTERS[FixtureBoardV1.name] = FixtureBoardV1
     try:
         with replaced(stand_ins):
+            # Queued with the least standing there is. The fixture is neither the owner nor
+            # the feed; the owner's `go` below is what later allows it to be sent.
             application_id = workflow.enqueue(
                 origin + FIXTURE_JOB.lstrip("/"),
-                source="keryx",
+                source="agent",
                 title="Example Labs — Software Engineering Intern",
             )["application_id"]
 
