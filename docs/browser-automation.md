@@ -310,6 +310,9 @@ A model saying `DONE` is never independent proof that submission succeeded.
 Confirmation comes from a versioned adapter that reads evidence after the click, never
 from the click itself. `greenhouse_v1` needs the board's own contract: an accepted POST
 to the job's path, the confirmation URL, the confirmation block, and no form left.
+`lever_v1` needs Lever's own thanks page for the same posting, its success heading and no
+form left; it records the form's POST status as evidence and hands a send the CAPTCHA
+rejected to the owner as not submitted.
 `generic_v1` is the catch-all for employer sites without such a contract and is listed
 last so specific adapters win. It has no request to watch, so it compares the page with
 the observation taken before the click: it needs a confirmation signal that was not there

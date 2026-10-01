@@ -6,9 +6,11 @@ import pytest
 
 from erga_autopilot import submission, worker, workflow
 from erga_autopilot.onboarding import approve, digest, draft, propose, read_approved
-from erga_autopilot.submission import GenericV1, GreenhouseV1, package_digest
+from erga_autopilot.submission import GenericV1, GreenhouseV1, LeverV1, package_digest
 
 URL = "https://job-boards.greenhouse.io/example/jobs/123"
+LEVER_POSTING = "0f3c7a1e-5b2d-4c8e-9a6f-1d2e3f4a5b6c"
+LEVER = f"https://jobs.lever.co/acme/{LEVER_POSTING}/apply"
 FINAL = [{"ref": "0", "label": "Submit application"}]
 
 
@@ -178,10 +180,98 @@ def test_generic_adapter_is_last_and_confirms_only_from_new_signals(monkeypatch)
     assert checks["confirmation_url"] and checks["url_changed"] and checks["post_accepted"]
     assert not checks["no_form_error"] and not checks["confirmed"]
     assert "Email is required" in GenericV1.reason(checks, error)
+    assert not GenericV1.rejected(checks)  # the page moved on: unknown, not "not sent"
+    kept = generic_page(form_url, fields=[field("a", "Email", "x")], errors="Email is required")
+    assert GenericV1.rejected(confirmed(kept)) and not GenericV1.rejected(confirmed(under))
+    assert not GreenhouseV1.rejected({"confirmed": False, "post_rejected": True})
     # The same note that was already there is not a new rejection.
     before["ats_markers"]["form_error"] = "* Required fields"
     stale = generic_page(form_url + "/thanks", "Done", errors="* Required fields")
     assert confirmed(stale)["no_form_error"] and confirmed(stale)["confirmed"]
+
+
+def lever_page(url, success=False, verification=False, fields=(), errors="", challenge=False):
+    return {
+        "url": url,
+        "fields": list(fields),
+        "final_controls": [],
+        "text": "",
+        "ats_markers": {
+            "lever_submit_success": success,
+            "lever_verification_error": verification,
+            "captcha_challenge": challenge,
+            "form_error": errors,
+            "status_region": "",
+        },
+    }
+
+
+def test_lever_adapter_is_listed_before_generic_and_needs_the_thanks_page(monkeypatch):
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {
+            "enabled": False,
+            "submission_enabled": True,
+            "submit_adapters": ["greenhouse_v1", "lever_v1", "generic_v1"],
+        },
+    )
+    names = list(submission.ADAPTERS)
+    assert names.index("greenhouse_v1") < names.index("lever_v1") < names.index("generic_v1")
+    assert submission.enabled_adapter(LEVER) is LeverV1
+    assert submission.enabled_adapter(URL) is GreenhouseV1
+    assert submission.enabled_adapter("https://careers.example.com/jobs/42/apply") is GenericV1
+    assert LeverV1.scope(LEVER) == ("jobs.lever.co", "acme", LEVER_POSTING)
+    assert LeverV1.scope(LEVER.removesuffix("/apply")) == LeverV1.scope(LEVER)
+    assert LeverV1.scope(LEVER.upper().replace("HTTPS://JOBS.LEVER.CO", "https://jobs.lever.co"))
+    assert not LeverV1.matches("https://jobs.lever.co/acme")
+    assert not LeverV1.matches("https://jobs.lever.co/acme/apply")
+    assert not LeverV1.matches(f"https://attacker.example/acme/{LEVER_POSTING}/apply")
+    thanks = LEVER.removesuffix("/apply") + "/thanks"
+    apply_path = f"/acme/{LEVER_POSTING}/apply"
+    sent = [{"host": "jobs.lever.co", "path": apply_path, "status": 303}]
+    before = lever_page(LEVER, fields=[field("a", "Email", "alex@example.invalid")])
+
+    def confirmed(after, responses=()):
+        return LeverV1.confirmed(LEVER, after, list(responses), before=before)
+
+    ok = confirmed(lever_page(thanks + "?utm=1", success=True), sent)
+    assert ok["confirmed"] and not LeverV1.rejected(ok)
+    assert ok["post_status"] == 303 and ok["post_accepted"] and not ok["post_rejected"]
+    # The POST status is evidence; the thanks URL, its heading and no form are the rule.
+    assert confirmed(lever_page(thanks, success=True))["confirmed"]
+    assert confirmed(lever_page(thanks, success=True))["post_status"] is None
+    assert not confirmed(lever_page(thanks), sent)["confirmed"]
+    assert not confirmed(lever_page(LEVER, success=True), sent)["confirmed"]
+    still = lever_page(thanks, success=True, fields=[field("a", "Email", "")])
+    assert not confirmed(still, sent)["confirmed"]
+    other = "https://jobs.lever.co/acme/7b1e9d2c-3a4f-4e5b-8c6d-9e0f1a2b3c4d/thanks"
+    assert not confirmed(lever_page(other, success=True), sent)["confirmed"]
+    foreign = [{"host": "attacker.example", "path": apply_path, "status": 303}]
+    assert confirmed(lever_page(thanks, success=True), foreign)["post_status"] is None
+    # The CAPTCHA's verification error: the form came back empty, nothing was sent.
+    cleared = lever_page(LEVER, verification=True, fields=[field("a", "Email", "")])
+    checks = confirmed(cleared, [{"host": "jobs.lever.co", "path": apply_path, "status": 200}])
+    assert checks["captcha_rejected"] and LeverV1.rejected(checks) and not checks["confirmed"]
+    assert LeverV1.reason(checks, cleared) == (
+        "Lever's CAPTCHA rejected the send; open the recruiting browser, solve it and "
+        "press Submit yourself, then reply applied"
+    )
+    # A form kept open with a new validation message is not sent either; a stale one is not.
+    invalid = lever_page(LEVER, fields=[field("a", "Email", "x")], errors="Email is invalid")
+    checks = confirmed(invalid)
+    assert LeverV1.rejected(checks) and "Email is invalid" in LeverV1.reason(checks, invalid)
+    before["ats_markers"]["form_error"] = "Email is invalid"
+    assert not LeverV1.rejected(confirmed(invalid))
+    # Anything else is unknown, and the reason names the page the owner should look for.
+    quiet = lever_page(LEVER, fields=[field("a", "Email", "x")])
+    assert not LeverV1.rejected(confirmed(quiet))
+    assert "Application submitted!" in LeverV1.reason(confirmed(quiet), quiet)
+    challenge = lever_page(LEVER, fields=[field("a", "Email", "x")], challenge=True)
+    assert not LeverV1.rejected(confirmed(challenge))
+    assert "solve it" in LeverV1.reason(confirmed(challenge), challenge)
+    moved = lever_page(LEVER.removesuffix("/apply"), fields=[field("a", "Email", "x")])
+    assert confirmed(moved)["url_changed"] and not LeverV1.rejected(confirmed(moved))
 
 
 def test_preflight_accepts_only_the_reviewed_unchanged_form(state):

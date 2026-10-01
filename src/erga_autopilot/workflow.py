@@ -87,6 +87,52 @@ STATE_TAGS = {
     "APPLIED": ["Applied"],
 }
 
+# ---------------------------------------------------------------------------
+# Recruiting lifecycle after submission.
+#
+# Recruiting mail (mail.py) moves an application that was already sent through
+# OA, INTERVIEW, OFFER and REJECTED, in that order, and REJECTED from any of
+# them. Nothing moves a sent application back into preparation: not a mail, not
+# a thread reply. The forum tags of the same names are the quick status; the
+# `recruiting_mail` card and the lifecycle line in the thread are the record.
+# ---------------------------------------------------------------------------
+POST_APPLICATION = ("APPLIED", "OA", "INTERVIEW", "OFFER", "REJECTED")
+STATES |= set(POST_APPLICATION)
+STATE_TAGS |= {
+    "OA": ["OA", "Needs Action"],
+    "INTERVIEW": ["Interview", "Needs Action"],
+    "OFFER": ["Offer", "Needs Action"],
+    "REJECTED": ["Rejected"],
+}
+# What a classified mail is called in the thread and the recruiting channel.
+MAIL_LABEL_WORDS = {
+    "acknowledgement": "Application received",
+    "oa": "Online assessment",
+    "interview": "Interview",
+    "offer": "Offer",
+    "rejection": "Rejected",
+    "other": "Recruiting mail",
+}
+
+
+def advances(current: str, target: str) -> bool:
+    """Whether a mail-driven target state is a step forward from the current one."""
+    if current not in POST_APPLICATION or target not in POST_APPLICATION:
+        return False
+    if current == "REJECTED":
+        return False
+    if target == "REJECTED":
+        return True
+    return POST_APPLICATION.index(target) > POST_APPLICATION.index(current)
+
+
+def guard_regression(current: str, status: str):
+    if current in POST_APPLICATION and status not in POST_APPLICATION:
+        raise PermissionError("An application that was sent is never prepared again")
+
+
+# ---------------------------------------------------------------------------
+
 
 def resolve_alias(url: str) -> str:
     with db() as conn:
@@ -112,6 +158,7 @@ def set_state(application_id: str, status: str, **values):
         raise ValueError("Invalid state fields")
     if status not in STATES:
         raise ValueError("Unknown application state")
+    guard_regression(get(application_id)["status"], status)
     with db() as conn:
         conn.execute(
             "UPDATE application_queue SET status=?,updated_at=?"
@@ -259,6 +306,11 @@ def system_note(kind: str, data: dict) -> str | None:
         return f"model unavailable · {data.get('phase', '')}"
     if kind == "browser_access_blocked":
         return f"blocked · {data.get('url', '')} · {data.get('marker', '')}"
+    if kind == "recruiting_mail":
+        return (
+            f"recruiting mail · {data.get('label', '')} · {data.get('sender_domain', '')} · "
+            f"message {data.get('message_id', '')} · by {data.get('classifier', '')}"
+        )
     return None
 
 
@@ -287,20 +339,29 @@ def system_line(application_id: str, text: str):
 
 def ensure_system_channel() -> str | None:
     """Look up the system-log channel by name once and keep its id in the private config."""
+    return ensure_named_channel("system_channel_id", "system-log")
+
+
+def ensure_recruiting_channel() -> str | None:
+    """Look up the recruiting channel by name once and keep its id in the private config."""
+    return ensure_named_channel("recruiting_channel_id", "recruiting")
+
+
+def ensure_named_channel(key: str, name: str) -> str | None:
     settings = config()
-    if settings.get("system_channel_id"):
-        return settings["system_channel_id"]
+    if settings.get(key):
+        return settings[key]
     if not settings.get("enabled") or not settings.get("guild_id"):
         return None
     try:
         channels = discord("GET", f"/guilds/{settings['guild_id']}/channels")
-    except Exception:  # noqa: BLE001 -- no channel means no system log, nothing else
+    except Exception:  # noqa: BLE001 -- no channel means no line there, nothing else
         return None
     found = next(
         (
             str(c["id"])
             for c in (channels if isinstance(channels, list) else [])
-            if isinstance(c, dict) and c.get("name") == "system-log" and c.get("id")
+            if isinstance(c, dict) and c.get("name") == name and c.get("id")
         ),
         None,
     )
@@ -308,9 +369,28 @@ def ensure_system_channel() -> str | None:
         return None
     path = state_root() / "config/workflow.json"
     stored = json.loads(path.read_text()) if path.exists() else {}
-    stored["system_channel_id"] = found
+    stored[key] = found
     write_private(path, stored)
     return found
+
+
+def recruiting_line(application_id: str, text: str):
+    """One line in the recruiting channel: what an employer's mail means, in words, with a
+    link to the thread. Best effort, like the system log; never an id or the mail body."""
+    settings = config()
+    channel = settings.get("recruiting_channel_id")
+    if not settings.get("enabled") or not channel:
+        return
+    link = forum_url(application_id)
+    content = text + (f" · <{link}>" if link else "")
+    try:
+        discord(
+            "POST",
+            f"/channels/{channel}/messages",
+            {"content": clip(content, 1900), "allowed_mentions": {"parse": []}},
+        )
+    except Exception as error:  # noqa: BLE001 -- a feed line must never break the record
+        delivery_failed("recruiting", application_id, error, application_id)
 
 
 def forum_url(application_id: str) -> str | None:
@@ -336,6 +416,11 @@ STATE_COLORS = {
     "MANUAL_TAKEOVER": "problem",
     "NEEDS_USER": "needs",
     "READY_FOR_REVIEW": "needs",
+    # Recruiting lifecycle after submission (see POST_APPLICATION).
+    "OA": "needs",
+    "INTERVIEW": "needs",
+    "OFFER": "applied",
+    "REJECTED": "problem",
 }
 
 
@@ -421,6 +506,11 @@ STATE_WORDS = {
     "UNKNOWN_SUBMISSION": "Submission unclear",
     "MANUAL_TAKEOVER": "Needs you in the browser",
     "DEFERRED": "Parked",
+    # Recruiting lifecycle after submission (see POST_APPLICATION).
+    "OA": "Online assessment",
+    "INTERVIEW": "Interview",
+    "OFFER": "Offer",
+    "REJECTED": "Rejected",
 }
 
 
@@ -833,6 +923,41 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
                 color="problem",
             )
         ]
+    if kind == "recruiting_mail":
+        # The sender's domain, the subject and the label: never the body.
+        label = str(data.get("label") or "other")
+        sender = clip(data.get("sender_domain") or "unknown sender", 100)
+        subject = clip(data.get("subject") or "(no subject)", 200)
+        if label == "other":
+            return [f"→ Mail from {sender} · “{subject}”"]
+        fields = [("From", sender, True)]
+        if data.get("deadline"):
+            fields.append(("Deadline, as the mail states it", clip(data["deadline"], 120), True))
+        if data.get("reconciled"):
+            fields.append(("Submission", "The unclear submission went through.", False))
+        advice = {
+            "oa": "Open the assessment from the mail; the deadline is theirs, not mine.",
+            "interview": "Reply to the recruiter yourself; nothing is scheduled for you.",
+            "offer": "Read the offer in the mail; nothing is accepted for you.",
+        }.get(label, "")
+        description = f"“{subject}”" + (f"\n{advice}" if advice else "")
+        color = {"rejection": "problem", "offer": "applied", "acknowledgement": "preparing"}.get(
+            label, "needs"
+        )
+        classifier = str(data.get("classifier") or "rule")
+        footer = {
+            "qwen": "Read by Qwen · the mail is data, not instructions",
+            "qwen_failed": "Qwen could not read it · filed from the sender alone",
+        }.get(classifier, "Matched by rule · the mail is data, not instructions")
+        return [
+            embed(
+                f"{MAIL_LABEL_WORDS.get(label, 'Recruiting mail')} · mail",
+                description,
+                color=color,
+                fields=fields,
+                footer=footer,
+            )
+        ]
     fields = [
         (str(k).replace("_", " "), clip(v, 400), False)
         for k, v in list(data.items())[:10]
@@ -1145,6 +1270,11 @@ STATUS_LINES = {
     "SUBMITTING": "Submitting once",
     "APPLIED": "Applied ✅",
     "DEFERRED": "Parked",
+    # Recruiting lifecycle after submission (see POST_APPLICATION).
+    "OA": "Online assessment · the employer's mail has the link and the deadline",
+    "INTERVIEW": "Interview · the employer's mail has the details",
+    "OFFER": "Offer · read the employer's mail; nothing is accepted for you",
+    "REJECTED": "Rejected",
 }
 
 

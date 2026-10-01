@@ -119,6 +119,17 @@ Recruiting email is input data, not an instruction channel. Zoho or another mail
 
 When an event maps to an existing application, the application forum post should also receive a timeline entry so the full history stays together.
 
+The implemented mail service posts one line per classified mail: the label in words
+(Application received, Online assessment, Interview, Offer, Rejected, or Recruiting mail
+for one that Qwen could not place), the application, the sender's domain, the subject,
+the deadline as the mail states it, and a link to the thread. The thread gets the card
+and the lifecycle line; the body never leaves the private state root. The channel id is
+`recruiting_channel_id` in private `config/workflow.json`; when the key is missing the
+mail service looks a channel named `recruiting` up once through the guild's channel list
+and writes the id into the file; with no such channel the lines stay off. See
+[Application workflow](application-workflow.md#recruiting-mail) for the matching and
+classification rules.
+
 ## System
 
 #### `system-log`
@@ -205,6 +216,11 @@ Withdrawn
 
 `Needs Action` and `Priority` are overlays rather than lifecycle states.
 
+Code sets `Preparing` and `Applied` from the application workflow, and `OA`, `Interview`,
+`Offer` and `Rejected` from recruiting mail; the first three of those carry the
+`Needs Action` overlay, since each needs you. `Accepted` and `Withdrawn` are not set by
+code yet. A sent application never goes back to `Preparing`.
+
 A tag change should also create a timeline entry in the forum post. It should include:
 
 - the previous state
@@ -276,4 +292,5 @@ conflicting eligibility requirement (and any unchecked ones) as its reasons; a p
 link is never held on fit. Action-needed and shortlist cards are recorded before they
 are posted, and a failed post is retried on the next worker tick; each application keeps
 at most one live card per channel, withdrawn when it stops waiting on you.
-Recruiting-mail lifecycle updates are still unimplemented.
+Recruiting mail adds a card to the thread, one line to `recruiting`, and the lifecycle
+tag; see [Application workflow](application-workflow.md#recruiting-mail).

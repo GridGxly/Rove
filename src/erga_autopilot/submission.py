@@ -51,6 +51,21 @@ GENERIC_SETTLED_JS = r"""({start, text_hits, status_region, form_error, success,
  } catch (e) { return false; }
 }""".replace("__MESSAGES__", MESSAGES_JS)
 
+# Lever's apply page posts its form natively once hCaptcha hands it a token. Polled after
+# the click: true on the thanks page, its success heading, the CAPTCHA's verification
+# error, or a form error that was not there before the click.
+LEVER_VERIFICATION_ERROR = r"there was an error verifying your application"
+LEVER_POSTING_RE = re.compile(r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.IGNORECASE)
+LEVER_SETTLED_JS = r"""({form_error, error_selector, verification}) => {
+ try {
+  if (/\/thanks\/?$/.test(location.pathname)) return true;
+  if (document.querySelector('h3[data-qa="msg-submit-success"]')) return true;
+  if (new RegExp(verification, 'i').test(document.body.innerText)) return true;
+  const messages=__MESSAGES__;
+  return messages(error_selector) !== form_error;
+ } catch (e) { return false; }
+}""".replace("__MESSAGES__", MESSAGES_JS)
+
 
 def normalized(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
@@ -125,6 +140,11 @@ class GreenhouseV1:
                 "Check the visible page for validation messages before reconciling."
             )
         return "Independent confirmation is incomplete; investigate before any retry."
+
+    @classmethod
+    def rejected(cls, checks: dict) -> bool:
+        # The board's contract has no rejected-form reading: short of confirmation, unknown.
+        return False
 
     @classmethod
     def confirmed(
@@ -262,8 +282,147 @@ class GenericV1:
             "check the recruiting browser and employer email before reconciling."
         )
 
+    @classmethod
+    def rejected(cls, checks: dict) -> bool:
+        """The form stayed where it was and named its own validation error: nothing was sent."""
+        return (
+            checks.get("no_form_error") is False
+            and not checks.get("url_changed")
+            and not checks.get("form_gone")
+        )
 
-ADAPTERS = {GreenhouseV1.name: GreenhouseV1, GenericV1.name: GenericV1}
+
+class LeverV1:
+    """Public Lever postings (jobs.lever.co/{company}/{posting}/apply).
+
+    The apply page holds `form#application-form`, posted as multipart to its own path once
+    hCaptcha hands the page a token: `button[data-qa="btn-submit"]` ("Submit application")
+    runs the CAPTCHA, then clicks a hidden submit control. Success navigates to
+    `/{company}/{posting}/thanks`, which shows `h3[data-qa="msg-submit-success"]`
+    ("Application submitted!") and no form; both are required, and the POST status is
+    recorded as evidence only. A send the CAPTCHA rejected comes back as the emptied form
+    under "There was an error verifying your application": nothing was stored, so the
+    owner finishes that one by hand. The form, button and thanks page were checked against
+    the live public DOM; the verification error is untested until a live run shows it.
+    """
+
+    name = "lever_v1"
+    hosts = ("jobs.lever.co",)
+    success_marker = "lever_submit_success"
+    error_marker = "lever_verification_error"
+
+    @classmethod
+    def scope(cls, url: str) -> tuple[str, str, str] | None:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        parts = parsed.path.strip("/").split("/")
+        if host in cls.hosts and len(parts) >= 2 and LEVER_POSTING_RE.match(parts[1]):
+            return host, parts[0], parts[1].lower()
+        return None
+
+    @classmethod
+    def matches(cls, url: str) -> bool:
+        return cls.scope(url) is not None
+
+    @classmethod
+    def response_hosts(cls, package_url: str) -> tuple[str, ...]:
+        return cls.hosts
+
+    @classmethod
+    def await_result(cls, page, before: dict, timeout_ms: int):
+        markers = before.get("ats_markers") or {}
+        try:
+            page.wait_for_function(
+                LEVER_SETTLED_JS,
+                arg={
+                    "form_error": markers.get("form_error") or "",
+                    "error_selector": ERROR_SELECTOR,
+                    "verification": LEVER_VERIFICATION_ERROR,
+                },
+                timeout=timeout_ms,
+            )
+        except PlaywrightError:
+            pass
+
+    @classmethod
+    def confirmed(
+        cls, package_url: str, after: dict, responses: list[dict], before: dict | None = None
+    ) -> dict:
+        before = before or {}
+        host, company, posting = cls.scope(package_url)
+        posting_path = f"/{company}/{posting}"
+        posts = [
+            r
+            for r in responses
+            if host_matches(r["host"], cls.hosts)
+            and r["path"].rstrip("/") in {posting_path, posting_path + "/apply"}
+        ]
+        after_url = after.get("url", "")
+        parsed = urlsplit(after_url)
+        markers = after.get("ats_markers") or {}
+        prior = before.get("ats_markers") or {}
+        errors = markers.get("form_error") or ""
+        checks = {
+            # The form's own POST, kept as evidence: a 303 to /thanks is how success looks.
+            "post_status": posts[-1]["status"] if posts else None,
+            "post_accepted": any(200 <= r["status"] < 400 for r in posts),
+            "post_rejected": any(r["status"] >= 400 for r in posts),
+            "confirmation_url": cls.scope(after_url) == (host, company, posting)
+            and parsed.path.rstrip("/") == posting_path + "/thanks",
+            "confirmation_content": markers.get(cls.success_marker) is True,
+            "form_gone": not after.get("fields") and not after.get("final_controls"),
+            "url_changed": (parsed.hostname or "").lower() != host
+            or parsed.path.rstrip("/") != urlsplit(package_url).path.rstrip("/"),
+            "captcha_rejected": markers.get(cls.error_marker) is True,
+            "no_form_error": not (
+                GENERIC_ERROR_RE.search(errors) and errors != (prior.get("form_error") or "")
+            ),
+        }
+        checks["confirmed"] = (
+            checks["confirmation_url"] and checks["confirmation_content"] and checks["form_gone"]
+        )
+        return checks
+
+    @classmethod
+    def rejected(cls, checks: dict) -> bool:
+        if checks["confirmed"]:
+            return False
+        return checks["captcha_rejected"] or (
+            not checks["no_form_error"] and not checks["url_changed"] and not checks["form_gone"]
+        )
+
+    @classmethod
+    def reason(cls, checks: dict, after: dict) -> str:
+        markers = after.get("ats_markers") or {}
+        if checks["captcha_rejected"]:
+            return (
+                "Lever's CAPTCHA rejected the send; open the recruiting browser, solve it and "
+                "press Submit yourself, then reply applied"
+            )
+        if not checks["no_form_error"]:
+            excerpt = " ".join(str(markers.get("form_error") or "").split())[:200]
+            return f"Lever kept the form open and said: {excerpt}"
+        if markers.get("captcha_challenge"):
+            return (
+                "Lever's CAPTCHA is showing a challenge and nothing confirmed; solve it in the "
+                "recruiting browser, watch for 'Application submitted!', then reconcile."
+            )
+        if checks["post_rejected"] and not checks["post_accepted"]:
+            return (
+                "Lever answered the send with an error and showed no 'Application submitted!' "
+                "page; check the recruiting browser before reconciling."
+            )
+        return (
+            "No 'Application submitted!' page appeared after the click; check the recruiting "
+            "browser and your email before reconciling."
+        )
+
+
+ADAPTERS = {
+    GreenhouseV1.name: GreenhouseV1,
+    LeverV1.name: LeverV1,
+    GenericV1.name: GenericV1,
+}
 
 
 def enabled_adapter(url: str):
@@ -429,6 +588,22 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
                 (application_id,),
             )
         workflow.record(application_id, "submission_rejected", evidence)
+        if evidence.get("owner_finishes"):
+            # The attempt stays NOT_SUBMITTED. The owner solves the CAPTCHA, presses Submit
+            # and replies `applied`, which records the application the manual way.
+            workflow.transition(
+                application_id,
+                "MANUAL_TAKEOVER",
+                "the site's CAPTCHA rejected the send and kept the form open",
+                str(evidence.get("reason", "")),
+            )
+            workflow.action_needed(
+                application_id,
+                str(evidence.get("reason", ""))[:300],
+                commands=["applied", "park it"],
+                headline="The site's CAPTCHA rejected the send",
+            )
+            return
         workflow.transition(
             application_id,
             "NEEDS_USER",
@@ -607,13 +782,12 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
                 confirmation_text=after.get("text", "")[:4000],
                 screenshot=after.get("screenshot"),
             )
-        elif (
-            checks.get("no_form_error") is False
-            and not checks.get("url_changed")
-            and not checks.get("form_gone")
-        ):
-            # The form stayed open and named its own validation error: nothing was sent.
+        elif adapter.rejected(checks):
+            # The site kept the form and said no: nothing was sent.
             result.update(status="NOT_SUBMITTED", reason=adapter.reason(checks, after))
+            if checks.get("captcha_rejected"):
+                # Only a person can satisfy the CAPTCHA: the owner finishes this one.
+                result["owner_finishes"] = True
             labels = re.findall(
                 r"required field:?\s*([^\n.;]+)", str(result["reason"]), re.IGNORECASE
             )

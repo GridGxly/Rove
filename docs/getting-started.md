@@ -284,6 +284,8 @@ Zoho is optional. It can be useful for:
 
 Use the official Zoho Mail API with narrow scopes where possible. Do not leave verification codes in logs, the vault, or Discord after they are used.
 
+The implemented mail service reads the Inbox and tracks acknowledgements, online assessments, interviews, offers and rejections; the Self Client setup, the three read scopes and where the four values go are in [Requirements](requirements.md#zoho-mail).
+
 ## First safe run
 
 Before using real applicant data, prove the stack with fake data.

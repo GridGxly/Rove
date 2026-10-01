@@ -73,6 +73,8 @@ def main():
     workflow.add_argument("action", choices=["tick", "status", "enqueue", "resume", "defer"])
     workflow.add_argument("--url")
     workflow.add_argument("--id")
+    mail = sub.add_parser("mail")
+    mail.add_argument("action", choices=["tick", "status"])
     args = parser.parse_args()
     if args.command == "workflow":
         from . import worker, workflow
@@ -117,6 +119,11 @@ def main():
         from .discord_feed import tick
 
         print(json.dumps(tick(seed=args.action == "seed"), indent=2))
+    elif args.command == "mail":
+        from . import mail as recruiting_mail
+
+        result = recruiting_mail.tick() if args.action == "tick" else recruiting_mail.status()
+        print(json.dumps(result, indent=2))
     elif args.command == "model":
         if args.action == "status":
             with client() as c:

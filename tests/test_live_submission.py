@@ -102,6 +102,30 @@ GENERIC_FORM = b"""<!doctype html><title>Acme Careers</title><form id="applicati
 });</script>"""
 GENERIC_CONFIRMATION = b"""<!doctype html><title>Acme Careers</title>
 <p>Thank you for applying to Acme. We received your application.</p>"""
+# A public Lever posting: the apply page posts its multipart form natively once the CAPTCHA
+# hands it a token, success is the /thanks page with its heading and no form, and a send the
+# CAPTCHA rejected comes back as the emptied form under a verification error.
+LEVER_POSTING = "0f3c7a1e-5b2d-4c8e-9a6f-1d2e3f4a5b6c"
+LEVER_POSTING_REJECTED = "7b1e9d2c-3a4f-4e5b-8c6d-9e0f1a2b3c4d"
+LEVER_FORM = b"""<!doctype html><title>Acme - Software Intern</title>
+<form id="application-form" enctype="multipart/form-data" method="POST">
+<label for="f">First name</label><input id="f" name="name" required>
+<label for="e">Email</label><input id="e" name="email" type="email" required>
+<label for="r">Resume</label><input id="r" name="resume" type="file">
+<input id="hcaptchaResponseInput" type="hidden" name="h-captcha-response" value="">
+<button id="hcaptchaSubmitBtn" type="submit" class="hidden" style="display:none"></button>
+<button id="btn-submit" type="button" data-qa="btn-submit">Submit application</button></form>
+<script>document.getElementById('btn-submit').addEventListener('click', () => {
+  document.getElementById('hcaptchaResponseInput').value = 'synthetic-token';
+  document.getElementById('hcaptchaSubmitBtn').click();
+});</script>"""
+LEVER_THANKS = b"""<!doctype html><title>Acme - Software Intern</title>
+<div class="section page-centered"><h3 data-qa="msg-submit-success">Application submitted!</h3>
+<p>Thanks for applying to Acme.</p></div>"""
+LEVER_VERIFICATION_ERROR = LEVER_FORM.replace(
+    b"<form ",
+    b'<p class="error-message">There was an error verifying your application</p><form ',
+)
 
 
 class Board(BaseHTTPRequestHandler):
@@ -125,6 +149,10 @@ class Board(BaseHTTPRequestHandler):
             body = LOGIN
         elif self.path.endswith("/jobs/14"):
             body = LATE_FORM
+        elif self.path.endswith("/apply"):
+            body = LEVER_FORM
+        elif self.path.endswith("/thanks"):
+            body = LEVER_THANKS
         else:
             body = FORM
         self.send_response(200)
@@ -134,6 +162,19 @@ class Board(BaseHTTPRequestHandler):
 
     def do_POST(self):
         Board.posts.append(self.path)
+        if self.path.endswith("/apply"):
+            # Lever's form posts natively: a redirect to /thanks, or the re-rendered form.
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.path in Board.reject:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(LEVER_VERIFICATION_ERROR)
+            else:
+                self.send_response(303)
+                self.send_header("Location", self.path.removesuffix("/apply") + "/thanks")
+                self.end_headers()
+            return
         self.send_response(422 if self.path in Board.reject else 200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -151,6 +192,26 @@ class SyntheticV1(submission.GreenhouseV1):
 
 class LocalGenericV1(submission.GenericV1):
     schemes = ("http", "https")  # the synthetic board is plain http on loopback
+
+
+class LocalLeverV1(submission.LeverV1):
+    hosts = ("127.0.0.1",)
+
+
+def lever_first(monkeypatch):
+    """The private config lists Lever before the catch-all, both under their real names."""
+    monkeypatch.setitem(submission.ADAPTERS, "lever_v1", LocalLeverV1)
+    monkeypatch.setitem(submission.ADAPTERS, "generic_v1", LocalGenericV1)
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {
+            "enabled": False,
+            "submission_enabled": True,
+            "submit_adapters": ["lever_v1", "generic_v1"],
+            "human_pacing": False,
+        },
+    )
 
 
 def generic_only(monkeypatch):
@@ -231,8 +292,8 @@ def board(tmp_path, monkeypatch):
         server.server_close()
 
 
-def prepared(runtime, base, state, job):
-    opened = runtime.open(f"{base}/acme/jobs/{job}")
+def prepared(runtime, base, state, job, path=None):
+    opened = runtime.open(path or f"{base}/acme/jobs/{job}")
     run_id = opened["run_id"]
     directory = state / "applications" / run_id
     resume = directory / "resume.pdf"
@@ -465,3 +526,80 @@ def test_generic_adapter_treats_an_inline_form_error_as_a_rejected_form(board, m
     with pytest.raises(PermissionError):
         submission.claim_attempt(run_id, package_hash, "msg-1")
     assert Board.posts == ["/acme/jobs/16"]
+
+
+def test_lever_adapter_confirms_the_thanks_page_and_records_the_post(board, monkeypatch):
+    runtime, base, state = board
+    lever_first(monkeypatch)
+    apply_path = f"/acme/{LEVER_POSTING}/apply"
+    run_id, package_hash = prepared(runtime, base, state, None, path=base + apply_path)
+    worker.apply_command(
+        {"kind": "submit", "application_id": run_id, "package_hash": package_hash}, "msg-1"
+    )
+    result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    # Lever is listed before the catch-all, so the posting gets Lever's contract.
+    assert result["status"] == "APPLIED" and result["adapter"] == "lever_v1", result
+    checks = result["checks"]
+    assert checks["confirmed"] and checks["confirmation_url"] and checks["confirmation_content"]
+    assert checks["form_gone"] and not checks["captcha_rejected"]
+    assert checks["post_status"] == 303 and checks["post_accepted"] and not checks["post_rejected"]
+    assert result["confirmation_url"].endswith(f"/acme/{LEVER_POSTING}/thanks")
+    assert "Application submitted!" in result["confirmation_text"]
+    assert Board.posts == [apply_path]
+    assert run_id not in runtime.pages and workflow.get(run_id)["status"] == "APPLIED"
+    receipt = json.loads((state / "applications" / run_id / "receipt.json").read_text())
+    assert receipt["adapter"] == "lever_v1"
+    assert receipt["responses"] == [{"host": "127.0.0.1", "path": apply_path, "status": 303}]
+    with pytest.raises((PermissionError, ValueError)):
+        submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert Board.posts == [apply_path]
+
+
+def test_lever_captcha_rejection_is_not_submitted_and_hands_the_open_tab_to_the_owner(
+    board, monkeypatch
+):
+    runtime, base, state = board
+    lever_first(monkeypatch)
+    apply_path = f"/acme/{LEVER_POSTING_REJECTED}/apply"
+    Board.reject.add(apply_path)
+    run_id, package_hash = prepared(runtime, base, state, None, path=base + apply_path)
+    worker.apply_command(
+        {"kind": "submit", "application_id": run_id, "package_hash": package_hash}, "msg-1"
+    )
+    result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert result["status"] == "NOT_SUBMITTED" and result["adapter"] == "lever_v1", result
+    checks = result["checks"]
+    assert checks["captcha_rejected"] and not checks["confirmed"]
+    assert not checks["url_changed"] and not checks["form_gone"] and checks["no_form_error"]
+    assert checks["post_status"] == 200  # the page, not the status, says it was not sent
+    assert result["reason"] == (
+        "Lever's CAPTCHA rejected the send; open the recruiting browser, solve it and "
+        "press Submit yourself, then reply applied"
+    )
+    # The tab stays open on the emptied form for the owner to finish by hand.
+    assert run_id in runtime.pages and runtime.page.url.endswith(apply_path)
+    assert workflow.get(run_id)["status"] == "MANUAL_TAKEOVER"
+    with workflow.db() as conn:
+        assert conn.execute("SELECT status FROM live_submission_attempts").fetchone()[0] == (
+            "NOT_SUBMITTED"
+        )
+        holds = [
+            json.loads(r[0])
+            for r in conn.execute(
+                "SELECT data FROM application_events WHERE application_id=? AND kind='needs_action'",
+                (run_id,),
+            )
+        ]
+    assert holds[-1]["commands"] == ["applied", "park it"]
+    assert "CAPTCHA" in holds[-1]["headline"] and "nothing" not in holds[-1]["reason"]
+    with pytest.raises(PermissionError):
+        submission.claim_attempt(run_id, package_hash, "msg-1")
+    assert Board.posts == [apply_path]
+    # The owner solves it, presses Submit and replies applied: recorded, never re-sent.
+    worker.apply_command(
+        {"kind": "reconcile", "application_id": run_id, "outcome": "applied"}, "msg-2"
+    )
+    assert workflow.get(run_id)["status"] == "APPLIED"
+    receipt = json.loads((state / "applications" / run_id / "receipt.json").read_text())
+    assert receipt["status"] == "APPLIED" and "manually" in receipt["reason"]
+    assert Board.posts == [apply_path]

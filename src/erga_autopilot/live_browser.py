@@ -386,6 +386,8 @@ OBSERVE = (
  ats_markers:{captcha_challenge:[...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"],.g-recaptcha,.h-captcha,.cf-turnstile')].some(e=>{const r=e.getBoundingClientRect();return visible(e)&&r.width>=200&&r.height>=60;}),
  already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
  greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content'),
+ lever_submit_success:!!document.querySelector('h3[data-qa="msg-submit-success"]'),
+ lever_verification_error:/there was an error verifying your application/i.test(document.body.innerText),
   status_region:messages('__STATUS__'),form_error:messages('__ERROR__')}};
 }""".replace("__MESSAGES__", MESSAGES_JS)
     .replace("__STATUS__", STATUS_SELECTOR)

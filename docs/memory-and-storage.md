@@ -135,6 +135,16 @@ Those notes may influence research and writing where policy allows, but they can
 
 When provenance matters, store the source URL, retrieval date, and enough context to understand where a note came from.
 
+Company research is the research note Autopilot writes today. Before Qwen drafts a written
+answer, trusted code reads up to three public pages from the employer's own site and keeps
+the sentences that say what the company does, its size or stage, its product and its
+values. The text is written to `Erga Autopilot/Research/<employer host>.md`, marked
+untrusted at the top, with the source URLs and the fetch time; the next application to
+the same employer overwrites it. What Qwen sees is the private `research.json` under the
+application's folder in the state root, so editing the note changes no draft. Nothing in
+it is a candidate fact, and lines that read as instructions to a model are dropped before
+the text enters the context. See [Application workflow](application-workflow.md).
+
 ## QMD is the retrieval layer
 
 As the vault grows, the agent should not depend on knowing the exact filename for every question.
@@ -164,7 +174,7 @@ Examples include:
 - question fingerprints and answer references
 - remembered owner answers (`answer_memory`), mirrored to `Answers.md` in the vault
 - Discord forum/message bindings
-- Zoho message/reconciliation IDs
+- Zoho message ids and the inbox checkpoint (`mail_messages`, `mail_checkpoints`)
 - action-needed items
 - reminders and queues
 - outbox/idempotency records
@@ -265,8 +275,18 @@ Use Hermes hot memory only for the small amount of context that should be presen
 
 The recruiting SQLite database now also holds canonical URL aliases, application queue
 records, forum bindings, delivery events, owner-message checkpoints, and field-bound
-answers. Exact observations, profile snapshots, resume PDFs, Erga results, and Qwen
-proposals live in private per-application directories. See [Application workflow](application-workflow.md).
+answers. Exact observations, profile snapshots, resume PDFs, Erga results, the company research
+cache, and Qwen proposals live in private per-application directories. See [Application workflow](application-workflow.md).
+
+## Recruiting mail
+
+Each recruiting mail the mail service handles is kept as plain text under
+`mail/messages/<message id>/` in the state root, with Qwen's input and output beside it
+when it ran; a mail that settles an unclear submission is cited from the receipt by that
+path. SQLite remembers which message ids were handled and the newest received time per
+account, so a mail is applied once and a restart resumes where it stopped. The thread and
+the `recruiting` channel see the sender's domain, the subject and the label only, and
+nothing in a mail becomes a candidate fact. See [Application workflow](application-workflow.md#recruiting-mail).
 
 ## Application notes and credentials
 

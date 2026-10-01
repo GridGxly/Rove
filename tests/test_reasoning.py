@@ -556,3 +556,64 @@ def test_drafting_context_carries_the_owner_voice_note(state, monkeypatch):
     (state / "applications" / without).mkdir(parents=True)
     reasoning.review_application(without, page)
     assert "owner_voice" not in captured[1]
+
+
+def test_drafting_context_carries_company_research(state, monkeypatch):
+    from erga_autopilot.onboarding import read_approved
+
+    async def evidence(_query):
+        return {"results": []}
+
+    monkeypatch.setattr(reasoning, "career_evidence", evidence)
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": False})
+    key = "abcdef012345"
+    captured, asked = [], []
+
+    def fake_generate(directory, context, basename, attempts=2):
+        captured.append(context)
+        answers = [
+            {
+                "key": key,
+                "kind": "proposal",
+                "value": "Short.",
+                "sources": ["ev_1"],
+                "explanation": "e",
+            }
+        ]
+        return {
+            "model": "m",
+            "result": {
+                "completed": True,
+                "turn_exit_reason": "text_response(finish_reason=stop)",
+                "final_response": json.dumps({"answers": answers}),
+            },
+        }
+
+    monkeypatch.setattr(reasoning, "generate", fake_generate)
+    research_text = "Acme Robotics builds warehouse robots for mid-size grocers."
+
+    def fake_research(application_id, posting_text, posting_url):
+        asked.append((application_id, posting_text, posting_url))
+        return research_text
+
+    monkeypatch.setattr(reasoning, "company_context", fake_research)
+    page = {
+        "profile_hash": read_approved()["profile_hash"],
+        "pending": [{"key": key, "label": "Why Acme?"}],
+        "text": "Apply form",
+    }
+    posting_url = "https://careers.acme.example/jobs/1"
+    application_id = workflow.enqueue(posting_url)["application_id"]
+    directory = state / "applications" / application_id
+    directory.mkdir(parents=True)
+    (directory / "job-reasoning-input.json").write_text(json.dumps({"job_text": "Acme posting"}))
+    reasoning.review_application(application_id, page)
+    # The posting goes as the job-fit review saw it, with the queue's posting URL.
+    assert asked == [(application_id, "Acme posting", posting_url)]
+    assert captured[0]["company_research"] == research_text
+    assert captured[0]["prompt_version"] == reasoning.PROMPT_VERSION
+    without = workflow.enqueue("https://jobs.example.com/plain")["application_id"]
+    (state / "applications" / without).mkdir(parents=True)
+    monkeypatch.setattr(reasoning, "company_context", lambda *_: "")
+    reasoning.review_application(without, page)
+    assert "company_research" not in captured[1]

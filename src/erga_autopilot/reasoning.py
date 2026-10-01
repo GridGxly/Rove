@@ -20,11 +20,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from . import unslop, vault, workflow
 from .evidence import career_evidence
 from .onboarding import read_approved
+from .research import company_context
 from .runtime import state_root, write_private
 
 # Bump when the prompts in scripts/recruiting_reasoning.py change so cached
 # reviews produced by an older prompt are never reused silently.
-PROMPT_VERSION = "2026-09-30.5"
+PROMPT_VERSION = "2026-09-30.6"
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 
 
@@ -112,7 +113,7 @@ INPUT_BUDGET_CHARS = 40_000
 def fit_budget(context: dict, limit: int = INPUT_BUDGET_CHARS) -> dict:
     """Keep a request inside the model's window by trimming long text, largest first."""
     context = json.loads(json.dumps(context))
-    trimmable = ("job_text", "job_context")
+    trimmable = ("job_text", "job_context", "company_research")
 
     def size() -> int:
         return len(json.dumps(context))
@@ -636,6 +637,19 @@ def shorten_to_fit(result: dict, questions: list):
             ).strip()
 
 
+def posting_text_for(directory: Path, page: dict) -> str:
+    """The posting as the job-fit review saw it; the form page's own text otherwise."""
+    path = directory / "job-reasoning-input.json"
+    if path.is_file():
+        try:
+            text = json.loads(path.read_text()).get("job_text")
+        except (ValueError, OSError):
+            text = ""
+        if text:
+            return str(text)
+    return str(page.get("text") or "")
+
+
 def review_application(application_id: str, page: dict) -> dict:
     directory = state_root() / "applications" / application_id
     approved = read_approved()
@@ -645,13 +659,14 @@ def review_application(application_id: str, page: dict) -> dict:
     if not questions:
         return {"answers": []}
     profile = approved["profile"]
+    item = workflow.get(application_id)
     context = {
         "application_id": application_id,
         "prompt_version": PROMPT_VERSION,
         "questions": questions,
-        "intake_source": workflow.get(application_id)["source"],
+        "intake_source": item["source"],
         "source_meaning": "keryx means discovered automatically in the Keryx GitHub jobs feed; this is trusted intake metadata, not a claimed employee referral",
-        "intake_url": workflow.get(application_id)["source_url"],
+        "intake_url": item["source_url"],
         "profile": {
             key: profile[key]
             for key in [
@@ -673,6 +688,12 @@ def review_application(application_id: str, page: dict) -> dict:
         # The owner's own writing, bounded by the vault reader; a style sample the
         # prompt must not copy or cite, never a source of facts.
         context["owner_voice"] = voice
+    research = company_context(application_id, posting_text_for(directory, page), item["url"])
+    if research:
+        # Public text from the employer's own site, bounded and stripped of anything that
+        # reads as an instruction. It steers a "why this company" draft; it is never a
+        # fact about the applicant.
+        context["company_research"] = research
     directions = directory / "owner-context.json"
     if directions.exists():
         context["owner_directions"] = json.loads(directions.read_text())

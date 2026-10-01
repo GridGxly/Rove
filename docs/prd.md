@@ -83,7 +83,7 @@ Evening. One thread reads "Submission unclear · do not click again". He checks 
 |FR-18|Written drafts pass the Unslop and Humanizer scans with one bounded repair that keeps every number and name; the card shows the cleaned text and a summary. A `Story/Voice.md` note in the vault steers the voice.|Done|`test_drafts_get_one_bounded_cleanup_and_are_hashed_after_it`, `test_humanizer_scan_flags_shape_tells_and_passes_plain_prose`, `test_drafting_context_carries_the_owner_voice_note`|
 |FR-19|With `auto_use_drafts` (or `auto_submit`) drafts become answers without a `use` reply; draft cards stay and a later `answer` overrides.|Done|`test_auto_policy_uses_qwen_drafts_and_queues_exactly_one_submission`|
 |FR-20|A required question with no fact and no draft stops with one "Answers needed" card: up to six questions with options and copy-ready `answer` lines.|Done|`test_hold_fields_render_reasons_questions_and_commands_for_the_owner`|
-|FR-21|Substantive answers are preceded by company research in a restricted context.|Not started|no research code|
+|FR-21|Substantive answers are preceded by company research in a restricted context: at most three public pages from the employer's own site, read by code with no browser, credentials or profile access, reduced to untrusted text with instruction-like lines dropped.|Done|`test_company_context_reads_three_pages_and_keeps_company_sentences`, `test_off_site_redirects_are_not_followed_and_failures_stay_quiet`, `test_instruction_lines_are_dropped_before_the_text_reaches_the_model`, `test_drafting_context_carries_company_research`|
 
 ### Submission
 
@@ -106,8 +106,8 @@ Evening. One thread reads "Submission unclear · do not click again". He checks 
 
 |ID|Requirement|Status|Proof|
 |---|---|---|---|
-|FR-29|Recruiting mail is classified into acknowledgement, OA, interview, offer and rejection events that add a timeline entry to the right thread.|Not started|no mail code|
-|FR-30|Tags OA, Interview, Offer, Rejected, Accepted and Withdrawn can be set by mail or owner command, with a timeline entry and reminder.|Not started|`workflow.STATE_TAGS` knows only Preparing, Applied, Needs Action|
+|FR-29|Recruiting mail is classified into acknowledgement, OA, interview, offer and rejection events that add a timeline entry to the right thread.|Done|`tests/test_mail.py`|
+|FR-30|Tags OA, Interview, Offer, Rejected, Accepted and Withdrawn can be set by mail or owner command, with a timeline entry and reminder.|Partial|mail sets OA, Interview, Offer and Rejected with a timeline entry (`test_a_rejection_moves_to_rejected_with_a_card_a_line_and_erga`); no owner command, reminder, Accepted or Withdrawn yet|
 
 ### Memory and profile
 

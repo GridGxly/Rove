@@ -199,22 +199,57 @@ The repository should refer to logical names in code and docs. Real IDs belong i
 
 ### Zoho Mail
 
-Zoho is optional for the first local setup but is part of the intended recruiting workflow for mail reconciliation and verification messages.
+Zoho is optional. When it is configured, `autopilot mail tick` reads the Inbox of one Zoho
+Mail account every 15 minutes and classifies recruiting mail about sent applications; see
+[Application workflow](application-workflow.md#recruiting-mail).
 
-When enabled, use the official Zoho Mail API and OAuth flow with the narrowest scopes that support the required behavior.
+The integration uses the official Zoho Mail REST API through a Self Client and a refresh
+token. It only reads: the folder list, message headers, and one message body at a time.
+It never sends, moves, or deletes mail. Setup, once:
 
-The implementation may need values such as:
+1. In the [Zoho API Console](https://api-console.zoho.com/), add a **Self Client** and
+   note its client id and client secret.
+2. On its **Generate Code** tab, enter the scopes
+   `ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ`, a short
+   description, and a validity of a few minutes; create the code.
+3. Within that time, exchange the code for a refresh token. The US accounts server is
+   shown; use the one for your data center (for example `accounts.zoho.eu` or
+   `accounts.zoho.in`):
 
-```text
-ZOHO_CLIENT_ID
-ZOHO_CLIENT_SECRET
-ZOHO_REFRESH_TOKEN
-ZOHO_ACCOUNT_ID
-```
+   ```sh
+   curl -s -X POST https://accounts.zoho.com/oauth/v2/token \
+     -d grant_type=authorization_code -d client_id=... -d client_secret=... -d code=...
+   ```
 
-Those names are safe to document. Their real values are not.
+   The response holds `refresh_token`, which does not expire, and an `access_token` that
+   lasts an hour; the service refreshes its own access token on every tick.
+4. Find the account id with that access token:
 
-If the implementation later uses different names or credentials, update this page to match the code.
+   ```sh
+   curl -s -H "Authorization: Zoho-oauthtoken ..." https://mail.zoho.com/api/accounts
+   ```
+
+   `data[0].accountId` is the value.
+5. Put the four values in the private env file the services read, `config/setup.env`
+   under the state root (`~/.config/erga-autopilot/` by default), one `KEY=value` per line:
+
+   ```text
+   ZOHO_CLIENT_ID
+   ZOHO_CLIENT_SECRET
+   ZOHO_REFRESH_TOKEN
+   ZOHO_ACCOUNT_ID
+   ```
+
+   Outside the US data center also set `ZOHO_API_BASE` (for example
+   `https://mail.zoho.eu`); the matching accounts server is derived from it, or set
+   `ZOHO_ACCOUNTS_BASE` explicitly.
+6. Write private `config/mail.json` with `{"enabled": true}` (optional `lookback_days`,
+   default 3, for the first tick only) and run `uv run autopilot install-services`, which
+   installs the `dev.erga-autopilot.mail` launch agent next to the feed. `uv run autopilot
+   mail status` shows whether the values were found, without printing them.
+
+Those names are safe to document. Their real values, the refresh token above all, are
+not: never paste the curl output into the repository, the vault, Discord, or an issue.
 
 ## Local configuration and secrets
 
@@ -397,6 +432,7 @@ Employer accounts the workflow creates are stored under the private state root a
 ciphertext with a separate owner-only key file.
 
 Final submission is off until the private workflow configuration sets
-`submission_enabled` and lists an adapter in `submit_adapters`. The only adapter today is
-`greenhouse_v1` for public Greenhouse job boards. Every submission also needs the owner's
+`submission_enabled` and lists an adapter in `submit_adapters`. The adapters are
+`greenhouse_v1` for public Greenhouse job boards, `lever_v1` for public Lever postings, and
+`generic_v1` for employer sites without an ATS contract, listed last. Every submission also needs the owner's
 `send it` reply in the application's thread, bound to the exact package hash (or an explicit `submit APPLICATION_ID PACKAGE_HASH` in the control channel), unless the owner turns on the `auto_submit` policy in the private workflow config, which sends complete packages with a daily cap and a minimum gap.

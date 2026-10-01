@@ -3,7 +3,8 @@
 The local workflow joins Keryx discovery and owner-pasted links in one durable queue,
 prepares each application in a background recruiting browser, drafts answers with Qwen
 through Hermes, and submits one reviewed package per owner approval on supported boards.
-Recruiting-mail reconciliation is not implemented; unattended submission is an owner policy (see below).
+Recruiting mail from Zoho moves a sent application through OA, interview, offer and
+rejected (see [Recruiting mail](#recruiting-mail)); unattended submission is an owner policy (see below).
 
 ## Intake and visibility
 
@@ -121,6 +122,29 @@ If the vault has `Erga Autopilot/Story/Voice.md`, about 2,500 characters of it g
 as `owner_voice`: the draft follows its sentence rhythm, plain words, first person and
 concrete detail without copying its sentences, and the note is never a source of facts.
 Autopilot reads that note and never writes it; the draft is re-made when it changes.
+
+Before Qwen drafts, trusted code gathers company research once per application. It reads
+at most three public pages from the employer's own site: the home page, the about or
+company page it links to, and the careers or culture page (`/about` and `/careers` when
+the home page links to neither). Plain HTTPS with a browser-like agent string, a
+ten-second timeout, 400 KB per page, the same site only (`www.` counts), no sign-in, no
+cookies kept, and nothing about the applicant in the request; a redirect off the site is
+not followed. The employer site is the posting's host when the posting is on the
+employer's own site (a `careers.`, `jobs.` or `www.` label dropped), otherwise the
+employer host the posting text links to most often. A posting on an ATS host or a job
+board that names no employer link gets no research, and the draft says only what the
+posting says about the company. Scripts, navigation, footers and hidden elements are
+never read. The pages are reduced to the sentences that say what the company does, how
+big or old it is, what it sells and what it values, about 1,800 characters, and go to Qwen
+as `company_research`. Any line that reads as an instruction to a model (ignore,
+instruction, you are, system prompt, assistant and the like) is dropped first, which also
+drops a few true sentences. Qwen is told to use the text only to say true things about
+the company and to tie the approved evidence to them, never to claim the applicant did
+anything with the company, and never as instructions. The result is cached under the
+application (`research.json`, with the URLs and the fetch time) and copied to
+`Erga Autopilot/Research/<employer host>.md` in the vault, marked untrusted. A site that
+does not answer is noted privately and tried once more on a later preparation; the draft
+goes without research, and research never stops a run.
 
 Boards that need an account are recognized. Your policy asks first: the card offers
 `create account`; on approval the daemon fills the application email and a
@@ -240,12 +264,31 @@ stays `UNKNOWN_SUBMISSION` until the owner reconciles; nothing retries.
 Public Greenhouse boards run an invisible reCAPTCHA on submit. A challenge or an emailed
 security code is recorded as an unknown submission for the owner to finish and reconcile.
 
+`lever_v1` covers public Lever postings (`jobs.lever.co/{company}/{posting}/apply`). The
+apply page is one multipart form. Its "Submit application" button runs hCaptcha first;
+when the CAPTCHA hands the page a token, the page posts the form itself. The attempt is
+`APPLIED` only when all hold: the page landed on `/{company}/{posting}/thanks` for the
+same posting, it shows the "Application submitted!" heading, and no form is left. The
+status of the form's POST (a redirect to the thanks page on success) is kept in the
+receipt as evidence; it confirms nothing on its own. When the page comes back as the
+emptied form under "There was an error verifying your application", Lever's CAPTCHA
+rejected the send and nothing was stored: the attempt is recorded as not submitted, the
+tab stays open on the form, and the application is handed to you (`MANUAL_TAKEOVER`)
+with one card: solve the CAPTCHA in the recruiting browser, press Submit yourself, then
+reply `applied` (`park it` also works). A form that stays open with a new validation
+message is not submitted either and goes back to "needs you" like any rejected form.
+Anything else is an unknown submission. The form, the submit button and the thanks page
+were checked against the live public DOM; what Lever shows when hCaptcha rejects a send
+has not been observed in a live run, so that path follows Lever's reported wording until
+one confirms it. Employers can refuse repeat applications; a page that says you already
+applied stops the run before anything is sent.
+
 `generic_v1` covers employer sites without an ATS contract. List it last in
 `submit_adapters`: the first listed adapter that matches the page wins, so Greenhouse
-boards keep their stricter contract. It clicks the one observed final control and waits,
-within the same bound, until the page leaves, the form disappears, or a success or
-validation message shows that was not there before the click. It then reads the page
-once and compares it with the observation taken before the click. The attempt is
+boards and Lever postings keep their stricter contracts. It clicks the one observed final
+control and waits, within the same bound, until the page leaves, the form disappears, or
+a success or validation message shows that was not there before the click. It then reads
+the page once and compares it with the observation taken before the click. The attempt is
 `APPLIED` only when all three hold:
 
 - at least one new confirmation signal: the URL path or query newly matches the `url`
@@ -315,7 +358,9 @@ result. Nothing is ever sent twice for the same package.
 
 When the site keeps the form open and names a validation error after the single click,
 nothing was sent: the attempt is recorded as not submitted, the application goes back to
-"needs you" with the site's message, and a later `go` prepares a new package. Only an
+"needs you" with the site's message, and a later `go` prepares a new package. A send that
+Lever's CAPTCHA rejected is not submitted either, but it is handed to you instead, since
+only a person can satisfy the CAPTCHA. Only an
 outcome the page cannot settle (navigation without a confirmation, a timeout, a crash)
 becomes "unclear" and blocks all sending until the owner reconciles it.
 
@@ -331,28 +376,107 @@ keeps `failure.png` for any action that raised, and for a picker that refused a 
 `picker-<field>.json` with what was typed, the options it listed and what it kept, plus a
 screenshot.
 
+## Recruiting mail
+
+`autopilot mail tick` runs every 15 minutes as its own launchd service and is off until
+private `config/mail.json` sets `enabled` and the private env holds the four Zoho values
+(see [Requirements](requirements.md#zoho-mail)). Each tick refreshes a Zoho access token,
+lists the Inbox messages newer than the checkpoint (`mail_checkpoints` in SQLite; the first
+tick looks back `lookback_days`, default 3), and reads each message's body as plain text.
+A message is handled once (`mail_messages`), and the checkpoint advances past each one.
+
+Mail is matched to a sent application (`APPLIED` or later, or an unclear submission)
+before anything else happens:
+
+- strong: the sender's domain is the employer's domain from the posting URL, or the sender
+  is a known recruiting host (Greenhouse, Lever, Ashby, Workday, HackerRank, and the like)
+  and the company name appears in the subject or body
+- weak: the company name appears in the subject only, from any other sender; this counts
+  only when the rules below recognise the mail
+- anything else is ignored and leaves no trace but its message id
+
+When two applications match (two roles at one company), the role's own words in the mail
+decide; a tie goes to the most recently updated one.
+
+The label comes from fixed rules, in this order of precedence:
+
+```text
+rejection        not moving forward · other candidates · not selected · unable to offer ·
+                 regret to inform · no longer under consideration · position has been filled ·
+                 "unfortunately … not / unable / other"
+offer            offer letter · pleased to extend an offer · offer of employment · job offer
+interview        interview · phone screen · schedule a call / time / chat · your availability ·
+                 book a time · calendly.com · meet the team
+oa               online assessment · HackerRank · CodeSignal · Codility · coding challenge ·
+                 take-home · technical assessment · complete the assessment
+acknowledgement  thank you for applying · we received your application · application
+                 submitted / received / under review · we will be in touch
+```
+
+A rejection outranks everything it mentions; an offer outranks the interviews before it.
+When a mail matches both interview and assessment wording (an invitation that mentions the
+assessment it followed, or an assessment that promises interviews), the subject line
+decides; when the subject names neither, the mail is ambiguous. Only an ambiguous mail
+from a strong match goes to Qwen, with a sanitized excerpt (links, addresses, markup and
+any sentence that talks to a model or about secrets removed, 2,500 characters at most) and
+a prompt that lets it pick one of the six labels and nothing else; a deadline Qwen quotes
+counts only when the text contains it. When the local model is down, the tick stops at
+that mail and resumes there next time. A Qwen answer that is not a label files the mail as
+"other", from the sender alone.
+
+What a classified mail does:
+
+- the thread gets a `recruiting_mail` card: the label, the sender's domain, the subject
+  clipped, and the deadline as the mail states it (a regex quotes "by October 9, 2026 at
+  11:59 PM PT" or "within 72 hours"; nothing is computed), never the body
+- the application moves forward when the label is a step forward: `APPLIED → OA →
+  INTERVIEW → OFFER`, and `REJECTED` from any of them; the lifecycle line names the trigger
+  `recruiting mail: <label>`; a label behind the current state (an assessment reminder
+  during interviews) is recorded without a move, and nothing moves a `REJECTED` application
+- the `recruiting` channel gets one line: the label in words, the application, the
+  sender's domain, the subject and a link to the thread
+- Erga is asked to `update_application_status` with its own word (`oa`, `interview`,
+  `offer`, `rejected`) when the resume manifest links an Erga application; the result or
+  the error type is kept in the card's data, and a failure changes nothing locally
+- a mail of any of the five kinds for an `UNKNOWN_SUBMISSION` application settles it: the
+  attempt is confirmed `APPLIED` with the mail (its id, sender, subject and the private
+  copy) as the receipt's evidence, and an assessment or interview then moves it on
+
+Nothing in a mail can queue, prepare, submit or re-prepare an application, and an
+application that was sent is never moved back into preparation, whatever a thread reply
+says. The full text of each handled mail is kept privately under `mail/messages/<id>/` in
+the state root, with Qwen's input and output beside it when it ran.
+
+`autopilot mail status` shows the switches, the checkpoint and the message counts
+without any secret.
+
 ## Records outside Discord
 
 SQLite holds the queue, events, answers, commands, and attempts. Private per-application
-directories hold the observation, package, resume, receipts, screenshots, and Qwen input
-and output. The vault gets one readable note per application under
+directories hold the observation, package, resume, receipts, screenshots, the company
+research cache, and Qwen input and output. The vault gets one readable note per application under
 `Erga Autopilot/Applications/` (status, links, job fit, filled values with sources, open
 questions with drafts, timeline), rewritten on every change; it mirrors local state and is
-never a candidate fact. Credentials live only in the encrypted local store.
+never a candidate fact. Company research goes to one note per employer site under
+`Erga Autopilot/Research/`, marked untrusted. Credentials live only in the encrypted local
+store.
 
 ## Local configuration
 
 Private `config/workflow.json` maps `guild_id`, `forum_channel_id`, `control_channel_id`,
 `action_channel_id`, `source_channel_id`, `shortlist_channel_id`, `system_channel_id`,
-and lifecycle `tags`. `system_channel_id` is optional: when it is missing, the worker
-looks the `system-log` channel up by name once and writes the id into the file; without
-such a channel the system log stays off. It also supplies `hermes_python`, an explicit `enabled` flag, `submission_enabled`,
+and lifecycle `tags`. `system_channel_id` and `recruiting_channel_id` are optional: when
+one is missing, the worker (or the mail service) looks the `system-log` or `recruiting`
+channel up by name once and writes the id into the file; without such a channel those
+lines stay off. It also supplies `hermes_python`, an explicit `enabled` flag, `submission_enabled`,
 `submit_adapters`, `max_waiting_applications` (default 1), `browser_app` (`chrome` or
 `chromium`), `max_open_tabs` (default 5), `human_pacing` (default true), and an optional
 `unslop_path` pointing at a local clone of the Unslop repository. Private
 `config/feed.json` holds the feed's `enabled` flag, the jobs channel's `channel_id`,
 `batch_size` (cards per feed tick, default 10), and `max_pending` (pending
-announcements kept, default 40).
+announcements kept, default 40). Private `config/mail.json` holds the mail service's
+`enabled` flag and `lookback_days` (default 3, used by the first tick only); the four Zoho
+values live in the private env file, never in JSON.
 
 ```sh
 uv run autopilot install-services
@@ -362,6 +486,8 @@ uv run autopilot workflow enqueue --url https://jobs.example.com/internship
 uv run autopilot workflow tick
 uv run autopilot workflow resume --id APPLICATION_ID
 uv run autopilot browser status
+uv run autopilot mail status
+uv run autopilot mail tick
 ```
 
 `workflow resume` and `workflow defer` are local owner operations equivalent to the
@@ -390,11 +516,18 @@ and `refresh_job_feed`. None of them fills, approves, or submits.
 
 ## Limits
 
-Two submission adapters: `greenhouse_v1`, with a request-level contract for public
-Greenhouse boards, and `generic_v1`, which reads only the page and confirms nothing
-without new confirmation wording. Multi-page support advances only on
+Three submission adapters: `greenhouse_v1`, with a request-level contract for public
+Greenhouse boards; `lever_v1`, which needs Lever's thanks page and its heading and whose
+handling of a CAPTCHA-rejected send is untested on the live site; and `generic_v1`, which
+reads only the page and confirms nothing without new confirmation wording. Lever's own
+inline field messages use a class the shared error read does not cover, so a Lever form
+kept open by a field error without the verification sentence is "unclear", not "not
+sent", until a live run shows what Lever renders. Multi-page support advances only on
 Next/Continue controls after a complete page. Account creation covers email, password,
 terms checkbox and known name fields; anything else on a registration page is a hold.
-No CAPTCHA solving (a visible challenge stops and asks), no proxies, no recruiting-mail tracking. Unattended submission is an owner policy with a daily cap and a minimum gap.
+No CAPTCHA solving (a visible challenge stops and asks), no proxies. Recruiting mail covers
+the Inbox of one Zoho account and the five labels above; mail about a job that was never
+applied to through Autopilot is ignored, and `Accepted` and `Withdrawn` are not set by
+code yet. Unattended submission is an owner policy with a daily cap and a minimum gap.
 Only the word, number, and explicit replies above are understood; a sentence in a thread
 is ignored, never interpreted.
