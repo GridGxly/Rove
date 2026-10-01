@@ -54,15 +54,16 @@ def test_a_stage_records_its_laps_its_calls_and_what_ran_inside_it(state):
         with timing.stage(None, "drafting", questions=2):
             assert model() == "draft"
             timing.note(proposals=1)
-    # Rows are written as each part ends: a lap ends at the next lap or nested stage.
+    # Calls and nested stages are written as they end; a stage's laps wait for the stage,
+    # so a lap in the middle of the work never touches the database.
     assert recorded() == [
         ("browser", "open"),
-        ("open", "pass"),
         ("browser", "fill"),
         ("browser", "fill"),
-        ("fill", "pass"),
         ("model", "drafting"),
         ("drafting", "pass"),
+        ("open", "pass"),
+        ("fill", "pass"),
         ("pass", ""),
     ]
     assert {r["application_id"] for r in timing.rows()} == {APP}

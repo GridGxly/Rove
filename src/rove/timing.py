@@ -8,7 +8,8 @@ Three shapes:
 
 - `stage(application_id, name)` times a block or, as a decorator, a function. One row.
 - `lap(name)` splits the innermost stage into consecutive parts without a block. A lap
-  ends at the next lap, at a stage that starts inside it, or with its stage.
+  ends at the next lap, at a stage that starts inside it, or with its stage, and its row
+  is written when that stage ends.
 - `call(name)` decorates a leaf the stages spend their time in: the model, a browser
   round trip, a page observation, a Discord request. One row per call, and every open
   stage also counts it as `<name>_calls` and `<name>_seconds`.
@@ -65,6 +66,7 @@ class Frame:
         self.clock = time.perf_counter()
         self.facts = dict(facts)
         self.lap: Frame | None = None
+        self.laps: list[tuple] = []  # finished laps, written when the stage ends
 
 
 def enabled() -> bool:
@@ -81,7 +83,8 @@ def _browser_service() -> bool:
     return sys.argv[1:3] == ["browser", "serve"]
 
 
-def _connect(timeout: float = BUSY_SECONDS) -> sqlite3.Connection:
+def connect(timeout: float = BUSY_SECONDS) -> sqlite3.Connection:
+    """The state database for measurement: a busy database is given up on, not waited for."""
     path = state_root() / "recruiting.sqlite3"
     if not path.exists():
         os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o600))
@@ -107,7 +110,7 @@ def _insert(application_id, name, parent, started_at, seconds, ok, facts):
             return
         if time.monotonic() < _state["quiet_until"] or not enabled():
             return
-        conn = _connect()
+        conn = connect()
         try:
             conn.executescript(SCHEMA)
             with conn:
@@ -136,16 +139,20 @@ def _insert(application_id, name, parent, started_at, seconds, ok, facts):
 
 
 def _end_lap(frame: Frame, ok: bool = True):
+    """Close the open lap in memory. Its row waits for the stage to end, so a `lap()` in
+    the middle of the work (between a click and the wait for its result) does no I/O."""
     lap_frame, frame.lap = frame.lap, None
     if lap_frame is not None:
-        _insert(
-            lap_frame.application_id,
-            lap_frame.name,
-            lap_frame.parent,
-            lap_frame.started_at,
-            time.perf_counter() - lap_frame.clock,
-            ok,
-            lap_frame.facts,
+        frame.laps.append(
+            (
+                lap_frame.application_id,
+                lap_frame.name,
+                lap_frame.parent,
+                lap_frame.started_at,
+                time.perf_counter() - lap_frame.clock,
+                ok,
+                lap_frame.facts,
+            )
         )
 
 
@@ -215,6 +222,8 @@ class stage:
                         for target in (outer, outer.lap):
                             if target is not None:
                                 _add(target.facts, self.name, seconds)
+                for finished in frame.laps:
+                    _insert(*finished)
                 _insert(
                     frame.application_id,
                     frame.name,
@@ -304,7 +313,7 @@ def rows(last: int | None = None) -> list[dict]:
         if not (state_root() / "recruiting.sqlite3").exists():
             return []
         # A report can wait for a busy database; only the measured work must not.
-        conn = _connect(timeout=5.0)
+        conn = connect(timeout=5.0)
         conn.row_factory = sqlite3.Row
         try:
             if last:

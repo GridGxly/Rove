@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 
-from . import workflow
+from . import timing, workflow
 
 
 def posting_hash(text: str) -> str:
@@ -126,19 +126,21 @@ def fill_counts(application_id: str, page: dict) -> dict:
     a model draft, or an answer the owner gave for this application. Measurement only."""
     supplied = {}
     try:
-        with workflow.db() as conn:
+        conn = timing.connect()  # a busy database is not waited for; the count is left out
+        try:
             rows = conn.execute(
                 "SELECT a.field_key, a.owner_message_id, c.kind FROM application_answers a "
                 "LEFT JOIN owner_commands c ON c.message_id=a.owner_message_id "
                 "WHERE a.application_id=?",
                 (application_id,),
             ).fetchall()
-        for row in rows:
-            source = str(row["owner_message_id"])
-            if source.startswith("auto-skip:"):
+        finally:
+            conn.close()
+        for field_key, source, command in rows:
+            if str(source).startswith("auto-skip:"):
                 continue
-            drafted = source.startswith("auto-draft:") or row["kind"] == "use"
-            supplied[row["field_key"]] = "model" if drafted else "owner"
+            drafted = str(source).startswith("auto-draft:") or command == "use"
+            supplied[field_key] = "model" if drafted else "owner"
     except Exception:  # noqa: BLE001 -- a count that cannot be read is left out
         return {}
     counts = {"fields_code": 0, "fields_model": 0, "fields_owner": 0}

@@ -522,7 +522,7 @@ def fixture() -> str:
     review is read back and no drafting call is made), the third follows the answer and
     is sent. Nothing leaves the machine and no real state is read or written.
     """
-    with tempfile.TemporaryDirectory(prefix="rove-bench-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="rove-bench-", ignore_cleanup_errors=True) as scratch:
         root = Path(scratch)
         (root / "vault").mkdir()
         names = {"ROVE_STATE_DIR": root / "state", "OBSIDIAN_VAULT_PATH": root / "vault"}

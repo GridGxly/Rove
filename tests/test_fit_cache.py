@@ -8,6 +8,7 @@ made, and its questions go to the owner as they would have anyway.
 """
 
 import json
+import sqlite3
 
 import pytest
 
@@ -323,6 +324,43 @@ def test_a_drafting_call_is_needed_only_for_writing_a_choice_or_a_short_answer()
     assert not fastpath.needs_model(fastpath.drafting_counts([]))
 
 
+def test_filled_fields_are_counted_by_who_supplied_the_value(state):
+    app = queued(state, "9")
+    answers = [
+        (app, "k-draft", "Because of the mission.", "auto-draft:" + "c" * 12),
+        (app, "k-used", "Other", "m-use"),
+        (app, "k-owner", "No", "m-answer"),
+        (app, "k-blank", "skip", "auto-skip:k-blank"),
+    ]
+    with workflow.db() as conn:
+        conn.executemany("INSERT INTO application_answers VALUES(?,?,?,?)", answers)
+        for message, kind in (("m-use", "use"), ("m-answer", "answer")):
+            conn.execute(
+                "INSERT INTO owner_commands VALUES(?,?,?,?,?,?)",
+                (message, app, kind, "{}", "applied", workflow.now()),
+            )
+    page = {
+        "filled": [
+            {"key": "k-name", "source": "identity.legal_first_name"},
+            {"label": "Resume", "sha256": "d" * 64},
+            {"key": "k-draft"},
+            {"key": "k-used"},
+            {"key": "k-owner"},
+        ],
+        "pending": [{"key": "k-open"}],
+    }
+    counted = {"fields_code": 2, "fields_model": 2, "fields_owner": 1, "fields_pending": 1}
+    assert fastpath.fill_counts(app, page) == counted
+    # A count is measurement: a database it cannot read leaves it out and raises nothing.
+    blocker = sqlite3.connect(state / "recruiting.sqlite3")
+    blocker.execute("BEGIN EXCLUSIVE")
+    try:
+        assert fastpath.fill_counts(app, page) == {}
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+
 FIELD = {"label": "First name", "name": "first", "kind": "text", "options": [], "required": True}
 FORM = {
     "url": "https://jobs.example.com/form",
@@ -390,8 +428,15 @@ def test_a_block_page_is_never_reviewed_as_the_posting(state, monkeypatch):
     worker.process(app)
     assert actions == ["open", "reopen", "follow", "prepare"]
     assert reviewed == [POSTING]  # what the retry reached, not the block page's text
-    laps = [r["stage"] for r in timing.rows() if r["parent"] == "pass"]
-    assert laps == ["open", "reopen", "follow", "resume", "fill", "hold"]
+    in_order = sorted(timing.rows(), key=lambda r: r["started_at"])
+    assert [r["stage"] for r in in_order if r["parent"] == "pass"] == [
+        "open",
+        "reopen",
+        "follow",
+        "resume",
+        "fill",
+        "hold",
+    ]
 
 
 def drafting_rows() -> list[dict]:
