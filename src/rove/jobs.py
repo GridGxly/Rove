@@ -76,6 +76,59 @@ def strip_tracking(query: str) -> str:
     return "&".join(kept)
 
 
+LEGAL_SUFFIXES = {"inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co"}
+COUNTRY_WORDS = ("united states of america", "united states", "usa", "us")
+
+
+def plain(text) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def plain_company(company) -> str:
+    """The employer's name without the legal suffix a feed adds or drops between revisions."""
+    words = plain(company).split()
+    while len(words) > 1 and words[-1] in LEGAL_SUFFIXES:
+        words.pop()
+    return " ".join(words)
+
+
+def plain_location(location) -> str:
+    """Places in a stable order, without the country a feed appends to some rows."""
+    places = []
+    for part in re.split(r"[;|\n]", str(location or "")):
+        place = plain(part)
+        for country in COUNTRY_WORDS:
+            if place.endswith(" " + country):
+                place = place[: -len(country) - 1]
+                break
+        if place:
+            places.append(place)
+    return " | ".join(sorted(set(places)))
+
+
+def identity_key(job: dict) -> str:
+    """One posting, however the feed rewrites its metadata or renumbers it.
+
+    Company, title, location and the canonical apply link name the posting. Everything
+    else (dates, link status, eligibility notes, the source's own id) can change without
+    making it a different job.
+    """
+    link = public_link(job.get("url")) or ""
+    parts = [
+        plain_company(job.get("company")),
+        plain(job.get("title")),
+        plain_location(job.get("location")),
+        link.rstrip("/").lower(),
+    ]
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
+
+
+def material_key(job: dict) -> str:
+    """What makes a known job worth another look: its identity, track, or open/closed state."""
+    parts = [identity_key(job), str(job.get("program") or ""), str(job.get("status") or "")]
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
+
+
 def database() -> sqlite3.Connection:
     path = state_root() / "recruiting.sqlite3"
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -95,9 +148,13 @@ def database() -> sqlite3.Connection:
           content_hash TEXT NOT NULL, revision TEXT NOT NULL, first_imported TEXT NOT NULL,
           last_seen TEXT NOT NULL, PRIMARY KEY(source,id));
         CREATE INDEX IF NOT EXISTS jobs_active ON jobs(active,program,posted_at);
+        CREATE INDEX IF NOT EXISTS jobs_url ON jobs(url);
         CREATE TABLE IF NOT EXISTS job_events (
           id INTEGER PRIMARY KEY, source TEXT NOT NULL, job_id TEXT NOT NULL,
           revision TEXT NOT NULL, event TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS job_material (
+          source TEXT NOT NULL, id TEXT NOT NULL, material TEXT NOT NULL,
+          PRIMARY KEY(source,id));
     """)
     return db
 
@@ -120,7 +177,7 @@ def ingest(path: Path, revision: str) -> dict:
     now = datetime.now(UTC).isoformat()
     digest = hashlib.sha256(raw).hexdigest()
     db = database()
-    counts = {"new": 0, "changed": 0, "unchanged": 0, "missing": 0}
+    counts = {"new": 0, "changed": 0, "rewritten": 0, "unchanged": 0, "missing": 0}
     try:
         with db:
             previous = {
@@ -129,6 +186,7 @@ def ingest(path: Path, revision: str) -> dict:
                     "SELECT id,content_hash,active FROM jobs WHERE source=?", (REPOSITORY,)
                 )
             }
+            material = known_material(db)
             seen = set()
             for job in records:
                 seen.add(job.id)
@@ -137,10 +195,22 @@ def ingest(path: Path, revision: str) -> dict:
                 encoded = json.dumps(metadata, sort_keys=True)
                 content_hash = hashlib.sha256(encoded.encode()).hexdigest()
                 old = previous.get(job.id)
-                event = (
-                    "new" if old is None else "changed" if old[0] != content_hash else "unchanged"
-                )
+                current = material_key(metadata)
+                if old is None:
+                    event = "new"
+                elif old[0] == content_hash:
+                    event = "unchanged"
+                elif material.get(job.id) == current:
+                    # The feed rewrote dates, notes or link status: the same job, no news.
+                    event = "rewritten"
+                else:
+                    event = "changed"
                 counts[event] += 1
+                if material.get(job.id) != current:
+                    db.execute(
+                        "INSERT OR REPLACE INTO job_material VALUES(?,?,?)",
+                        (REPOSITORY, job.id, current),
+                    )
                 db.execute(
                     """
                     INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -170,7 +240,7 @@ def ingest(path: Path, revision: str) -> dict:
                         now,
                     ),
                 )
-                if event != "unchanged":
+                if event in ("new", "changed"):
                     db.execute(
                         "INSERT INTO job_events(source,job_id,revision,event,created_at) "
                         "VALUES (?,?,?,?,?)",
@@ -201,6 +271,26 @@ def ingest(path: Path, revision: str) -> dict:
         **counts,
         **job_status(),
     }
+
+
+def known_material(db) -> dict:
+    """Each known job's material key; rows imported before the key existed get one now."""
+    known = {
+        row["id"]: row["material"]
+        for row in db.execute("SELECT id,material FROM job_material WHERE source=?", (REPOSITORY,))
+    }
+    rows = db.execute(
+        "SELECT id,metadata FROM jobs WHERE source=? AND id NOT IN "
+        "(SELECT id FROM job_material WHERE source=?)",
+        (REPOSITORY, REPOSITORY),
+    ).fetchall()
+    for row in rows:
+        known[row["id"]] = material_key(json.loads(row["metadata"]))
+        db.execute(
+            "INSERT OR REPLACE INTO job_material VALUES(?,?,?)",
+            (REPOSITORY, row["id"], known[row["id"]]),
+        )
+    return known
 
 
 def sync_keryx() -> dict:
