@@ -1,415 +1,192 @@
 # Browser automation
 
-Rove needs browser automation to feel fast without giving up correctness, auditability, privacy, or submission safety.
+Rove fills application forms in a Chrome instance of its own. Code observes the page, resolves fields from approved data, fills them, and reads the values back. Qwen is asked only about questions the approved data does not answer. It never drives the browser.
 
-The reference design keeps **Qwen3.8-27B** as the local reasoning model. There is no required cloud browser-decision model and no Jev/TypeSafe runtime dependency.
+The path of a whole application, including sending, is in [Application workflow](application-workflow.md).
 
-The speed goal comes from moving routine browser mechanics out of the model loop.
+## The browser daemon
 
-Qwen should handle ambiguity. Normal code should handle observation, deterministic field resolution, batching, execution, waits, verification, and irreversible-action gates.
+`rove browser serve` is a long-running process, installed as the launchd service `dev.rove.browser`. It owns the browser and listens on a Unix socket in the state root that only the owner's account can open. A lock file keeps a second daemon from starting.
 
-## Design goals
+The socket accepts ten actions: `open`, `observe`, `follow`, `prepare`, `register`, `login`, `reopen`, `close`, `submit` and `status`. None of them runs caller-supplied JavaScript, takes a file path, or takes a field value. Values come from the frozen profile and the answers stored for the application.
 
-The browser layer should optimize for:
+The worker is the daemon's normal client. If the socket is missing, the worker asks launchd to start the service and waits for it.
 
-- correct answers before raw application count
-- low mechanical latency on ordinary forms
-- as few Qwen calls as practical
-- compact browser observations instead of repeated full-page dumps
-- deterministic handling of known profile fields
-- safe recovery from dynamic pages
-- complete field-level audit history
-- local-first handling of applicant data
-- independent verification before and after submission
+## The recruiting Chrome
 
-A fast run is useful only when it is also reproducible and safe.
+The daemon starts Google Chrome as a separate app instance with a dedicated profile under `browser/recruiting-profile` in the state root, and a DevTools port on localhost. It then connects to that port with [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python), a Playwright fork. Because the daemon starts Chrome itself, the browser runs without an automation flag. When `browser_app` is not `chrome`, or Chrome is not installed, Patchright's Chrome for Testing is used.
 
-## What Qwen does
+Keep this profile for recruiting only. It should hold no banking sessions, no personal password manager and no browser sync.
 
-Qwen3.8-27B remains the reasoning model for work that actually needs judgment.
+Chrome is launched once, when the service starts. Launching brings Chrome to the front, so the daemon notes which app had focus and hands focus back for a few seconds afterward. This needs no macOS permission.
 
-Examples:
+Every application gets its own tab, created in the background through the DevTools protocol. Tabs do not take focus. The window stays behind the owner's work and can be opened from the Dock.
 
-- interpreting unfamiliar application wording
-- deciding whether a question maps to an approved profile fact
-- drafting substantive written responses
-- choosing relevant evidence
-- researching a company when a response needs context
-- recovering from an unfamiliar browser state
-- explaining why the browser cannot safely continue
+- A tab closes when its application is applied or the owner parks it.
+- At most `max_open_tabs` tabs stay open (default 5). The oldest is closed first, and a closed tab reopens on `go`.
+- The browser outlives the daemon. After a restart the daemon reconnects to the same port, keeps the tabs that belong to applications still waiting, and closes the rest.
 
-Qwen should not be asked to rediscover obvious mechanics such as which field contains the first name, whether the email is already filled, or which known resume file belongs to the frozen package.
+Drive that Chrome with one client only. During development a second Playwright client attached to the same instance stalled it.
 
-The browser runtime should resolve those cases directly from structured state.
+After changing browser code, restart the service with `launchctl kickstart -k gui/$UID/dev.rove.browser`. The Chrome window and its tabs survive.
 
-## Fast-path architecture
+### Pacing
 
-A normal application should use the fastest safe path available:
+With `human_pacing` on (the default), the daemon pauses a random fraction of a second between fields, moves the pointer to a control before clicking it, types values of up to 80 characters key by key, and visits a site's front page before its first deep link. Tests turn pacing off.
 
-```text
-frozen application package
-        ↓
-detect page / ATS shape
-        ↓
-compact structured observation
-        ↓
-normalize application fields
-        ↓
-resolve known fields deterministically
-        ↓
-batch-fill safe resolved fields
-        ↓
-verify values and dynamic changes
-        ↓
-Qwen only for unknown or ambiguous work
-        ↓
-repeat compact observation if needed
-        ↓
-pre-submit verification
-        ↓
-controlled submit
-        ↓
-independent confirmation
-```
+## Where applicant data may be typed
 
-The generic browser loop remains the fallback. It should not be the first choice for every field.
+Several checks run before any value is entered.
 
-## Browser runtime
+While the daemon drives a tab, every request the tab makes is checked: public HTTPS on port 443, to a host that resolves only to public addresses. Anything else is aborted. The check is attached for the length of one operation and removed afterward, so a tab the owner browses by hand is never stalled.
 
-The production browser path should use one dedicated recruiting browser profile and a long-lived Playwright/Chromium session.
+`follow` clicks only a control the last observation reported as an application-start link: Apply, Apply now, Start application and similar wording. The observation must still be current and the control's label unchanged. A link whose address is on another host is followed only when that host is on the applicant-tracking list.
 
-The runtime may use Playwright browser APIs and narrowly scoped CDP helpers internally where they reduce browser round trips or provide better state inspection. That low-level capability belongs inside trusted code.
+`prepare` types nothing unless both of these hold:
 
-Do not expose arbitrary Playwright or CDP execution directly to Qwen.
+- The form's host is on the applicant-tracking list in `ATS_HOSTS` in `src/rove/live_browser.py`. The list covers Greenhouse, Lever, Ashby, Workday, Oracle Cloud, iCIMS, SmartRecruiters, Eightfold and Workable, plus employer hosts added to it in code.
+- The page has the same job scope as the queued link. For Greenhouse the scope is the board and the job number. For Lever and Ashby it is the company and the posting. For other hosts it is the host and the job number in the path, or the path itself when there is no number.
 
-Playwright MCP can still be useful for development, debugging, manual inspection, and fallback tooling. The production application flow should not require a general MCP round trip for every field and click.
+A shared applicant-tracking hostname is never enough. A form for another employer or another job on the same host does not match.
 
-### Compact observation
+Account creation is limited to a host on the list or the host of the queued link.
 
-A useful observation should gather the page state needed for the next chunk of work in as few browser calls as practical.
+## Observation
 
-Prefer:
+One script evaluation returns everything the next step needs:
 
-- visible and actionable controls
-- labels and roles
-- current values and checked/selected state
-- required/disabled/read-only state
-- available options
-- nearby form or dialog context
-- current URL and document identity
-- limited visible text relevant to the current form
-- visible status and validation messages, so a submission result can be read without a
-  screenshot
-- stable code-owned references for observed elements during that page state
+- the title and the first 15,000 characters of visible text
+- every visible input, textarea and select, and every file input, with its label, kind, role, placeholder, required and disabled state, current value, character limit and options (up to 300 for a select)
+- groups of pressed-state buttons, such as a Yes/No pair, as one choice
+- application-start links, Next and Continue controls, sign-in and account controls, and final Submit controls
+- markers: a visible CAPTCHA, "already applied" wording, the Greenhouse confirmation block, Lever's success heading and verification error, and the text of visible status and validation messages
 
-Avoid sending full markup, scripts, giant accessibility trees, or screenshots on every step when structured DOM state is enough.
+A field's label is its associated label, then `aria-label`, then `aria-labelledby`, then the nearest label within four ancestors that owns no other control, then the placeholder. Radio buttons that share a name are reported as one question with options.
 
-Screenshots and traces remain important artifacts and debugging tools. They are not the default reasoning input for routine form filling.
+A field counts as required when the input says so, or when its label carries a `required` class or ends in an asterisk.
 
-### Semantic freshness
+The values of password, hidden and file inputs are never read. On a page with a password field or a field labeled social security, passport, bank account or verification code, all field values are dropped, the text is cut short, no screenshot is taken, and the page is flagged for the owner.
 
-Do not invalidate an action just because the DOM changed somewhere.
-
-Animations, timers, analytics widgets, and unrelated page updates should not automatically force Qwen to reason again.
-
-Before acting, code should verify the state that matters for that action:
-
-- document and expected URL
-- target identity
-- target visibility and enabled state
-- relevant form values
-- nearby dialog/form/row context
-- current geometry or occlusion when needed
+Every other observation is saved privately with a screenshot of the viewport. Page text is marked as untrusted data and cannot authorize anything.
 
-If the relevant state changed, observe again.
+### Waiting for the page
 
-### Bounded waits
+Single-page boards often paint a shell, a cookie banner and a loading indicator before the form. After a navigation the daemon waits, each with a ten-second bound, for fields or body text and then for a visible loading indicator to go away. In between it declines a cookie banner it recognises by the banner's own wording (Reject, Decline, Necessary only). It never clicks Accept.
 
-Avoid fixed multi-second sleeps.
+After an application-start link, a page with no fields, links or sign-in controls gets one more bounded wait for fields before it is reported as having no form.
 
-After an action, wait for the event or state the application actually needs, with a short upper bound:
+### Block pages and closed postings
 
-- a combobox suggestion appears
-- a dependent field becomes enabled
-- navigation begins or completes
-- validation text changes
-- a new form step appears
-- a submit result becomes visible
+A page with no fields whose title or opening text says "Access Denied", "Pardon our interruption", "Just a moment...", a reference number, or similar is treated as a block. The daemon waits 12 to 30 seconds, enters through the site's front page, and tries once more. A second block hands the application to the owner.
 
-Long waits should be evidence-driven rather than the default.
+A page with no fields that says the posting no longer accepts applications parks the application.
 
-Page settling is one such wait. A single-page board often paints its shell, a cookie
-banner and a loading indicator before the form, and the banner text alone looks like a
-rendered page. The runtime waits for fields or body text, then declines a cookie banner
-it recognises by the banner's own wording (Reject, Decline, Necessary only; never
-Accept), then waits out a visible loading indicator, each with a ten-second bound. After
-an application-start link, a page with no fields, links or sign-in controls gets one more
-bounded wait for fields before it is reported as having no form.
+## Matching a field to an approved fact
 
-## Normalize the form before filling it
+A label is matched by exact wording first: first, middle, last and preferred name, full name, email, phone, city, state, postal code, country, LinkedIn, GitHub, portfolio or website, and "City, State" for a location. School, major, degree, and GPA when the profile allows disclosing it, are matched when the profile has exactly one school.
 
-The browser should inspect a form as a group rather than asking Qwen to choose one field at a time.
+A short plain label is also matched by meaning. "Profile Link (Optional)" is the portfolio, "LinkedIn Profile URL" is LinkedIn, and "Mobile Number" is the phone. A label of more than five words, or one that names a reference, manager, supervisor, emergency contact, employer or recruiter, or that contains words such as upload, verify, ignore or instruction, is never matched this way. "(Optional)" and "(Required)" are ignored.
 
-A normalized field record can contain:
+A few questions are answered from approved eligibility and preferences:
 
-```text
-field_id
-label
-kind
-required
-current_value
-options
-checked_or_selected_state
-sensitivity
-page_or_step
-dependencies
-resolution_state
-resolved_value
-provenance
-```
+- "Are you legally authorized to work in the United States" takes the approved answer.
+- "Will you now or in the future require sponsorship" is answered No only when both approved sponsorship answers are No.
+- A question about relocating, commuting or working onsite is answered Yes when the approved preferences say relocate and include onsite work, unless it names a location the owner excluded.
+- A graduation question shown as a group of options takes the option that matches the approved graduation month.
 
-Typical resolution states:
+A phone-type field defaults to Mobile, and the form card shows that as a default. Every other question is left for the owner or for Qwen. Code never guesses among options or legal wording.
 
-- `resolved`
-- `unknown`
-- `needs_qwen`
-- `needs_user`
-- `manual_only`
-- `optional_skip`
+## Filling and verifying
 
-The resolver should use the normal source order:
+Each page is filled in one pass and then observed again.
 
-```text
-frozen approved profile snapshot
-        ↓
-approved Erga evidence
-        ↓
-approved story/narrative context
-        ↓
-approved remembered equivalent answer
-        ↓
-Qwen judgment or drafting
-        ↓
-user question when still unknown
-```
+Text fields are typed and read back. The value passes when the site kept it, changed only its whitespace, or reformatted a phone number with the same last ten digits. Any other difference stops the run with a card naming the field.
 
-Do not invent a value just to keep the browser moving.
+- A field that already holds a different value is left alone and becomes a question.
+- A US phone is typed as ten national digits first, because sites with their own country selector reject a repeated code. If a step then rejects the phone, the international form is tried once.
+- A text the site silently truncates is cut to what the field keeps, at a sentence boundary, and the form card says so.
+- A native select is set only when exactly one option matches. Country options match under the common spellings of United States.
+- A radio group or button group is set to the matching option and checked afterward. An option that is already selected is recorded and not toggled.
+- A long-text field is filled only from an answer stored for the application: one the owner typed, a draft the owner approved, or a draft used under the `auto_use_drafts` policy.
 
-## Batch deterministic work
+A field that appears after filling becomes a question. It is never answered from a guess.
 
-If a page contains ten fields and eight already have approved deterministic answers, fill those eight as one execution batch where the browser/runtime safely supports it.
+### The resume upload
 
-Examples include:
+Only a file field named for a resume or CV is filled, and only with the frozen `resume.pdf` in the application's folder. Its hash is checked before the upload, and the input is checked afterward to hold that one file. A required file field for anything else becomes a question, and an optional one is skipped.
 
-- name
-- email
-- phone
-- location
-- school
-- degree
-- graduation date
-- work authorization
-- sponsorship answer
-- portfolio links
-- previously approved standard application answers
+### Dropdowns and place pickers
 
-After a batch, verify the resulting values against the frozen application package.
+A field is treated as a picker when it is a combobox, when it has an autocomplete hint or a "start typing" placeholder, or when its label is a place label such as Location, City or "Where are you located".
 
-If one field fails, isolate that field rather than discarding the entire page state or asking Qwen to redo everything.
+For an ordinary picker the daemon opens the list and selects the option whose text equals the approved value, when there is exactly one. Typing into the search box does not count as a selection. The choice is confirmed from the widget: the selected option, the displayed value, or the accessibility announcement.
 
-File uploads are a separate controlled operation. The browser may upload only files already included in the frozen application package.
+For a place picker the daemon types the approved city and waits for suggestions, polling for up to six seconds because these widgets geocode after a pause. It picks the suggestion that equals the approved "City, State" or "City, State, Country", or else the first one that starts with the city, preferring one that also names the state. When the suggestion list has no ARIA roles, it clicks the shortest visible suggestion that contains the city, or takes the first suggestion with the keyboard when it finds none. The pick is accepted only when the text committed to the input names the approved city.
 
-## ATS-aware acceleration
+A picker that refuses the value becomes a question. The daemon keeps private evidence for the next fix: what it typed, the options the picker listed, what the input kept, and a screenshot.
 
-Treat unfamiliar career sites as normal websites first, but allow small, versioned adapters when a recurring ATS has stable structure that can be used safely.
+When no value is known, the daemon opens the list once to read its options so Qwen and the owner see the real choices.
 
-An adapter may:
+### Multi-page forms
 
-- detect the ATS
-- read official/publicly exposed job or form metadata
-- normalize recurring field patterns
-- handle known widgets
-- reduce redundant browser discovery
-- provide deterministic verification helpers
+When a page is complete, has no final Submit control and shows a Next or Continue control, the daemon clicks it, waits for the next step's fields, and fills again. It does this for at most four pages.
 
-An adapter must not:
+If the click leaves the same page with a validation message about the phone, the other phone format is tried once. If the form never reaches a step with exactly one final control, the run ends with "Final step not reached" and the site's message when there is one. A form in that state is never called ready.
 
-- bypass employer authentication
-- use employer-only write APIs without legitimate authorization
-- weaken domain checks
-- invent applicant answers
-- bypass the frozen application package
-- bypass submission gates
+### Required fields the site names
 
-The generic browser path must remain available when an adapter does not match or stops working.
+When a site rejects a submission and names a "required field", the label is saved for that application. The next preparation treats a field with that label as required, even if the page does not mark it.
 
-## Qwen escalation policy
+## The package
 
-The browser runtime should call Qwen only when normal code cannot safely resolve the next step.
+Preparation ends by writing a package: the page URL, the profile hash, the resume hash, every filled field with its value and source, the open questions, the full form state, the final control and the pages visited. The package is hashed. It is ready for review only when no question is open and the page has exactly one final control.
 
-Good reasons to escalate:
+Sending checks the live page against this package field by field. See [Application workflow](application-workflow.md#sending).
 
-- the field meaning is genuinely ambiguous
-- a custom written response is required
-- the page presents unfamiliar validation or recovery behavior
-- two approved facts appear to conflict
-- a new question does not map cleanly to the current profile schema
-- generic structured browser controls cannot determine a safe next action
+## The submit guard
 
-Bad reasons to escalate:
+Every page in the recruiting Chrome gets a script that blocks form submission events unless a flag on the document is set. Submission code sets the flag for one click and removes it afterward. The guard stops accidental submits during preparation, including the Enter key in a field. It is not a network-level guarantee against a page script that posts on its own.
 
-- a known field has a known approved value
-- a checkbox already has the requested state
-- a standard select option is already observable
-- the browser needs to wait briefly for a known UI event
-- a deterministic batch can complete the work
+## Sign-in and account pages
 
-The goal is not to make Qwen faster at clicking. The goal is to avoid asking Qwen to click when code already knows what to do.
+A page with a password field is a sign-in page, or a registration page when it has two password fields or a create-account control. The daemon signs in only with an account stored for that host and creates an account only after the owner's `create account` reply. The password is generated locally and kept in the encrypted credential store. See [Application workflow](application-workflow.md#accounts).
 
-## Fallback ladder
+## Evidence kept for debugging
 
-Use the least expensive reliable mechanism that can complete the step:
+All of it stays in the application's private folder under the state root:
 
-1. ATS-aware metadata or adapter
-2. normalized deterministic form resolution
-3. batch browser execution
-4. generic structured browser actions
-5. Qwen recovery or interpretation
-6. manual takeover
+- `observation.json` and `browser.png`, from the latest observation
+- `failure.png`, the tab as it looked when an action raised an error
+- `picker-<field>.json` and `picker-<field>.png`, for a picker that refused a value
+- `dropdown-<field>.json`, how a dropdown selection was confirmed
+- `form-before-submit.png`, the form just before the Submit click
 
-Do not add a second required browser model just to make the loop faster.
+The stop screenshot is also posted to the application's thread. See [Discord](discord.md#files-posted-in-the-thread).
 
-If a surface cannot be understood safely from structured state and Qwen cannot recover with the current local stack, pause for manual takeover rather than silently introducing a cloud vision or browser model.
+## The synthetic fixture
 
-## Submission remains separate
+`rove smoke` is a separate, older path used for certification. It serves a synthetic form on localhost, fills ten known fields from a synthetic profile, uploads a fixture resume, and submits nothing. It does not accept real application URLs. See [Local runtime](local-runtime.md).
 
-Fast preparation does not change submission policy.
+## Rules for changing this layer
 
-`APPLICATION_PREPARE` may inspect, resolve, fill, upload approved files, and verify the prepared form. It must not gain final submission capability when submission is disabled.
+Qwen3.8-27B is the only reasoning model. Do not add a cloud browser model, or a second required model, to make forms faster. Speed comes from fewer model calls and fewer browser round trips.
 
-`APPLICATION_SUBMIT` may act only on the frozen validated application package it was given.
+Keep Qwen out of mechanics. A known field with an approved value, a checkbox already in the right state, or a short wait for a known UI event is work for code.
 
-Before Submit becomes executable, code should verify:
+Keep the daemon's actions narrow. The model and the Hermes agent must not receive Playwright, DevTools, JavaScript, shell or filesystem execution, even though the daemon uses those APIs itself.
 
-- expected employer or ATS destination
-- correct job/application identity
-- approved profile snapshot/version
-- exact resume and file hashes
-- all required known fields
-- exact approved written answers
-- unresolved warnings
-- sensitive/manual-only fields
-- submission policy state
+Wait for a concrete state with a bound. The code's fixed pauses are the pacing pauses, short polls while Chrome launches or a place picker loads, and the pause before retrying a blocked site.
 
-Record the submission attempt before or atomically with the irreversible action according to the final transaction design.
+Add a site-specific adapter only when repeated evidence justifies it, keep it small and versioned, and keep the generic path working. An adapter may recognise a site, read its widgets and verify a result. It must not bypass authentication, weaken the destination checks, invent an answer, or bypass the package and the submission checks.
 
-If the result is ambiguous after Submit, move to unknown-submission state. Do not blindly retry.
+A model saying a form was submitted proves nothing. Confirmation comes from an adapter reading evidence after the click.
 
-A model saying `DONE` is never independent proof that submission succeeded.
+Optimize one application before adding concurrency. One Qwen request at a time is the tested configuration.
 
-Confirmation comes from a versioned adapter that reads evidence after the click, never
-from the click itself. `greenhouse_v1` needs the board's own contract: an accepted POST
-to the job's path, the confirmation URL, the confirmation block, and no form left.
-`lever_v1` needs Lever's own thanks page for the same posting, its success heading and no
-form left; it records the form's POST status as evidence and hands a send the CAPTCHA
-rejected to the owner as not submitted.
-`generic_v1` is the catch-all for employer sites without such a contract and is listed
-last so specific adapters win. It has no request to watch, so it compares the page with
-the observation taken before the click: it needs a confirmation signal that was not there
-before (a confirmation-looking URL, a thank-you sentence, or a success region) and a form
-that left (no fields, or a new URL). A new validation message turns the attempt into an
-unknown submission with that message as the reason, and so does anything else within the
-wait bound. The exact patterns are in
-[application-workflow.md](application-workflow.md#submission).
+When a page cannot be handled safely, stop for the owner.
 
-## Performance and reliability metrics
+## Not built yet
 
-Benchmark the browser layer with synthetic and controlled test applications before optimizing for daily volume.
-
-Track at least:
-
-- total application preparation time
-- mechanical browser time
-- number of browser observations
-- browser protocol round trips when measurable
-- number of Qwen calls
-- Qwen time spent on browser recovery versus substantive reasoning
-- batch-fill success rate
-- post-fill verification mismatches
-- stale-action/retry count
-- fixed-wait time
-- manual takeover rate
-- peak memory and swap pressure
-- submission verification success
-- duplicate-submission count
-
-The target is not a marketing number such as "seven seconds per application."
-
-The target is to make routine mechanical work cheap enough that the remaining time is dominated by real page loading, substantive writing, user decisions, and employer-side behavior.
-
-Duplicate submission count should remain zero.
-
-## Concurrency
-
-Optimize one application path before adding concurrency.
-
-The reference runtime starts with one active Qwen request at a time until the 48GB Apple Silicon setup is measured under load.
-
-Later, deterministic browser work may run concurrently when it does not compete unsafely for browser state, memory, credentials, or the model. Concurrency must not weaken application ordering, audit history, or submission idempotency.
-
-## Security and privacy
-
-Fast browser automation does not change the trust model.
-
-- use a dedicated recruiting browser profile
-- keep applicant/browser state local by default
-- do not add a required cloud decision model
-- treat page text and browser labels as untrusted data
-- keep arbitrary shell, filesystem, Playwright, and CDP execution away from the application model
-- verify expected domains before entering personal data
-- upload only approved frozen-package files
-- keep manual-only sensitive values manual
-- preserve field-level provenance
-- preserve exact submitted artifacts and confirmation evidence
-
-Read [Security](../SECURITY.md) and [Prompt injection](prompt-injection.md) before changing the browser executor or its tool surface.
-
-## Runtime as implemented
-
-The daemon launches Google Chrome (or Chrome for Testing) as its own app instance with
-the dedicated profile and connects over a localhost DevTools port with Patchright. A
-benchmark of anti-detection tooling found that the signal bot managers act on is the
-automation control protocol's shape, not static traits, so the browser is never started
-by an automation library (no automation flag, `navigator.webdriver` false) and the
-Playwright fork patches the remaining protocol leaks. Real Chrome on real hardware and a
-residential home connection are what paid "stealth" browsers imitate.
-
-Behavior is paced: randomized pauses, mouse travel before clicks, typed short values,
-and a front-door visit before a deep link. Block pages are recognized and retried once
-patiently; a second block is handed to the owner. Detection is measured, not assumed:
-a private verification script launches a separate instance with the same flags against
-public bot-detection pages and saves the report.
-
-Launch activates Chrome once; the daemon hands focus back for a few seconds afterwards.
-Tabs are created in the background and never take focus. Only one client may drive the
-daemon's Chrome; diagnostics use a separate instance. The destination guard attaches to
-a page only during automated operations, because a route handler runs only while the
-daemon is inside a browser call and would stall manual browsing otherwise.
-
-## Implementation order
-
-Build the fast path in this order:
-
-1. instrument the current browser baseline
-2. establish a persistent dedicated browser runtime
-3. build compact structured observation
-4. normalize forms into field records
-5. resolve deterministic fields from frozen approved state
-6. add safe batch execution and post-fill verification
-7. add targeted Qwen escalation for ambiguity and recovery
-8. add small ATS adapters where repeated evidence justifies them
-9. add pre-submit and post-submit independent verification
-10. benchmark across multiple ATSes and custom forms
-11. add concurrency only after single-run correctness and memory behavior are proven
-
-Reliability gates come before unattended volume.
+- The browser layer has no timing or round-trip instrumentation. Measurements and `rove bench` are in progress.
+- Qwen is not used to recover from an unfamiliar page state. Such a state is a stop.
+- Site-specific code is limited to the job-scope rules for Greenhouse, Lever and Ashby, the Greenhouse and Lever submission adapters, and the handling of React Select dropdowns.
