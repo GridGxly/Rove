@@ -557,6 +557,19 @@ class ChromeLauncher:
 
 
 FIELDS_JS = "() => !!document.querySelector('input:not([type=hidden]),select,textarea')"
+# The visible suggestion that names the typed place, in a dropdown without ARIA roles.
+SUGGESTION_JS = """(city) => {
+  const norm = s => (s || '').toLowerCase();
+  const wanted = norm(city);
+  const candidates = [...document.querySelectorAll(
+    '[role=option],[role=listbox] *,li,[class*="option" i],[class*="suggestion" i],[class*="result" i],[class*="menu" i] *')]
+    .filter(e => e.getClientRects().length && !['INPUT','TEXTAREA'].includes(e.tagName))
+    .filter(e => { const t = (e.innerText || '').trim(); return t.length > 0 && t.length < 160 && norm(t).includes(wanted); });
+  if (!candidates.length) return false;
+  candidates.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+  candidates[0].setAttribute('data-autopilot-suggestion', '1');
+  return true;
+}"""
 RENDERED_JS = FIELDS_JS + " || document.body.innerText.trim().length > 200"
 # A visible loading indicator means the shell painted before the form: keep waiting.
 BUSY_JS = """() => {
@@ -937,8 +950,17 @@ class RecruitingBrowser:
         if existing["status"] in {"APPLIED", "SUBMITTING", "UNKNOWN_SUBMISSION"}:
             raise PermissionError("Existing submission or uncertain attempt blocks reopening")
         if run_id in self.pages and not self.pages[run_id].is_closed():
+            # A reopened application starts from a fresh load of its page: no half-filled
+            # form, no toggled choices, no attached file the site hid its input for.
             self.page, self.run = self.pages[run_id], self.runs[run_id]
-            return self.observe()
+            with self.guarded(self.page):
+                try:
+                    self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
+                    self.page.locator("body").wait_for()
+                    self.settle()
+                except PlaywrightError as error:
+                    self.run["navigation_error"] = type(error).__name__
+                return self.observe()
         self.run = {
             "id": run_id,
             "source_url": existing["source_url"],
@@ -1066,13 +1088,24 @@ class RecruitingBrowser:
             options.first.wait_for(state="visible", timeout=4000)
         except PlaywrightError:
             if place:
-                # A custom suggestion list without ARIA roles: take the first suggestion and
-                # accept it only when the committed text still names our place.
-                locator.press("ArrowDown")
-                locator.press("Enter")
+                # A custom suggestion list without ARIA roles: click the suggestion that
+                # names our city, else take the first one; accept only when the committed
+                # text still names the city.
+                city = str(profile["identity"].get("city") or "")
+                try:
+                    self.page.wait_for_timeout(1200)
+                    if city and self.page.evaluate(SUGGESTION_JS, city):
+                        self.click(
+                            self.page.locator('[data-autopilot-suggestion="1"]').first,
+                            timeout=4000,
+                        )
+                    else:
+                        locator.press("ArrowDown")
+                        locator.press("Enter")
+                except PlaywrightError:
+                    pass
                 committed = normalized(locator.input_value())
-                city = normalized(str(profile["identity"].get("city") or ""))
-                if city and city in committed:
+                if city and normalized(city) in committed:
                     return True
             locator.press("Escape")
             return False
@@ -1334,7 +1367,7 @@ class RecruitingBrowser:
             # The site named these as required when it rejected the form: treat them so.
             wanted = {normalized(x) for x in json.loads(overrides.read_text())}
             for field in before["fields"]:
-                if normalized(field["label"]) in wanted:
+                if field["kind"] != "file" and normalized(field["label"]) in wanted:
                     field["required"] = True
         pending = []
         filled = []
@@ -1361,6 +1394,26 @@ class RecruitingBrowser:
                     value, source = resolve_choice(
                         field["label"], field["options"], approved["profile"]
                     )
+                if value is None:
+                    remembered = workflow.recall_answer(
+                        field["label"], [o["label"] for o in field["options"]]
+                    )
+                    if remembered is not None:
+                        value, source = remembered, "your earlier answer"
+                if value is not None and normalized(field.get("value") or "") == normalized(
+                    str(value)
+                ):
+                    # Already selected on this page: record it, never toggle it off.
+                    filled.append(
+                        {
+                            "label": field["label"],
+                            "value": str(value),
+                            "source": source,
+                            "key": field["key"],
+                            "control": field["kind"],
+                        }
+                    )
+                    continue
                 chosen = next(
                     (
                         o
@@ -1454,6 +1507,12 @@ class RecruitingBrowser:
                 value, source = owner_answer["value"], owner_answer["source"]
             else:
                 value, source = resolve_known(field["label"], approved["profile"])
+            if value is None and not owner_answer:
+                remembered = workflow.recall_answer(
+                    field["label"], [o["label"] for o in field["options"]]
+                )
+                if remembered is not None:
+                    value, source = remembered, "your earlier answer"
             if (
                 value is not None
                 and re.search(r"phone|mobile", field["label"], re.IGNORECASE)

@@ -48,6 +48,9 @@ def db():
       CREATE TABLE IF NOT EXISTS live_submission_attempts(
         application_id TEXT PRIMARY KEY, package_hash TEXT NOT NULL,
         owner_message_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS answer_memory(
+        fingerprint TEXT PRIMARY KEY, label TEXT NOT NULL, options TEXT NOT NULL,
+        value TEXT NOT NULL, created_at TEXT NOT NULL, owner_message_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS owner_notices(
         id INTEGER PRIMARY KEY, application_id TEXT NOT NULL, channel TEXT NOT NULL,
         data TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -419,6 +422,82 @@ STATE_WORDS = {
     "MANUAL_TAKEOVER": "Needs you in the browser",
     "DEFERRED": "Parked",
 }
+
+
+def question_fingerprint(label, options=()) -> str:
+    """The same question on any form: wording without qualifiers, plus its options."""
+    text = re.sub(r"\((optional|required)\)|\*", " ", str(label or "").lower())
+    words = re.findall(r"[a-z0-9]+", text)
+    choices = sorted(" ".join(re.findall(r"[a-z0-9]+", str(o).lower())) for o in options or [])
+    return hashlib.sha256(json.dumps([words, choices]).encode()).hexdigest()
+
+
+def remember_answer(label, options, value, owner_message_id: str):
+    """An answer the owner gave once is a fact for every later form that asks the same."""
+    if not value or str(value).strip().lower() == "skip":
+        return
+    with db() as conn:
+        for fingerprint in {question_fingerprint(label, options), question_fingerprint(label)}:
+            conn.execute(
+                "INSERT OR REPLACE INTO answer_memory VALUES(?,?,?,?,?,?)",
+                (
+                    fingerprint,
+                    str(label)[:300],
+                    json.dumps([str(o) for o in options or []][:60]),
+                    str(value),
+                    now(),
+                    owner_message_id,
+                ),
+            )
+    try:
+        from . import vault
+
+        vault.sync_answers()
+    except Exception as error:  # noqa: BLE001 -- the readable copy never blocks the fact
+        delivery_failed("vault", "answers", error)
+
+
+def recall_answer(label, options=()) -> str | None:
+    """A remembered answer for this question, only when it still fits the options offered."""
+    choices = [str(o) for o in options or []]
+    with db() as conn:
+        for fingerprint in (question_fingerprint(label, choices), question_fingerprint(label)):
+            row = conn.execute(
+                "SELECT value FROM answer_memory WHERE fingerprint=?", (fingerprint,)
+            ).fetchone()
+            if row:
+                value = row["value"]
+                if choices:
+                    wanted = " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+                    match = next(
+                        (
+                            o
+                            for o in choices
+                            if " ".join(re.findall(r"[a-z0-9]+", o.lower())) == wanted
+                        ),
+                        None,
+                    )
+                    if match is None:
+                        continue
+                    return match
+                return value
+    return None
+
+
+def remembered_answers() -> list[dict]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT label,options,value,created_at FROM answer_memory WHERE options!='[]' "
+            "OR fingerprint IN (SELECT MIN(fingerprint) FROM answer_memory GROUP BY label) "
+            "ORDER BY created_at"
+        ).fetchall()
+    seen, result = set(), []
+    for row in rows:
+        if row["label"] in seen:
+            continue
+        seen.add(row["label"])
+        result.append(dict(row))
+    return result
 
 
 def display_title(item: dict) -> str:

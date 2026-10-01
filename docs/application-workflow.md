@@ -264,6 +264,17 @@ message means the form rejected the attempt: the tab stays open and the applicat
 as evidence; they confirm nothing on their own. The receipt carries the same fields as a
 Greenhouse receipt, so cards and the Erga confirmation work unchanged.
 
+### Remembered answers
+
+A fact the owner answers once in Discord (`3: 5 months`) is stored under a fingerprint of
+the question's wording without qualifiers plus its options, and filled on any later form
+that asks the same question, with the source "your earlier answer". When the new form
+offers options, the remembered value is used only if it is one of them. `skip` is never
+remembered. The exact store is the `answer_memory` table in SQLite; a readable copy is
+`Answers.md` in the vault's Erga Autopilot folder. Approved profile facts come first,
+remembered answers second, Qwen drafts third; only what none of them covers reaches the
+owner.
+
 ### Unattended sending as an owner policy
 
 Two private `config/workflow.json` keys turn the review step into an after-the-fact one:

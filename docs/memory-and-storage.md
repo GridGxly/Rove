@@ -154,6 +154,7 @@ Examples include:
 - submission attempts
 - unknown-submission recovery
 - question fingerprints and answer references
+- remembered owner answers (`answer_memory`), mirrored to `Answers.md` in the vault
 - Discord forum/message bindings
 - Zoho message/reconciliation IDs
 - action-needed items

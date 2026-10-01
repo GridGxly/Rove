@@ -738,6 +738,7 @@ def apply_command(command: dict, message_id: str):
                 "value": answer["value"],
                 "proposal_hash": answer["proposal_hash"],
             }
+        remember_later = None
         if command["kind"] in {"answer", "use"}:
             observation_path = state_root() / f"applications/{application_id}/observation.json"
             observation = json.loads(observation_path.read_text())
@@ -761,6 +762,12 @@ def apply_command(command: dict, message_id: str):
                 "INSERT OR REPLACE INTO application_answers VALUES(?,?,?,?)",
                 (application_id, field["key"], command["value"], message_id),
             )
+            if command["kind"] == "answer":
+                remembered = [
+                    o.get("label", "") if isinstance(o, dict) else str(o)
+                    for o in field.get("options") or []
+                ]
+                remember_later = (label, remembered, command["value"])
         conn.execute(
             "INSERT INTO owner_commands VALUES(?,?,?,?,?,?)",
             (
@@ -775,6 +782,8 @@ def apply_command(command: dict, message_id: str):
     data = {k: v for k, v in command.items() if k != "application_id"}
     if label is not None:
         data["label"] = label
+    if remember_later:
+        workflow.remember_answer(*remember_later, message_id)
     workflow.record(
         application_id,
         "owner_answer" if command["kind"] in {"answer", "use"} else command["kind"] + "_requested",

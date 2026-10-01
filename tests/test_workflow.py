@@ -1598,3 +1598,22 @@ def test_a_thread_reply_that_cannot_apply_gets_one_plain_line(state, monkeypatch
     with workflow.db() as conn:
         kinds = [r[0] for r in conn.execute("SELECT kind FROM owner_commands")]
     assert kinds == ["defer"]
+
+
+def test_an_answer_given_once_is_remembered_for_the_same_question_on_any_form(state):
+    import os
+    from pathlib import Path
+
+    label = "How many months are you available for an internship?*"
+    options = ["- Select -", "3 months", "4 months", "5 months"]
+    workflow.remember_answer(label, options, "5 months", "m1")
+    assert workflow.recall_answer(
+        "How many months are you available for an internship?", options
+    ) == ("5 months")
+    assert workflow.recall_answer(label + " (Required)", []) == "5 months"
+    assert workflow.recall_answer(label, ["1 month", "2 months"]) is None
+    assert workflow.recall_answer("Favorite color", []) is None
+    workflow.remember_answer("Favorite color", [], "skip", "m2")
+    assert workflow.recall_answer("Favorite color", []) is None
+    notes = list(Path(os.environ["OBSIDIAN_VAULT_PATH"]).rglob("Answers.md"))
+    assert notes and "5 months" in notes[0].read_text()

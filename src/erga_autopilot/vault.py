@@ -6,6 +6,7 @@ searching in Obsidian; it is never a candidate fact and never feeds the profile.
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -22,6 +23,30 @@ def safe_name(text: str, limit: int = 80) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|#^\[\]]+', " ", text).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned[:limit].rstrip() or "Application"
+
+
+def sync_answers() -> Path | None:
+    """A readable copy of the answers the owner gave once; SQLite stays the exact store."""
+    if not os.environ.get("OBSIDIAN_VAULT_PATH"):
+        return None
+    path = vault_root() / "Answers.md"
+    rows = workflow.remembered_answers()
+    lines = [
+        "# Remembered answers",
+        "",
+        "Facts you answered once in Discord. Autopilot fills them on any later form that asks the",
+        "same question. Edit or remove a line here and tell Autopilot in `#memory` to change it;",
+        "the exact store is the local database.",
+        "",
+        "| Question | Answer | Remembered |",
+        "| --- | --- | --- |",
+    ]
+    for row in rows:
+        label = row["label"].replace("|", "/")
+        lines.append(f"| {label} | {row['value'].replace('|', '/')} | {row['created_at'][:10]} |")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def note_path(item: dict) -> Path:
