@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import matching, workflow
+from . import matching, memory_channel, workflow
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
 from .reasoning import GATE_KINDS
@@ -1021,6 +1021,7 @@ def poll_commands():
                 conn.execute(
                     "INSERT OR REPLACE INTO workflow_checkpoints VALUES(?,?)", (channel, maximum)
                 )
+    memory_channel.poll(owner)  # `#memory` keeps its own cursor and plain-word replies
 
 
 def recover_interrupted():
