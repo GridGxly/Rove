@@ -110,9 +110,11 @@ def seed(label: str, options: list, value: str, when: str | None = None):
 
 def used(state: Path, label: str, times: int):
     """Prepared applications whose package filled this label from a remembered answer."""
-    for n in range(times):
-        directory = state / "applications" / f"app-{abs(hash(label)) % 10_000}-{n}"
-        directory.mkdir(parents=True)
+    applications = state / "applications"
+    applications.mkdir(exist_ok=True)
+    for _ in range(times):
+        directory = applications / f"app-synthetic-{len(list(applications.iterdir()))}"
+        directory.mkdir()
         field = {"label": label, "value": "x", "source": "your earlier answer"}
         (directory / "package.json").write_text(json.dumps({"filled": [field]}))
 
@@ -136,34 +138,39 @@ def noon(month: int, day: int, year: int | None = None) -> str:
 
 def test_list_groups_answers_most_used_first_and_pages_with_more(state, chat):
     assert chat.say("list")[0].startswith("Nothing saved yet.")
+    commute = "Can you commute to our office in Springfield?"
     seed(RELOCATE, ["Yes", "No"], "Yes")
+    seed(commute, [], "Yes")
     seed("How did you hear about us?", [], "A friend")
     for n in range(12):
         seed(f"Synthetic question number {n} about widgets?", [], f"answer {n}")
     used(state, "How did you hear about us? (Required)", 3)
+    used(state, commute, 2)
     used(state, RELOCATE, 1)
     (reply,) = chat.say("what do you know")
     lines = reply.split("\n")
-    assert lines[0] == "I remember 14 answers, most used first:"
+    assert lines[0] == "I remember 15 answers, most used first:"
     assert lines[1:5] == [
         "**Other**",
         "1. How did you hear about us? → A friend",
         "2. Synthetic question number 11 about widgets? → answer 11",
         "3. Synthetic question number 10 about widgets? → answer 10",
     ]
-    # The answer used once is on the first message, under its own heading.
-    assert lines[-3:] == [
+    # The used answers are on the first message, together under what they are about.
+    assert lines[-4:] == [
         "**Location**",
+        "11. Can you commute to our office in Springfield? → Yes",
         "12. Are you willing to relocate? → Yes",
-        "Say `more` for the other 2.",
+        "Say `more` for the other 3.",
     ]
     assert len([x for x in lines if re.match(r"\d+\. ", x)]) == memory_channel.PAGE_ITEMS
     assert len(reply) < 2000
     (rest,) = chat.say("more")
+    # One topic on the message: no heading needed.
     assert rest.split("\n") == [
-        "**Other**",
-        "13. Synthetic question number 1 about widgets? → answer 1",
-        "14. Synthetic question number 0 about widgets? → answer 0",
+        "13. Synthetic question number 2 about widgets? → answer 2",
+        "14. Synthetic question number 1 about widgets? → answer 1",
+        "15. Synthetic question number 0 about widgets? → answer 0",
     ]
     assert chat.say("more") == ["That is everything I remember."]
     no_ids([reply, rest])
@@ -179,6 +186,7 @@ def test_sensitive_answers_are_hidden_in_lists_and_shown_when_named(state, chat)
     assert "not a protected veteran" not in reply and "→ No" not in reply
     assert f"{memory_channel.words(MONTHS)} → 5 months" in reply
     assert "The ones marked saved are private; name one to see it." in reply
+    assert "**" not in reply  # three answers about three things: a flat list, no headings
     assert chat.say("clearance") == [
         "Do you have an active security clearance? → No · you told me on Sep 30"
     ]
@@ -324,6 +332,13 @@ def test_anything_else_gets_one_line_of_help(state, chat):
     assert chat.say("nice work today") == [memory_channel.HELP_LINE]
     assert chat.say("help") == [memory_channel.HELP_LINE]
     assert chat.say("?") == [memory_channel.HELP_LINE]
+
+
+def test_form_text_is_shown_as_plain_words(state, chat):
+    seed("Do you **agree** to [our terms](https://tracker.example/x)?`*", [], "`Yes`")
+    (reply,) = chat.say("terms")
+    assert reply.startswith("Do you agree to [our terms] (https://tracker.example/x)? → Yes · ")
+    assert "](" not in reply and "`" not in reply and "*" not in reply
 
 
 def test_small_variations_in_wording_still_work(state, chat):

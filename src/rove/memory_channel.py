@@ -293,14 +293,20 @@ def read_only(fact: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def plain(text) -> str:
+    """Text from a form, on one line, that Discord will not render as markup or a link."""
+    text = re.sub(r"[*`]", " ", str(text or "")).replace("](", "] (")
+    return " ".join(text.split())
+
+
 def words(label, limit: int = 90) -> str:
     """A form's question as the owner reads it: no required marks, no markup."""
-    text = re.sub(r"\((?:optional|required)\)|[*`]", " ", str(label or ""), flags=re.IGNORECASE)
-    return workflow.clip(" ".join(text.split()), limit) or "that question"
+    text = re.sub(r"\((?:optional|required)\)", " ", str(label or ""), flags=re.IGNORECASE)
+    return workflow.clip(plain(text), limit) or "that question"
 
 
 def shown(value, limit: int = 160) -> str:
-    return workflow.clip(" ".join(str(value or "").replace("`", "'").split()), limit) or "—"
+    return workflow.clip(plain(value), limit) or "—"
 
 
 def told(created_at: str) -> str:
@@ -400,6 +406,13 @@ def load_listing() -> tuple[list[str], int]:
     return (json.loads(row["questions"]), int(row["shown"])) if row else ([], 0)
 
 
+def headings(rows: list[dict]) -> list[str]:
+    """The heading each row sits under in one message: its topic when another row
+    shares it, "Other" when it would stand alone."""
+    counts = Counter(group_of(row) for row in rows)
+    return [group_of(row) if counts[group_of(row)] > 1 else "Other" for row in rows]
+
+
 def ordered(rows: list[dict]) -> list[dict]:
     """Most used first, newest first among equals. Each message's worth is then kept
     together by what it is about, so the most used answers are always on the first one."""
@@ -408,9 +421,10 @@ def ordered(rows: list[dict]) -> list[dict]:
     ranked.sort(key=lambda r: -uses[r["question"]])
     result: list[dict] = []
     for start in range(0, len(ranked), PAGE_ITEMS):
+        chunk = ranked[start : start + PAGE_ITEMS]
         groups: dict[str, list[dict]] = {}
-        for row in ranked[start : start + PAGE_ITEMS]:
-            groups.setdefault(group_of(row), []).append(row)
+        for row, heading in zip(chunk, headings(chunk), strict=True):
+            groups.setdefault(heading, []).append(row)
         result += [row for members in groups.values() for row in members]
     return result
 
@@ -422,26 +436,27 @@ def page(order: list[str], start: int, rows: list[dict]) -> str:
     if start == 0:
         count = len(order)
         lines.append(f"I remember {count} answer{'s' if count != 1 else ''}, most used first:")
-    group, taken, hidden, index = None, 0, False, start
-    while index < len(order) and taken < PAGE_ITEMS:
+    taken: list[tuple[str, dict]] = []
+    size, index = len(lines[0]) + 1 if lines else 0, start
+    while index < len(order) and len(taken) < PAGE_ITEMS:
         row = by_question.get(order[index])
-        if row is None:  # forgotten since the list was shown; its number stays retired
-            index += 1
-            continue
-        entry = line(index + 1, row, reveal=False)
-        header = [f"**{group_of(row)}**"] if group_of(row) != group else []
-        if taken and sum(len(x) + 1 for x in [*lines, *header, entry]) > PAGE_CHARS:
-            break
-        lines += [*header, entry]
-        group, taken, hidden, index = (
-            group_of(row),
-            taken + 1,
-            hidden or row["sensitive"],
-            index + 1,
-        )
+        if row is not None:  # one forgotten since the list was shown keeps its number retired
+            entry = line(index + 1, row, reveal=False)
+            size += len(entry) + 20  # room for a heading above it
+            if taken and size > PAGE_CHARS:
+                break
+            taken.append((entry, row))
+        index += 1
+    names = headings([row for _, row in taken])
+    current = None
+    for (entry, _), name in zip(taken, names, strict=True):
+        if len(set(names)) > 1 and name != current:
+            lines.append(f"**{name}**")
+        lines.append(entry)
+        current = name
     left = sum(1 for question in order[index:] if question in by_question)
     save_listing(order, index if left else len(order))
-    if hidden:
+    if any(row["sensitive"] for _, row in taken):
         lines.append("The ones marked saved are private; name one to see it.")
     if left:
         lines.append(f"Say `more` for the other {left}.")
