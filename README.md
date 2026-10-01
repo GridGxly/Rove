@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/rove-logo.svg" width="760" alt="Rove" />
+  <img src="docs/assets/rove-logo.png" width="760" alt="Rove" />
 </p>
 
 <p align="center">
