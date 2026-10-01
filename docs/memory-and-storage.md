@@ -1,298 +1,171 @@
 # Memory and storage
 
-Rove uses different storage layers for different jobs. The goal is to keep long-term knowledge readable by the user without giving up the transactional guarantees needed for browser automation and submission safety.
-
-The reference design uses four main layers:
+Rove keeps each kind of data in the layer that suits it. Knowledge the owner reads and edits lives in an Obsidian vault. State that must be exact lives in SQLite. Files whose bytes matter are kept as private files. Erga keeps its own state, and Hermes keeps a small hot memory.
 
 ```text
-Hermes hot memory
-      │
-      ▼
-Obsidian vault  ──> QMD index
-      │
-      ▼
-Rove logic
-      │
-      ├── SQLite transactional state
-      ├── Erga state
-      └── private filesystem artifacts
+Hermes hot memory        small session-start context
+Obsidian vault           approved profile, voice sample, readable notes
+  └── QMD index          search over the approved profile copy, rebuildable
+SQLite                   queue, attempts, bindings, answers, checkpoints
+Private files            profile snapshots, resumes, packages, receipts, screenshots, mail
+Erga                     career evidence, resume generation, application status
 ```
 
-Discord sits beside those layers as the remote control surface and human-readable application timeline.
-
-The current implementation validates the canonical candidate note, creates immutable
-approved snapshots, and exposes section reads and bounded Erga evidence reads.
-`rove memory index` creates a rebuildable retrieval copy of the approved profile
-inside the vault and indexes only that file in a separate QMD collection. Version and
-file-hash checks block stale or edited retrieval copies. Drafts and research are not
-included. See [Onboarding and jobs](onboarding-and-jobs.md) for the concrete workflow.
+Everything here except the vault lives under the state root, `~/.config/rove` by default. `ROVE_STATE_DIR` moves it. The vault and the state root both stay outside the Git checkout.
 
 ## Hermes hot memory
 
-Hermes keeps a small built-in memory for information that should be available at the start of a session.
+Hermes' `MEMORY.md` and `USER.md` hold a small amount of context for the Discord agent: stable preferences, environment facts, tool quirks and pointers to the vault. The full profile, application history and research do not belong there.
 
-Use `MEMORY.md` and `USER.md` for compact, high-value context such as:
+The worker's own Qwen calls for job fit, drafting, cleanup and mail labels skip Hermes memory and context files. They see only the input the worker builds.
 
-- project conventions
-- important environment facts
-- stable user preferences
-- known tool quirks
-- pointers to the private Rove vault and runtime
+## The Obsidian vault
 
-Do not try to fit the full candidate profile, company research, application history, or recruiting archive into Hermes hot memory. Those files are intentionally small.
+The vault path comes from `OBSIDIAN_VAULT_PATH` in the process environment, or from `obsidian_vault_path` in private `config/recruiting.json`. The launchd services receive only `PATH` and `ROVE_STATE_DIR`, so a service install needs the path in `config/recruiting.json`. The real path is never committed.
 
-## Obsidian is the long-term semantic memory
-
-The private Obsidian vault is the main human-readable knowledge store for Rove.
-
-It holds information that benefits from being readable, searchable, linkable, and editable outside the agent:
-
-- approved candidate profile
-- application preferences and policies
-- `introduction.md`-style narrative context
-- a `Story/Voice.md` sample of the owner's own writing
-- company notes
-- research notes
-- decisions and lessons learned
-- long-term application notes
-- career context and working notes
-
-A reference vault can look like this:
+Rove reads and writes inside one folder of the vault:
 
 ```text
 Rove/
 ├── Profile/
-│   ├── Candidate.md
-│   ├── Education.md
-│   ├── Eligibility.md
-│   ├── Work Authorization.md
-│   ├── Locations.md
-│   └── Application Defaults.md
+│   └── Candidate.md              the approved profile
+├── Retrieval/
+│   └── Approved profile.md       copy indexed by QMD
 ├── Story/
-│   ├── Introduction.md
-│   └── Voice.md
-├── Career/
-│   ├── Skills.md
-│   ├── Projects.md
-│   └── Experience.md
-├── Companies/
+│   └── Voice.md                  optional, written only by the owner
 ├── Applications/
+│   └── <job title> · <id>.md     one note per application
 ├── Research/
-├── Decisions/
-├── Daily/
-└── System/
+│   └── <employer site>.md        company research, marked untrusted
+└── Answers.md                    copy of remembered answers
 ```
 
-That layout is a starting point, not a reason to create empty folders before the implementation needs them.
+### The approved profile
 
-`Story/Voice.md` is optional. Put a few paragraphs you wrote without help in it (notes,
-emails, an old essay). When it exists, Qwen gets up to about 2,500 characters of it as a
-style sample for written application answers. Rove reads the note and never writes
-it. It is not a candidate fact: nothing in it reaches an application unless the approved
-profile or evidence shows the same fact.
+`Profile/Candidate.md` is the canonical profile. Its front matter holds eight fixed sections: identity, education, eligibility, availability, preferences, evidence, stories and application policy. `rove onboarding approve` writes it after the owner reviews the exact draft. The model cannot approve a profile and cannot add a section.
 
-The vault is private runtime data. It belongs outside the Git checkout.
+Every read validates the note against the approved hash. If the owner edits the note by hand, the hash no longer matches and Rove refuses to use the profile until it is reviewed and approved again. Prose below the front matter is not an application fact. [Onboarding and jobs](onboarding-and-jobs.md) describes the interview and approval commands.
 
-The expected public configuration key is:
+### Voice note
+
+`Story/Voice.md` is optional. Put a few paragraphs you wrote without help in it, such as notes, emails or an old essay. Qwen gets up to about 2,500 characters of it as a style sample for written answers. Rove reads the note and never writes it. Nothing in it reaches an application as a fact unless the approved profile or evidence shows the same fact.
+
+### Application notes
+
+Each application has a readable note under `Applications/` with its status, links, job fit, filled values with sources, open questions with drafts, and a timeline. It is rewritten from SQLite and the private files on every change. It is a mirror for reading and searching. Rove never reads it back and it is never a candidate fact.
+
+### Research notes
+
+When company research finds text, a copy goes to `Research/<employer site>.md` with the source URLs and the fetch time, marked untrusted at the top. The next application to the same employer overwrites it. Qwen sees the private `research.json` in the application's folder, so editing the note changes no draft.
+
+### Remembered answers
+
+The exact store of remembered answers is the `answer_memory` table in SQLite. `Answers.md` is a readable table of the question, the answer and the date, rewritten whenever an answer is remembered. Rove does not read it back, so editing the note does not change what Rove fills. Correcting a remembered answer from Discord depends on the `#memory` channel, which is in progress.
+
+The copy is written only when `OBSIDIAN_VAULT_PATH` is set in the environment of the process that records the answer. With the vault configured only through `config/recruiting.json`, the answer is still remembered in SQLite and the note is skipped.
+
+### What the vault never holds
+
+Credentials, tokens, cookies, verification codes, resume PDFs, receipts and screenshots do not go in the vault.
+
+## QMD
+
+QMD indexes one file, `Retrieval/Approved profile.md`, in the `rove-candidate` index and the `approved-profile` collection. `rove memory index` writes that file from the approved profile and rebuilds the index. Run it again after each approved change.
+
+Retrieval refuses to run when the copy is stale, was edited, or the canonical profile is invalid. Drafts, research notes and application notes are not indexed. A search result is a pointer for the agent, and `read_candidate_section` is what returns an authoritative answer.
+
+The index is derived data. If it is lost, rebuild it.
+
+## SQLite
+
+Rove uses one database, `recruiting.sqlite3` in the state root, readable only by the owner. It holds state where duplicates, ordering, crash recovery or exact transitions matter.
+
+| Area | Tables |
+| --- | --- |
+| Job catalog | `job_sources`, `jobs`, `job_events` |
+| Feed announcements | `feed_cursor`, `feed_outbox` |
+| Onboarding and profile versions | `onboarding`, `onboarding_events`, `onboarding_issues`, `profile_versions`, `active_profile` |
+| Application queue and timeline | `application_queue`, `application_events`, `job_link_aliases` |
+| Owner replies and cards | `owner_commands`, `workflow_checkpoints`, `owner_notices` |
+| Answers | `application_answers` for one application, `answer_memory` across applications |
+| Submission | `live_submission_attempts` |
+| Recruiting mail | `mail_checkpoints`, `mail_messages` |
+
+It answers questions such as whether a job was already queued, whether a Discord message was already applied, whether a submission was already attempted, which thread belongs to an application, and whether a mail was already handled.
+
+Readable long-term knowledge does not go here. Remembered answers are the one place SQLite holds facts the owner gave, because filling a form needs an exact lookup by question.
+
+## Private files
+
+The state root is created with owner-only permissions. Its layout as the code uses it:
 
 ```text
-OBSIDIAN_VAULT_PATH
+~/.config/rove/
+├── config/                 workflow.json, feed.json, mail.json, recruiting.json, setup.env
+├── recruiting.sqlite3
+├── applications/<id>/      everything about one application
+├── profiles/snapshots/     one immutable JSON file per approved profile hash
+├── onboarding/             the current draft
+├── jobs/                   Keryx snapshots and sync status
+├── browser/                the recruiting Chrome profile and session file
+├── credentials/            encrypted employer accounts and their key
+├── erga/                   Erga's config and state
+├── mail/                   handled recruiting mail
+├── memory/                 state of the QMD index
+├── logs/                   service logs and the delivery-failure log
+└── synthetic/              certification fixtures
 ```
 
-The real path belongs in local configuration.
+An application's folder holds:
 
-## Canonical notes still need validation
+- `profile.json`, the approved profile as frozen for this application
+- the posting text and Qwen's input and output for the job-fit review, and the reviewed result
+- `resume.pdf`, its manifest with the SHA-256, and Erga's result or error
+- `research.json`, the company research cache
+- Qwen's input and output for drafting and cleanup, and `answer-proposals.json`
+- `observation.json` and `browser.png` from the latest observation
+- `package.json`, the reviewed form state and its hash
+- `receipt.json` after a submission attempt, with any earlier receipt kept beside it
+- debugging evidence listed in [Browser automation](browser-automation.md#evidence-kept-for-debugging)
 
-Obsidian being human-readable does not mean the model gets unrestricted write authority.
+For a submitted resume, the exact bytes and hash are what the application used. Rove does not regenerate a resume and present it as the original.
 
-Canonical profile and policy notes should use a schema that code can parse and validate. Markdown frontmatter is appropriate for stable metadata such as schema version, profile version, approval state, and timestamps.
+## Frozen profile versions
 
-A human may edit the vault directly in Obsidian, but Rove should validate relevant notes before using them for an application. If a manual edit creates a contradiction or invalid structure, stop and surface the problem instead of guessing.
+Approving a profile writes an immutable snapshot named by its hash and records it in SQLite as the active version. An application records that hash when it is queued and keeps its own copy of the profile from the first time its page is opened.
 
-Writes to authoritative areas such as `Profile/` should go through explicit profile/memory operations. Qwen may propose a change, but it should not turn arbitrary web content, email, or research text into an approved candidate fact.
+Preparation checks that the copy still hashes to the recorded value and that it is still the approved version. Sending checks both again. If the approved profile changed in between, the run stops. There is no automatic rebuild of an application onto a new profile version.
 
-## Approved profile snapshots
+## Erga
 
-Applications need an exact record of the facts they used even if the live vault changes later.
+Erga keeps its own configuration and storage under `erga/` in the state root. Rove never writes Erga's database. It calls Erga through its MCP interface for four operations: `intake_job_url`, `validate_tailored_resume`, `confirm_application_submission` and `update_application_status`. Evidence reads go through `list_evidence` and return at most three approved excerpts.
 
-When an approved candidate profile changes, Rove should be able to create a normalized immutable snapshot and hash for that profile version. The snapshot can live as a private file while SQLite stores the version ID, hash, and path/reference.
+SQLite and the resume manifest keep the Erga application ID where one exists.
 
-A frozen application package should point to that approved snapshot rather than reading a changing vault note during submission.
+## Credentials
 
-This keeps the vault pleasant to edit without losing historical reproducibility.
+Employer accounts that Rove creates are stored in `credentials/store.enc`, encrypted with Fernet, with the key in `credentials/key` beside it. Both are readable only by the owner. Only the browser daemon reads the store, to fill a sign-in form on the same host. Passwords never enter Discord, the vault, model context or logs.
 
-## Research is useful but not authoritative
-
-Research notes may live in the vault, but they are not automatically candidate facts.
-
-For example:
-
-- `Research/` can contain company research and source notes
-- `Companies/` can contain durable company context and referral notes
-- `Applications/` can contain readable notes about an application
-
-Those notes may influence research and writing where policy allows, but they cannot silently overwrite the approved candidate profile or Erga evidence.
-
-When provenance matters, store the source URL, retrieval date, and enough context to understand where a note came from.
-
-Company research is the research note Rove writes today. Before Qwen drafts a written
-answer, trusted code reads up to three public pages from the employer's own site and keeps
-the sentences that say what the company does, its size or stage, its product and its
-values. The text is written to `Rove/Research/<employer host>.md`, marked
-untrusted at the top, with the source URLs and the fetch time; the next application to
-the same employer overwrites it. What Qwen sees is the private `research.json` under the
-application's folder in the state root, so editing the note changes no draft. Nothing in
-it is a candidate fact, and lines that read as instructions to a model are dropped before
-the text enters the context. See [Application workflow](application-workflow.md).
-
-## QMD is the retrieval layer
-
-As the vault grows, the agent should not depend on knowing the exact filename for every question.
-
-QMD is the reference local search layer for the vault. It can index Markdown and provide local keyword, semantic, and reranked retrieval.
-
-QMD is an index, not the source of truth.
-
-If the QMD index is deleted, rebuild it from the vault. Do not store irreplaceable applicant state only inside the index.
-
-The reference full setup may use the Hermes QMD skill. Check the current Hermes/QMD requirements before installation because Node.js, SQLite extension support, helper-model downloads, and commands can change.
-
-## SQLite stays for transactional state
-
-Rove still needs SQLite, but its role is intentionally narrower.
-
-Use SQLite for state where duplication, ordering, concurrency, crash recovery, or exact transitions matter.
-
-Examples include:
-
-- Discord source-message checkpoints
-- normalized job IDs and deduplication
-- application run state
-- browser-session/run state
-- submission attempts
-- unknown-submission recovery
-- question fingerprints and answer references
-- remembered owner answers (`answer_memory`), mirrored to `Answers.md` in the vault
-- Discord forum/message bindings
-- Zoho message ids and the inbox checkpoint (`mail_messages`, `mail_checkpoints`)
-- action-needed items
-- reminders and queues
-- outbox/idempotency records
-- artifact metadata and hashes
-- audit-event indexes
-
-SQLite should be able to answer questions such as:
-
-- was this source message already processed?
-- was this job already queued or applied to?
-- did we already attempt submission?
-- is the application currently safe to retry?
-- which Discord thread belongs to this application?
-- was this recruiting email already reconciled?
-
-Those are database problems, not Markdown problems.
-
-## Onboarding uses both layers
-
-During onboarding, temporary session state and autosave checkpoints may live in SQLite because the flow can be interrupted and resumed.
-
-Once the user approves a section or completes final review, the durable semantic result belongs in the validated Obsidian profile structure.
-
-That gives the user a profile they can actually read while keeping the onboarding workflow recoverable.
-
-## Erga keeps its own state
-
-Erga has its own local storage and domain model. Rove should not replace that storage with Obsidian or reach into Erga's database from browser code.
-
-Use Erga's supported interfaces for career evidence, resume generation/validation, application state, and recruiting reconciliation.
-
-Rove SQLite may reference Erga application or artifact IDs where needed.
-
-## Filesystem artifacts
-
-Large or immutable artifacts belong in the private filesystem rather than inside Markdown or SQLite blobs.
-
-Examples:
-
-```text
-resumes/
-application-packages/
-receipts/
-screenshots/
-email-evidence/
-traces/
-job-snapshots/
-backups/
-```
-
-SQLite can store paths, metadata, hashes, and relationships to those files.
-
-For a submitted resume, preserve the exact bytes and SHA-256 used for that application.
-
-## Discord is not the database
-
-Discord is the phone-friendly control surface and a useful human-readable timeline.
-
-The application forum can mirror important actions, approvals, lifecycle events, and receipts, but Discord is not machine truth and should not be the only copy of important state.
-
-Secrets never belong there.
-
-## Credentials are separate
-
-Credentials do not belong in the Obsidian vault, normal Markdown notes, Discord, or model context.
-
-Employer-account passwords may be stored as encrypted local ciphertext with the encryption key kept separately in an owner-only local location.
-
-OAuth tokens, cookies, MFA codes, and encryption keys should stay out of the normal semantic memory path.
-
-## Backups
-
-The vault, SQLite state, and private artifacts all need backups eventually, but they have different recovery properties:
-
-- Obsidian vault: durable semantic knowledge; back it up
-- QMD index: derived; rebuild it
-- SQLite: transactional state; back it up consistently
-- application artifacts: preserve exact files and hashes
-- credentials: back up only through an approved encrypted method
-
-Do not add cloud sync as a silent requirement. A user may choose Obsidian Sync or another backup system, but the default architecture remains local-first.
-
-## The rule of thumb
-
-Use Obsidian when the question is:
-
-> what does the user know, prefer, remember, or want to read and edit?
-
-Use SQLite when the question is:
-
-> did this machine action happen exactly once, and what state is the workflow in right now?
-
-Use files when the answer needs to preserve exact bytes.
-
-Use Hermes hot memory only for the small amount of context that should be present at session start.
-
-## Application queue implementation
-
-The recruiting SQLite database now also holds canonical URL aliases, application queue
-records, forum bindings, delivery events, owner-message checkpoints, and field-bound
-answers. Exact observations, profile snapshots, resume PDFs, Erga results, the company research
-cache, and Qwen proposals live in private per-application directories. See [Application workflow](application-workflow.md).
+The Discord bot token and the Zoho values live in a private env file, `config/setup.env` in the state root or `~/.hermes/.env`. When both files define a key, the value in `~/.hermes/.env` is used.
 
 ## Recruiting mail
 
-Each recruiting mail the mail service handles is kept as plain text under
-`mail/messages/<message id>/` in the state root, with Qwen's input and output beside it
-when it ran; a mail that settles an unclear submission is cited from the receipt by that
-path. SQLite remembers which message ids were handled and the newest received time per
-account, so a mail is applied once and a restart resumes where it stopped. The thread and
-the `recruiting` channel see the sender's domain, the subject and the label only, and
-nothing in a mail becomes a candidate fact. See [Application workflow](application-workflow.md#recruiting-mail).
+Each mail the mail service applies to an application is kept as plain text under `mail/messages/<message id>/`, with Qwen's input and output beside it when Qwen classified it. A mail that settles an unclear submission is cited from the receipt by that path.
 
-## Application notes and credentials
+SQLite remembers which message IDs were handled and the newest received time per account, so a mail is applied once and a restart resumes where it stopped. Discord shows the sender's domain, the subject and the label. Nothing in a mail becomes a candidate fact.
 
-Each application also gets a readable note in the vault under
-`Rove/Applications/`, rewritten from SQLite and the private artifacts on every
-change. It is a mirror for reading and searching, not a candidate fact, and it is not
-indexed as profile memory. Employer-account credentials never enter the vault, Discord,
-or model context; they live in `credentials/store.enc` under the private state root with
-the key in `credentials/key` next to it, both owner-only.
+## Discord
+
+Discord is the control surface and a readable timeline. It is not a database. Thread entries and cards are generated from SQLite and can be posted again from it.
+
+## Backups
+
+Rove has no backup command yet. What to protect differs by layer:
+
+- the vault: back it up
+- `recruiting.sqlite3`: back it up while the services are stopped, or with SQLite's own backup tools
+- `applications/`, `profiles/` and `mail/`: keep the files as they are, since their hashes are recorded
+- `credentials/`: back up the key and the store together, through an encrypted method only
+- the QMD index and `browser/session.json`: rebuildable
+
+Cloud sync is not required. If you use Obsidian Sync or another product for the vault, that is your choice and the rest of the stack does not depend on it.
