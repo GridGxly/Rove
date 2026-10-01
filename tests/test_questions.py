@@ -293,6 +293,8 @@ def test_embrace_is_not_race_and_decline_stays_for_real_self_identification():
         "policy.decline_self_identification",
     )
     assert answer("Gender", ["Male", "Female"]) == (None, None)
+    disability = ["Yes, I have a disability", "No, I do not", "I do not want to answer"]
+    assert answer("Disability status", disability)[0] == "I do not want to answer"
 
 
 # --- c. policy defaults --------------------------------------------------------------
@@ -358,6 +360,7 @@ def test_defaults_stop_at_negations_conditions_and_the_approved_profile():
         "Are you willing to work unpaid?",
         "Are you willing to work for free?",
         "Are you willing to work for equity only?",
+        "Are you able to start immediately?",
         "I consent to receive marketing emails",  # the profile's opt-in or nobody
         "Are you able to lift 50 pounds?",  # an ability, not a willingness
         "Do you have any restrictions that would prevent you from working on-site?",

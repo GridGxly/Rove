@@ -170,8 +170,8 @@ SELF_ID = re.compile(
     r"|sexual orientation|lgbt\w*|transgender|self identif\w*)\b"
 )
 DECLINE_OPTION = re.compile(
-    r"decline|prefer not|don.?t wish|do not wish|not to (answer|disclose|self)|"
-    r"choose not|rather not",
+    r"decline|prefer not|don.?t wish|do not wish|don.?t want to|do not want to|"
+    r"not to (answer|disclose|self)|choose not|rather not",
     re.IGNORECASE,
 )
 
@@ -553,7 +553,7 @@ RISK_WORDS = _words(
     "assistance expense expenses cost costs unpaid free volunteer equity commission deferred fee"
     " fees deposit bond purchase invest pay paid cut own lower less reduced reduction restrict"
     " restriction restrictions restricted prevent prevents conflict conflicts limitation"
-    " limitations xplace"
+    " limitations immediately immediate asap within today tomorrow xplace"
 )
 EMPLOYER_RELATIVE = re.compile(
     r"\b(?:here|us|our|this (?:company|organization|firm|employer|role|position|job|opportunity"
