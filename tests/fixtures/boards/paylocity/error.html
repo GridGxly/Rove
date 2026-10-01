@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- Reduced from the rendered Paylocity apply form after it refused the data: the
+     wizard is on its first step, the fields are marked and the toast is showing.
+     Company and job are invented; structure, classes and wording are the board's. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Northwind Analytics - Junior Data Engineer Application</title>
+  <style>
+    .hidden { display: none; }
+    .toast-message.hidden-animated { opacity: 0; }
+  </style>
+</head>
+<body class="citrus branding-background-color">
+  <div class="container body-content" id="applicant-tracking" style="display: block;">
+    <div id="app">
+      <div class="pcty-content-area pcty-wr-container branding-font">
+        <div class="row" id="appDetailDiv">
+          <div class="ats-form-subheading">
+            <span class="job-apply-title left"><span class="custom-button-color">Junior Data Engineer</span></span>
+          </div>
+          <p class="progress-header"><span class="type-bold float-right">Step 1 of 3</span></p>
+          <div class="col-xs-12 section-wrapper" id="pcty-wr-apply-info">
+            <div class="section-heading">Information</div>
+            <div class="col-sm-6 col-xs-12">
+              <div class="form-group form-required">
+                <label>First Name <span><em>(required)</em></span></label>
+                <input data-automation-id="infoFirstName" id="info.firstName" placeholder="" type="text" value="Avery">
+                <div class="type-footnote hidden"></div>
+              </div>
+              <div class="form-group form-required form-error">
+                <label>Last Name <span><em>(required)</em></span></label>
+                <input data-automation-id="infoLastName" id="info.lastName" placeholder="" type="text" value="">
+                <div class="type-footnote show">Last Name is required</div>
+              </div>
+            </div>
+            <div class="col-sm-6 col-xs-12">
+              <div class="form-group form-required form-error">
+                <label>Email Address <span><em>(required)</em></span></label>
+                <input data-automation-id="infoEmail" id="info.email" placeholder="" type="text" value="avery-at-example">
+                <div class="type-footnote show">Email Address is invalid</div>
+              </div>
+              <div class="form-group form-required">
+                <label>Mobile Number <span><em>(required)</em></span></label>
+                <input data-automation-id="infoCellPhone" id="info.cellPhone" placeholder="" type="text" value="5555550100">
+                <div class="type-footnote hidden"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row" id="appFooterDiv">
+          <div class="col-xs-12" style="margin-top: 20px;">
+            <button class="button form-button branding-button-color full-width" data-automation-id="btnNext" id="btn-submit">Next Step<span></span></button>
+          </div>
+        </div>
+      </div>
+      <div class="toast-message error">
+        <button class="button icon white size-small float-right close-button"><i class="icon-delete"></i></button>
+        <p><span>Error: </span>Please correct missing or invalid fields.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

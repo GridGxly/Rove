@@ -1,0 +1,62 @@
+<!doctype html>
+<!-- The last step of the Paylocity apply wizard: a read-only review with the Submit
+     control. This step was not reached on a live form; it is rebuilt from the render
+     code in the board's public apply bundle (section and button markup, automation ids).
+     Company, job and answers are invented. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Northwind Analytics - Junior Data Engineer Application</title>
+  <style>.toast-message.hidden-animated { opacity: 0; }</style>
+</head>
+<body class="citrus branding-background-color">
+  <div class="container body-content" id="applicant-tracking" style="display: block;">
+    <div id="app">
+      <div class="pcty-content-area pcty-wr-container branding-font">
+        <div class="row" id="appDetailDiv">
+          <div class="ats-form-subheading">
+            <span class="job-apply-title left"><span class="custom-button-color">Junior Data Engineer</span></span>
+          </div>
+          <p class="progress-header"><span class="type-bold float-right">Step 3 of 3</span></p>
+          <div class="col-xs-12 no-horizontal-padding" data-automation-id="information-section" style="margin-bottom: 20px;">
+            <div class="col-xs-12 no-horizontal-padding">
+              <div class="col-xs-11 no-horizontal-padding"><h2>My Information</h2></div>
+              <div class="col-xs-1 no-horizontal-padding"><div class="edit-link custom-link-color">Edit</div></div>
+            </div>
+            <div class="col-md-12 col-sm-6 col-xs-12 no-left-padding field-container">
+              <h3 id="name.review">Avery Example</h3>
+              <p class="no-wrap-value" id="email.review">avery@example.com</p>
+              <p class="no-wrap-value" id="cellPhone.review">(555) 555-0100</p>
+            </div>
+            <div class="col-md-12 col-sm-6 col-xs-12 field-container no-horizontal-padding">
+              <h3>Address</h3>
+              <span><p class="no-wrap-value" id="address1.review">1 Example Street</p><p class="no-wrap-value" id="cityStateZip.review">Harborview, ST 00000</p></span>
+            </div>
+          </div>
+          <div class="col-xs-12 no-horizontal-padding section-top-border" data-automation-id="screener-questions" style="margin-bottom: 20px;">
+            <div class="col-xs-12 no-horizontal-padding">
+              <div class="col-xs-11 no-horizontal-padding"><h2>Additional Questions</h2></div>
+              <div class="col-xs-1 no-horizontal-padding"><div class="edit-link custom-link-color">Edit</div></div>
+            </div>
+            <div class="col-xs-12 field-container no-horizontal-padding">
+              <h3>Which of our library reporting tools have you used?</h3>
+              <p class="no-wrap-value">None of the above</p>
+            </div>
+          </div>
+        </div>
+        <div class="row" id="appFooterDiv">
+          <div class="col-xs-12 no-horizontal-padding" style="text-align: center;">
+            <div class="col-xs-12 no-horizontal-padding">
+              <button class="button form-button branding-button-color full-width" data-automation-id="btnSubmit" id="btn-submit" title="">Submit<span></span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="toast-message hidden-animated">
+        <button class="button icon white size-small float-right close-button"><i class="icon-delete"></i></button>
+        <p><span>: </span></p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- The Workable result view, drawn in place at the form's own URL once the send is
+     accepted. No application was sent to see it: it is rebuilt from the success component
+     in the board's public careers bundle (data-ui hook, status region and wording).
+     A US posting can show the voluntary survey form under it, as here.
+     Company, job and the address are invented. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Platform Engineer - Larkspur Labs - Application</title>
+</head>
+<body style="min-width: 320px">
+  <div id="app" style="height: 100%">
+    <div data-ui="careers-page-content">
+      <header role="banner">
+        <h1 data-ui="job-title">Platform Engineer</h1>
+      </header>
+      <main role="main">
+        <div class="styles--PaaiU">
+          <div class="styles--1kLCz" data-ui="successful-submit">
+            <h3>Thank you!</h3>
+            <div class="styles--1_L1O"></div>
+            <div class="styles--XQNXd" role="status">
+              <h3>Your application has been submitted successfully.</h3>
+              <p>A copy of your application will be sent to avery@example.com for your records.</p>
+            </div>
+          </div>
+          <form data-ui="eeoc-form">
+            <fieldset>
+              <legend>Voluntary self-identification</legend>
+              <label><input type="radio" name="gender" value="decline"> I don't wish to answer</label>
+              <label><input type="radio" name="gender" value="other"> Another answer</label>
+            </fieldset>
+            <button type="submit">Submit survey</button>
+            <button type="button">Skip</button>
+          </form>
+        </div>
+      </main>
+      <div data-ui="footer-powered-by"><span>Powered by <a href="https://jobs.workable.com/" target="_blank">Workable</a></span></div>
+    </div>
+  </div>
+</body>
+</html>

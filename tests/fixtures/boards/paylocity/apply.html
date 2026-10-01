@@ -1,0 +1,243 @@
+<!doctype html>
+<!-- Reduced from the rendered first step of a public Paylocity apply form
+     (/Recruiting/Jobs/Apply/{id}), as the page looks once a resume is attached and the
+     "Apply with resume" modal has closed. Company, job and the employer's own questions
+     are invented; structure, ids, classes and automation ids are the board's.
+     The style block stands in for the board stylesheet rules that matter to a reader. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Northwind Analytics - Junior Data Engineer Application</title>
+  <style>
+    .hidden { display: none; }
+    .toast-message.hidden-animated { opacity: 0; }
+    .rw-popup-container { display: none; }
+  </style>
+</head>
+<body class="citrus branding-background-color">
+  <div class="modal" tab-index="-1" role="dialog" aria-labelledby="myModalLabel" id="0citrus-modal-wrapper" aria-hidden="true" style="display:none;">
+    <div class="modal-dialog">
+      <div aria-hidden="true" aria-labelledby="Force Upload Resume" class="modal" id="forceUploadResumeModal" role="dialog" tabindex="-1">
+        <div class="modal-content size-small branding-font">
+          <div class="modal-header text-align-center"><h2>Apply with resume</h2></div>
+          <div class="modal-body text-align-center"><p>Upload your resume and we'll automatically fill out your application</p></div>
+          <div class="modal-footer">
+            <input accept=".doc,.docx,.pdf" id="btn-forceResume" type="file" style="display: none;">
+            <button class="button branding-button-color full-width" data-automation-id="btn-forceResume"><span>Upload Resume</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="container body-content" id="applicant-tracking" style="display: block;">
+    <input name="__RequestVerificationToken" type="hidden" value="synthetic-token">
+    <div id="app">
+      <div class="pcty-content-area pcty-wr-container branding-font">
+        <div class="row" id="appDetailDiv">
+          <div class="ats-form-subheading">
+            <span class="job-apply-title left"><span class="custom-button-color">Junior Data Engineer</span></span>
+          </div>
+          <p class="progress-header"><span class="type-bold float-right">Step 1 of 3</span></p>
+
+          <div class="col-xs-12 section-wrapper">
+            <div class="rounded-box padding shadow box-shadow-gray-5px">
+              <div class="col-sm-6 col-xs-12">
+                <input accept=".doc,.docx,.pdf" id="btn-resume" type="file" style="display: none;">
+                <button class="button branding-button-color full-width" data-automation-id="btn-resume"><span>Select Resume to Upload</span></button>
+              </div>
+              <div class="col-sm-6 col-xs-12">
+                <input class="margin-top-12px margin-right-5px" id="useAttachedResumeToFillOutApplication" type="checkbox" checked>
+                <label for="useAttachedResumeToFillOutApplication">Fill out application with my resume</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-xs-12 section-wrapper" id="pcty-wr-apply-info">
+            <div class="section-heading">Information</div>
+            <div class="col-sm-6 col-xs-12">
+              <div class="form-group form-required">
+                <label>First Name <span><em>(required)</em></span></label>
+                <input data-automation-id="infoFirstName" id="info.firstName" placeholder="" type="text" value="">
+                <div class="type-footnote hidden"></div>
+              </div>
+              <div class="form-group form-required">
+                <label>Last Name <span><em>(required)</em></span></label>
+                <input data-automation-id="infoLastName" id="info.lastName" placeholder="" type="text" value="">
+                <div class="type-footnote hidden"></div>
+              </div>
+              <div class="form-group">
+                <label>Preferred First Name</label>
+                <input data-automation-id="infoPreferredName" id="info.preferredName" placeholder="" type="text" value="">
+                <div class="type-footnote hidden"></div>
+              </div>
+            </div>
+            <div class="col-sm-6 col-xs-12">
+              <div class="form-group form-required">
+                <label>Email Address <span><em>(required)</em></span></label>
+                <input data-automation-id="infoEmail" id="info.email" placeholder="" type="text" value="">
+              </div>
+              <div class="form-group form-required">
+                <label>Mobile Number <span><em>(required)</em></span></label>
+                <input data-automation-id="infoCellPhone" id="info.cellPhone" placeholder="" type="text" value="">
+                <div class="type-footnote">For international numbers, start with a + and then the country code (e.g., +57 for Colombia)</div>
+                <div class="type-footnote hidden"></div>
+              </div>
+            </div>
+            <div class="col-sm-6 col-xs-12">
+              <div class="form-group form-required">
+                <label>We may use SMS during the hiring process. Do you give us permission to text you? <span><em>(required)</em></span></label>
+                <div class="" style="max-width: 100px;">
+                  <div id="info.smsOptedIn" role="combobox" aria-expanded="false" aria-haspopup="true" aria-live="polite" aria-autocomplete="list" tabindex="0" class="rw-dropdownlist rw-widget">
+                    <span tabindex="-1" title="open dropdown" aria-label="open dropdown" class="rw-dropdownlist-picker rw-select rw-btn"><span aria-hidden="true" class="rw-i rw-i-caret-down"></span></span>
+                    <div class="rw-input">--</div>
+                    <div class="rw-popup-container">
+                      <div class="rw-popup rw-widget">
+                        <ul id="info.smsOptedIn__listbox" tabindex="-1" class="rw-list" role="listbox" aria-labelledby="info.smsOptedIn">
+                          <li role="option" tabindex="-1" aria-selected="true" class="rw-list-option rw-state-selected" id="info.smsOptedIn__listbox__option__0">--</li>
+                          <li role="option" tabindex="-1" aria-selected="false" class="rw-list-option" id="info.smsOptedIn__listbox__option__1">Yes*</li>
+                          <li role="option" tabindex="-1" aria-selected="false" class="rw-list-option" id="info.smsOptedIn__listbox__option__2">No</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="type-footnote hidden"></div>
+              </div>
+            </div>
+
+            <div class="col-xs-12 section-top-border no-horizontal-padding">
+              <div data-automation-id="public-site-address">
+                <div data-automation-id="public-site-address-country-wrapper" type="dropdown-wrapper">
+                  <label for="public-site-address-country" data-automation-id="public-site-address-country-label">
+                    <span data-automation-id="public-site-address-country-label-span">Country</span>
+                    <div data-automation-id="public-site-address-country-input-select-main-container">
+                      <div class="pcty-input-select-full-container" data-automation-id="public-site-address-country-input-base" aria-expanded="false" aria-haspopup="listbox" required="" id="public-site-address-country-select-wrapper" style="position: relative;">
+                        <div class="pcty-input-select-input-container">
+                          <div class="input-select-input-single-value" style="position: absolute; left: 0; right: 0;">United States</div>
+                          <div class="pcty-input-select__input">
+                            <input aria-autocomplete="list" id="public-site-address-country" maxlength="250" required="" tabindex="0" type="text" value="">
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </label>
+                </div>
+                <div data-automation-id="public-site-address-address-1-wrapper">
+                  <label for="public-site-address-address-1" data-automation-id="public-site-address-address-1-label">
+                    <span data-automation-id="public-site-address-address-1-label-span">Address Line 1</span>
+                    <div>
+                      <div style="border: 0px; clip: rect(0px, 0px, 0px, 0px); height: 1px; overflow: hidden; position: absolute; width: 1px;">
+                        <div aria-live="polite" id="public-site-address-address-1-status-a" role="status"></div>
+                      </div>
+                      <input data-automation-id="public-site-address-address-1" aria-autocomplete="list" aria-controls="public-site-address-address-1-autocomplete-list" aria-expanded="false" autocomplete="off" role="combobox" id="public-site-address-address-1" maxlength="50" placeholder="" required="" type="text" value="">
+                    </div>
+                  </label>
+                </div>
+                <div data-automation-id="public-site-address-city-wrapper">
+                  <label for="public-site-address-city" data-automation-id="public-site-address-city-label">
+                    <span data-automation-id="public-site-address-city-label-span">City</span>
+                    <div><input data-automation-id="public-site-address-city" autocomplete="off" id="public-site-address-city" maxlength="50" placeholder="" required="" type="text" value=""></div>
+                  </label>
+                </div>
+                <div data-automation-id="public-site-address-us-state-wrapper" type="dropdown-wrapper">
+                  <label for="public-site-address-us-state" data-automation-id="public-site-address-us-state-label">
+                    <span data-automation-id="public-site-address-us-state-label-span">State</span>
+                    <div data-automation-id="public-site-address-us-state-input-select-main-container">
+                      <div class="pcty-input-select-full-container" data-automation-id="public-site-address-us-state-input-base" aria-expanded="false" aria-haspopup="listbox" required="" id="public-site-address-us-state-select-wrapper" style="position: relative;">
+                        <div class="pcty-input-select-input-container">
+                          <div class="input-select-input-single-value" style="position: absolute; left: 0; right: 0;">Select a state</div>
+                          <div class="pcty-input-select__input">
+                            <input aria-autocomplete="list" id="public-site-address-us-state" maxlength="250" required="" tabindex="0" type="text" value="">
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </label>
+                </div>
+                <div data-automation-id="public-site-address-zip-wrapper">
+                  <label for="public-site-address-zip" data-automation-id="public-site-address-zip-label">
+                    <span data-automation-id="public-site-address-zip-label-span">Zip Code</span>
+                    <div><input data-automation-id="public-site-address-zip" autocomplete="off" id="public-site-address-zip" maxlength="20" placeholder="" required="" type="text" value=""></div>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="col-xs-12 section-top-border no-horizontal-padding">
+              <div class="form-group form-required">
+                <label>LinkedIn Profile URL <span><em>(required)</em></span></label>
+                <input data-automation-id="infoLinkedIn" id="info.linkedIn" placeholder="" type="text" value="">
+                <div class="type-footnote hidden"></div>
+              </div>
+              <div class="form-group radio-select-with-other">
+                <div class="radio" data-automation-id="info.howDidYouHearAboutUs-wrapper">
+                  <label for="info.howDidYouHearAboutUs" data-automation-id="info.howDidYouHearAboutUs-label">
+                    <span class="radio" data-automation-id="info.howDidYouHearAboutUs-label-span">How did you hear about us?</span>
+                    <div aria-required="true" role="radiogroup" data-automation-id="info.howDidYouHearAboutUs">
+                      <label aria-labelledby="Online Job Board-for-labelledby" id="howDidYouHearAboutUs-0">
+                        <div><div><input aria-checked="false" name="info.howDidYouHearAboutUs" type="radio" value="Online Job Board"></div><div id="Online Job Board-for-labelledby">Online Job Board</div></div>
+                      </label>
+                      <label aria-labelledby="Company Website-for-labelledby" id="howDidYouHearAboutUs-1">
+                        <div><div><input aria-checked="false" name="info.howDidYouHearAboutUs" type="radio" value="Company Website"></div><div id="Company Website-for-labelledby">Company Website</div></div>
+                      </label>
+                      <label aria-labelledby="Other-for-labelledby" id="howDidYouHearAboutUs-2">
+                        <div><div><input aria-checked="false" name="info.howDidYouHearAboutUs" type="radio" value="Other"></div><div id="Other-for-labelledby">Other</div></div>
+                      </label>
+                    </div>
+                  </label>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Skills</label>
+                <div class="react-tagsinput"><span><input type="text" class="react-tagsinput-input" placeholder="Type a skill and press enter" id="info.skills" value=""></span></div>
+                <div class="type-footnote hidden"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-xs-12 section-wrapper section-top-border">
+            <div class="rounded-box padding shadow box-shadow-gray-5px">
+              <div class="form-group"><label>Upload Cover Letter</label></div>
+              <input accept=".doc,.docx,.pdf" id="btn-coverLetter" type="file" style="display: none;">
+              <button class="button branding-button-outline-color full-width" data-automation-id="btn-coverLetter"><span>Select Cover Letter</span></button>
+            </div>
+          </div>
+
+          <div class="col-xs-12 section-wrapper no-horizontal-padding" id="pcty-wr-apply-education">
+            <div class="section-heading">Education History</div>
+            <div class="col-xs-12 education-history-group no-horizontal-padding">
+              <div class="form-group form-required">
+                <label>School Name <span><em>(required)</em></span></label>
+                <input data-automation-id="educationHistoryName0" id="educationHistory.name.0" placeholder="" type="text" value="">
+                <div class="type-footnote hidden"></div>
+              </div>
+              <div class="form-group">
+                <label>Did you Graduate?</label>
+                <div class="" style="max-width: 100px;">
+                  <div id="educationHistory.didYouGraduate.0" role="combobox" aria-expanded="false" aria-haspopup="true" aria-live="polite" aria-autocomplete="list" tabindex="0" class="rw-dropdownlist rw-widget">
+                    <span tabindex="-1" title="open dropdown" aria-label="open dropdown" class="rw-dropdownlist-picker rw-select rw-btn"><span aria-hidden="true" class="rw-i rw-i-caret-down"></span></span>
+                    <div class="rw-input">--</div>
+                  </div>
+                </div>
+                <div class="type-footnote hidden"></div>
+              </div>
+            </div>
+            <button class="button form-button full-width branding-button-color" data-automation-id="btnAddEducationHistory"><i class="icon-add"></i>Add Education</button>
+          </div>
+        </div>
+
+        <div class="row" id="appFooterDiv">
+          <div class="col-xs-12" style="margin-top: 20px;">
+            <button class="button form-button branding-button-color full-width" data-automation-id="btnNext" id="btn-submit">Next Step<span></span></button>
+          </div>
+          <div class="powered-by-paylo"><em>Powered by </em></div>
+        </div>
+      </div>
+      <div class="toast-message hidden-animated">
+        <button class="button icon white size-small float-right close-button"><i class="icon-delete"></i></button>
+        <p><span>: </span></p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

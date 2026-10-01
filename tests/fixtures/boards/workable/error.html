@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- A Workable application form the server refused (a 400 or 422 reply): the form stays
+     and a flash says so. No application was sent to see it: the flash is rebuilt from
+     the alert component and message catalogue in the board's public careers bundle.
+     Company, job and question are invented. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Platform Engineer - Larkspur Labs - Application</title>
+</head>
+<body style="min-width: 320px">
+  <div id="app" style="height: 100%">
+    <div data-ui="careers-page-content">
+      <header role="banner">
+        <h1 data-ui="job-title">Platform Engineer</h1>
+      </header>
+      <main role="main">
+        <div class="styles--202XT" data-ui="flash-container">
+          <div data-ui="alert-base">
+            <div data-ui="alert-content">There are some issues with your application. Please revisit your data and try again.</div>
+            <button role="button" type="button" aria-label="Dismiss"></button>
+          </div>
+        </div>
+        <form data-ui="application-form">
+          <section data-ui="section">
+            <h2 id="section-0_section_name">Personal information</h2>
+            <div data-ui="section-fields">
+              <div>
+                <label>
+                  <span><span><strong>*</strong></span><span><span id="firstname_label"><strong>First name</strong></span></span></span>
+                  <div data-role="illustrated-input"><input aria-required="true" id="firstname" maxlength="127" data-ui="firstname" name="firstname" aria-labelledby="firstname_label" required="" type="text" value="Avery"></div>
+                </label>
+              </div>
+              <div>
+                <label>
+                  <span><span><strong>*</strong></span><span><span id="email_label"><strong>Email</strong></span></span></span>
+                  <div data-role="illustrated-input"><input aria-required="true" id="email" maxlength="255" data-ui="email" name="email" aria-labelledby="email_label" required="" type="email" value="avery@example.com"></div>
+                </label>
+              </div>
+            </div>
+          </section>
+          <div>
+            <button type="submit" data-ui="apply-button" class="button--2de5X button--14TuV primary--25RCR">Submit application</button>
+          </div>
+        </form>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

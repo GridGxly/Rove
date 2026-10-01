@@ -1,0 +1,71 @@
+<!doctype html>
+<!-- Reduced from a rendered BambooHR application form after its own check refused it:
+     the form stays open, the fields are marked `aria-invalid` and each carries an inline
+     message. Company and job are invented; structure, ARIA attributes and wording are
+     the board's. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BambooHR</title>
+</head>
+<body>
+  <div id="js-careers-root">
+    <main>
+      <div class="fabric-1b2lyby-container">
+        <div class="fabric-1igheb2-content">
+          <h3 class="fabric-17nfaa3-root" data-fabric-component="Headline">Dispatch Coordinator</h3>
+        </div>
+      </div>
+      <div data-fabric-component="LayoutBox">
+        <form id="job-application-form" novalidate>
+          <div data-fabric-component="StyledBoxV2">
+            <div class="MuiFormControl-root" data-fabric-component="TextField InputWrapper">
+              <div class="fabric-z86m20-label-labelWrapper">
+                <label class="MuiFormLabel-root MuiInputLabel-root" for="firstName">First Name<span aria-hidden="true" class="MuiFormLabel-asterisk MuiInputLabel-asterisk"> *</span></label>
+              </div>
+              <div class="MuiInputBase-root" aria-invalid="false"><input aria-invalid="false" id="firstName" name="firstName" type="text" class="MuiInputBase-input" value="Avery"></div>
+            </div>
+            <div class="MuiFormControl-root" data-fabric-component="TextField InputWrapper">
+              <div class="fabric-z86m20-label-labelWrapper">
+                <label class="MuiFormLabel-root MuiInputLabel-root Mui-error" for="email">Email<span aria-hidden="true" class="MuiFormLabel-asterisk MuiInputLabel-asterisk Mui-error"> *</span></label>
+              </div>
+              <div class="MuiInputBase-root Mui-error" aria-invalid="true"><input aria-invalid="true" id="email" name="email" type="text" class="MuiInputBase-input" value="" aria-describedby="fabric-text-field-status-message-10"></div>
+              <div data-fabric-component="LayoutBox">
+                <div class="fabric-1dt5jrj-InlineMessage-root" data-fabric-component="InlineMessage" id="fabric-text-field-status-message-10">
+                  <div class="fabric-12vwgme-InlineMessage-content"><div><p class="fabric-1qjpysn-root" data-fabric-component="BodyText">Please fill in this field.</p></div></div>
+                </div>
+              </div>
+            </div>
+            <div data-fabric-component="Flex">
+              <p class="fabric-70g8c2-root" data-fabric-component="BodyText">Resume*</p>
+              <div data-fabric-component="FileUpload">
+                <div data-fabric-component="FileUploadInput">
+                  <div data-fabric-component="FileUploadToggle">
+                    <button class="MuiButtonBase-root MuiButton-root" tabindex="0" type="button" data-fabric-component="Button"><span class="fabric-sipj72-Button-content">Choose File*</span></button>
+                    <p class="fabric-9ncwmp-root" data-fabric-component="BodyText">No file selected</p>
+                  </div>
+                  <input accept=".pdf,.doc,.docx,.txt,.rtf" aria-invalid="true" aria-label="file-input" class="fabric-bc1bde-input" required="" tabindex="-1" type="file" aria-describedby="file-upload-status-message-29" style="position: absolute; opacity: 0; width: 1px; height: 1px;">
+                  <div data-fabric-component="LayoutBox">
+                    <div class="fabric-1dt5jrj-InlineMessage-root" data-fabric-component="InlineMessage" id="file-upload-status-message-29">
+                      <div class="fabric-12vwgme-InlineMessage-content"><div><p class="fabric-1qjpysn-root" data-fabric-component="BodyText">Please upload a file</p></div></div>
+                    </div>
+                  </div>
+                </div>
+                <input name="resumeFileId" type="hidden" value="">
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+    </main>
+    <div data-fabric-component="LayoutBox">
+      <div class="fabric-1iu4m7l-root" data-fabric-component="ActionFooter">
+        <div class="fabric-19whkjb-actions">
+          <button class="MuiButtonBase-root MuiButton-root" tabindex="0" type="submit" form="job-application-form" data-fabric-component="Button"><span class="fabric-sipj72-Button-content">Submit Application</span></button>
+          <button class="MuiButtonBase-root MuiButton-root" tabindex="0" type="submit" data-fabric-component="TextButton"><span class="fabric-1h3pnst-Button-content">Cancel</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
