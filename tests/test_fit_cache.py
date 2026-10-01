@@ -284,25 +284,35 @@ def test_questions_are_sorted_into_writing_choice_short_answer_and_owner_only():
     assert kind({"label": "Team", "key": "k6", "reason": "New field appeared after filling"}) == (
         "writing"
     )
+    # Facts the approved profile has no field for, which a draft may never answer.
     owner_only = [
-        "Are you legally authorized to work in the United States?",
-        "Will you now or in the future require sponsorship for employment visa status?",
-        "Are you a U.S. citizen?",
         "Do you hold an active security clearance?",
         "Have you ever been convicted of a felony?",
+        "Do you consent to a background check?",
         "Gender",
         "Race / Ethnicity",
         "Veteran status",
         "Disability status",
-        "Are you at least 18 years of age?",
+        "Date of birth",
         "I certify that the information above is true",
         "Signature",
     ]
     for label in owner_only:
         assert kind(question(label, "k7", ["Yes", "No"]), {"kind": "select-one"}) == "owner", label
-    for reason in fastpath.NOT_A_DRAFT:
-        assert kind(question("Location", "k8", reason=reason), {"kind": "text"}) == "owner"
+    assert kind(question("Transcript", "k8", reason=fastpath.UNAPPROVED_FILE)) == "owner"
     assert kind(question("Transcript", "k9"), {"kind": "file"}) == "owner"
+    # Facts the profile can hold stay with the model until code resolves every wording of
+    # them: skipping the call would ask the owner for something he already approved.
+    for label in (
+        "Are you eligible to work in the United States?",
+        "Do you need visa sponsorship?",
+        "Are you a U.S. citizen?",
+        "Are you at least 18 years of age?",
+    ):
+        assert kind(question(label, "k10", ["Yes", "No"]), {"kind": "select-one"}) == "choice"
+    # So does a value code knew and the control refused: a draft has settled those before.
+    refused = question("Location", "k11", reason="No unique matching dropdown option")
+    assert kind(refused, {"kind": "text"}) == "short"
     # Ordinary questions that only sound close stay with the model.
     for label in (
         "Are you able to work in our office five days a week?",
@@ -316,7 +326,7 @@ def test_questions_are_sorted_into_writing_choice_short_answer_and_owner_only():
 
 def test_a_drafting_call_is_needed_only_for_writing_a_choice_or_a_short_answer():
     pending = [
-        question("Do you require sponsorship?", "a1", ["Yes", "No"]),
+        question("Do you hold an active security clearance?", "a1", ["Yes", "No"]),
         question("Cover letter", "a2", reason="Unapproved required file requested"),
     ]
     counts = fastpath.drafting_counts(pending, [{"key": "a1", "kind": "select-one"}])
@@ -453,7 +463,7 @@ def drafting_rows() -> list[dict]:
 
 def test_no_drafting_call_is_made_when_nothing_needs_writing_or_a_choice(state, monkeypatch):
     pending = [
-        question("Will you require sponsorship for an employment visa?", "a" * 12, ["Yes", "No"]),
+        question("Have you ever been convicted of a felony?", "a" * 12, ["Yes", "No"]),
         {"label": "Transcript", "key": "b" * 12, "reason": "Unapproved required file requested"},
     ]
     fields = [{"key": "a" * 12, "kind": "select-one"}, {"key": "b" * 12, "kind": "file"}]

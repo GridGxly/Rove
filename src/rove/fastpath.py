@@ -79,26 +79,21 @@ def store_review(application_id: str, key: tuple[str, str, str], result: dict):
         )
 
 
-# Questions a model draft is never the answer to: legal and sensitive facts come from the
-# approved profile or from the owner. Kept narrow on purpose: a label this misses is still
-# sent to the model as before, a label it wrongly caught would be asked of the owner.
+# Questions a model draft is never the answer to, and that the approved profile has no
+# field for: clearance, criminal history, self-identification, signed statements. Only the
+# owner can answer them. Kept narrow on purpose. Work authorization, sponsorship,
+# citizenship and age are left out because the profile can hold them: until code resolves
+# every wording of those, skipping the model would ask the owner for a fact he already
+# approved. A label this misses is sent to the model as before.
 OWNER_ONLY = re.compile(
-    r"authori[sz]ed to work|work authori[sz]ation|(?:eligible|permitted|allowed|entitled) to work"
-    r"|right to work|work permit|\bsponsorship\b|\bvisa\b|citizen|nationality|immigration status"
-    r"|security clearance|criminal|convict|felon|misdemeanou?r|background check"
+    r"security clearance|criminal|convict|felon|misdemeanou?r|background check"
     r"|\bgender\b|\brace\b|ethnic|hispanic|latin[oax]\b|veteran|disabilit|sexual orientation"
-    r"|self.?identif|date of birth|\byears? of age\b|\byears old\b"
+    r"|self.?identif|date of birth"
     r"|\bi (?:hereby )?(?:certify|acknowledge|attest|agree|consent)\b|signature",
     re.IGNORECASE,
 )
-# Why the browser left a question pending when no draft can settle it: the value is known
-# and the control refused it, or the form wants a file nobody approved.
-NOT_A_DRAFT = {
-    "Selection could not be verified",
-    "Unapproved required file requested",
-    "No unique matching dropdown option",
-    "Existing value differs; preserved for review",
-}
+# The form wants a file nobody approved: a draft cannot be uploaded.
+UNAPPROVED_FILE = "Unapproved required file requested"
 CHOICE_KINDS = {"radio_group", "choice", "select-one", "select-multiple", "checkbox", "radio"}
 SHORT_KINDS = {"text", "search", "url", "email", "tel", "number", "date", "month", "week", "time"}
 
@@ -106,12 +101,13 @@ SHORT_KINDS = {"text", "search", "url", "email", "tel", "number", "date", "month
 def question_kind(question: dict, field: dict | None = None) -> str:
     """What a pending question needs: `writing`, `choice`, `short` or `owner`.
 
-    `owner` is the only kind the model is not asked. An unknown control counts as writing,
-    so the model is skipped only when code is sure.
+    `owner` is the only kind the model is not asked. Anything else, an unknown control
+    included, still goes to the model, so the call is skipped only when code is sure a
+    draft could not be used.
     """
     kind = str((field or {}).get("kind") or "")
     if (
-        question.get("reason") in NOT_A_DRAFT
+        question.get("reason") == UNAPPROVED_FILE
         or kind in {"file", "password", "hidden"}
         or OWNER_ONLY.search(str(question.get("label") or ""))
     ):
