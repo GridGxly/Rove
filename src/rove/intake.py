@@ -593,10 +593,15 @@ def decide(
             continue
         seen.add(identity)
         row = conn.execute(
-            "SELECT status FROM intake_decisions WHERE identity=?", (identity,)
+            "SELECT status,job_id FROM intake_decisions WHERE identity=?", (identity,)
         ).fetchone()
         if (row and row["status"] not in revive) or (not row and job.get("id") in known_ids):
             counts["repeats"] += 1
+            if row and job.get("id") and row["job_id"] != job["id"]:
+                # The feed renumbered the posting: follow it, so a later close is noticed.
+                conn.execute(
+                    "UPDATE intake_decisions SET job_id=? WHERE identity=?", (job["id"], identity)
+                )
             continue
         fresh.append((job, identity, score_job(job, profile, today=today)))
     fresh.sort(key=lambda item: (item[2]["score"], item[0].get("posted_at") or ""), reverse=True)
@@ -1024,7 +1029,7 @@ def run_digest(settings: dict, now: datetime | None = None) -> dict:
     with db() as conn:
         exists = conn.execute("SELECT 1 FROM intake_digests WHERE day=?", (today,)).fetchone()
         if not exists:
-            cutoff = (datetime.now(UTC) - timedelta(days=keep_days)).isoformat()
+            cutoff = (now.astimezone(UTC) - timedelta(days=keep_days)).isoformat()
             # A closed posting or one that waited too long leaves without being asked about.
             conn.execute(
                 "UPDATE intake_decisions SET status='lapsed',updated_at=? WHERE status='digest' "

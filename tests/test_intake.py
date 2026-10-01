@@ -326,6 +326,9 @@ def test_a_metadata_rewrite_or_a_renumbered_posting_is_the_same_job(state, monke
     assert discord_feed.tick()["sent"] == 0
     assert len(posts(sent, "jobs")) == 1
     assert queue() == [("Example Labs — Software Engineer Intern", "keryx", "QUEUED")]
+    with workflow.db() as conn:
+        rows = [tuple(r) for r in conn.execute("SELECT job_id,status FROM intake_decisions")]
+    assert rows == [("job_two", "queued")]  # one decision, following the posting's new id
     # A real change (a different role at the same link) is a different job.
     assert jobs.identity_key({**first, "title": "Data Engineer Intern"}) != jobs.identity_key(first)
 
