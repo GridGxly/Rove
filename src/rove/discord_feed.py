@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import httpx
 
+from . import timing
 from .jobs import database, identity_key, sync_keryx
 from .onboarding import read_approved
 from .runtime import state_root, write_private
@@ -26,6 +27,7 @@ def private_env() -> dict:
     return values
 
 
+@timing.call("discord")
 def discord_upload(channel: str, path, payload: dict) -> dict:
     """One message with one private file attached (a screenshot or the resume as sent)."""
     import mimetypes
@@ -50,6 +52,7 @@ def discord_upload(channel: str, path, payload: dict) -> dict:
     return response.json()
 
 
+@timing.call("discord")
 def discord(method: str, path: str, payload: dict | None = None):
     token = private_env().get("DISCORD_BOT_TOKEN")
     if not token:

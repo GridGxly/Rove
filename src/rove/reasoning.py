@@ -17,7 +17,7 @@ from typing import Annotated, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from . import draft_guard, unslop, vault, workflow
+from . import draft_guard, fastpath, timing, unslop, vault, workflow
 from .evidence import career_evidence
 from .onboarding import read_approved
 from .research import company_context
@@ -167,6 +167,7 @@ def ensure_model():
     raise ModelUnavailable("Local model server is not running")
 
 
+@timing.call("model")
 def generate(directory: Path, context: dict, basename: str, attempts: int = 2) -> dict:
     ensure_model()
     write_private(directory / f"{basename}-input.json", context)
@@ -475,12 +476,37 @@ def evaluate_review(qwen_output: dict, profile: dict, posting: str = "") -> dict
     }
 
 
+@timing.stage(None, "fit_review")
 def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
-    """Qwen extracts requirements before any applicant data enters the form."""
+    """Qwen extracts requirements before any applicant data enters the form.
+
+    One model call per job. The review is stored under the posting's content, the approved
+    profile snapshot and the prompt version; a later tick, a resume after a hold or a
+    reopen reads it back, and only a change to one of the three asks Qwen again. Code's
+    own comparisons run on every read, so an improved rule applies without a model call.
+    """
     approved = read_approved()
     item = workflow.get(application_id)
     if approved["profile_hash"] != item["profile_hash"]:
         raise PermissionError("Queued profile version changed; rebuild before preparation")
+    job_text = (posting_text or page.get("text", "").split("Apply for this job")[0])[:12000]
+    cache_key = fastpath.review_key(job_text, approved["profile_hash"], PROMPT_VERSION)
+    directory = state_root() / "applications" / application_id
+    path = directory / "job-review.json"
+    prior = fastpath.stored_review(application_id, cache_key)
+    timing.note(cached=bool(prior))
+    if prior:
+        current = {
+            **prior,
+            **evaluate_review(prior["qwen_output"], approved["profile"], job_text),
+        }
+        if current["decision"] != prior.get("decision"):
+            current["note"] = "Re-evaluated by updated code rules; Qwen output unchanged"
+            write_private(path, current)
+            fastpath.store_review(application_id, cache_key, current)
+            workflow.record(application_id, "qwen_job_review", current)
+            workflow.flush_events(application_id)
+        return {**current, "cached": True}
     context = {
         "review_type": "job_fit",
         "prompt_version": PROMPT_VERSION,
@@ -491,28 +517,13 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
         "career_evidence": asyncio.run(career_evidence("skills experience projects")),
         "expected_job_title": item["title"],
         "job_url": page["url"],
-        "job_text": (posting_text or page.get("text", "").split("Apply for this job")[0])[:12000],
+        "job_text": job_text,
+        # Form labels help Qwen tell questions from requirements. They are not part of the
+        # stored review's key: how a label is read must not ask Qwen again.
         "form_questions": [f["label"][:120] for f in page.get("fields", []) if f.get("label")][:60],
     }
     context = fit_budget(context)
-    # Form labels help Qwen tell questions from requirements but must not force a new
-    # model call whenever an observer improvement changes how a label is read.
     context_hash = fingerprint({k: v for k, v in context.items() if k != "form_questions"})
-    directory = state_root() / "applications" / application_id
-    path = directory / "job-review.json"
-    if path.exists():
-        prior = json.loads(path.read_text())
-        if prior.get("context_hash") == context_hash and prior.get("qwen_output"):
-            current = {
-                **prior,
-                **evaluate_review(prior["qwen_output"], approved["profile"], context["job_text"]),
-            }
-            if current["decision"] != prior.get("decision"):
-                current["note"] = "Re-evaluated by updated code rules; Qwen output unchanged"
-                write_private(path, current)
-                workflow.record(application_id, "qwen_job_review", current)
-                workflow.flush_events(application_id)
-            return current
     try:
         generated, parsed = None, None
         for attempt in range(2):
@@ -536,15 +547,18 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     qwen_output = parsed.model_dump()
     result = {
         "qwen_output": qwen_output,
-        **evaluate_review(qwen_output, approved["profile"], context["job_text"]),
+        **evaluate_review(qwen_output, approved["profile"], job_text),
     }
     result.update(
         context_hash=context_hash,
+        posting_hash=cache_key[0],
         prompt_version=PROMPT_VERSION,
         profile_hash=approved["profile_hash"],
         model=generated["model"],
         harness="Hermes",
     )
+    # Stored before anything is posted: a Discord failure must not cost a second review.
+    fastpath.store_review(application_id, cache_key, result)
     write_private(path, result)
     workflow.record(application_id, "qwen_job_review", result)
     workflow.flush_events(application_id)

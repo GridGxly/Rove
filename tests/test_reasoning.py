@@ -238,24 +238,11 @@ def test_cached_review_is_re_evaluated_by_current_code_rules(state, monkeypatch)
     monkeypatch.setattr(reasoning, "career_evidence", evidence)
     monkeypatch.setattr(reasoning, "generate", lambda *a, **k: pytest.fail("Qwen must not run"))
     page = {"url": "https://jobs.example.com/2", "text": "posting", "fields": []}
+    from rove import fastpath
     from rove.onboarding import read_approved
 
-    context_hash = reasoning.fingerprint(
-        {
-            "review_type": "job_fit",
-            "prompt_version": reasoning.PROMPT_VERSION,
-            "profile": {
-                key: read_approved()["profile"][key]
-                for key in ("identity", "education", "eligibility", "availability", "preferences")
-            },
-            "career_evidence": {"results": []},
-            "expected_job_title": "",
-            "job_url": page["url"],
-            "job_text": "posting",
-        }
-    )
+    # A review stored for this posting, profile and prompt, with a verdict older rules gave.
     stale = {
-        "context_hash": context_hash,
         "decision": "needs_review",
         "model": "m",
         "qwen_output": {
@@ -267,7 +254,8 @@ def test_cached_review_is_re_evaluated_by_current_code_rules(state, monkeypatch)
             "unknowns": [],
         },
     }
-    (directory / "job-review.json").write_text(json.dumps(stale))
+    key = fastpath.review_key("posting", read_approved()["profile_hash"], reasoning.PROMPT_VERSION)
+    fastpath.store_review(application_id, key, stale)
     result = reasoning.review_job(application_id, page)
     assert result["decision"] == "fit" and "Re-evaluated" in result["note"]
     with workflow.db() as conn:

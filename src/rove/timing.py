@@ -1,0 +1,344 @@
+"""Wall time and counts per application stage, kept in the state database.
+
+Measurement only. Nothing here decides, gates or changes an application, and no failure
+of the timing table (missing, locked, a bad fact) reaches the caller. Facts are counts and
+short words chosen by code: never a label, an answer, a URL, or text from a page or model.
+
+Three shapes:
+
+- `stage(application_id, name)` times a block or, as a decorator, a function. One row.
+- `lap(name)` splits the innermost stage into consecutive parts without a block. A lap
+  ends at the next lap, at a stage that starts inside it, or with its stage.
+- `call(name)` decorates a leaf the stages spend their time in: the model, a browser
+  round trip, a page observation, a Discord request. One row per call, and every open
+  stage also counts it as `<name>_calls` and `<name>_seconds`.
+
+Rows belong to an application. A call made outside any stage, with no application, is
+kept only in the browser service, whose requests always act for one.
+"""
+
+import contextlib
+import contextvars
+import functools
+import inspect
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+from datetime import UTC, datetime, timedelta
+
+from .runtime import state_root
+
+# Leaf calls measured inside stages; `rove bench report` lists them apart from the stages.
+CALLS = ("model", "browser", "observe", "discord")
+# A timing write waits this long for a busy database, then gives the row up.
+BUSY_SECONDS = 0.2
+# After a failed write the table is left alone this long, so a stuck database costs the
+# caller one short wait rather than one per row.
+RETRY_SECONDS = 30.0
+KEEP_DAYS = 30
+PRUNE_EVERY_SECONDS = 6 * 3600.0
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS stage_timings(
+  id INTEGER PRIMARY KEY, application_id TEXT NOT NULL, stage TEXT NOT NULL,
+  parent TEXT NOT NULL, started_at TEXT NOT NULL, seconds REAL NOT NULL,
+  ok INTEGER NOT NULL, facts TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS stage_timings_application ON stage_timings(application_id, id);
+"""
+
+_frames: contextvars.ContextVar[tuple] = contextvars.ContextVar("rove_timing", default=())
+_state = {"quiet_until": 0.0, "prune_after": 0.0}
+_WORD = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
+
+
+class Frame:
+    """One open stage or lap."""
+
+    def __init__(self, application_id: str, name: str, parent: str, facts: dict):
+        self.application_id = application_id
+        self.name = name
+        self.parent = parent
+        self.started_at = datetime.now(UTC).isoformat()
+        self.clock = time.perf_counter()
+        self.facts = dict(facts)
+        self.lap: Frame | None = None
+
+
+def enabled() -> bool:
+    """On unless the private workflow config says `"timing": false`."""
+    try:
+        from . import workflow
+
+        return bool(workflow.config().get("timing", True))
+    except Exception:  # noqa: BLE001 -- an unreadable config never stops the work
+        return True
+
+
+def _browser_service() -> bool:
+    return sys.argv[1:3] == ["browser", "serve"]
+
+
+def _connect(timeout: float = BUSY_SECONDS) -> sqlite3.Connection:
+    path = state_root() / "recruiting.sqlite3"
+    if not path.exists():
+        os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o600))
+    return sqlite3.connect(path, timeout=timeout)
+
+
+def _clean(facts: dict) -> dict:
+    """Numbers, booleans and single short words only; anything else is dropped."""
+    kept = {}
+    for key, value in facts.items():
+        if isinstance(value, bool | int):
+            kept[str(key)] = value
+        elif isinstance(value, float):
+            kept[str(key)] = round(value, 3)
+        elif isinstance(value, str) and _WORD.fullmatch(value):
+            kept[str(key)] = value
+    return kept
+
+
+def _insert(application_id, name, parent, started_at, seconds, ok, facts):
+    try:
+        if not application_id and not _browser_service():
+            return
+        if time.monotonic() < _state["quiet_until"] or not enabled():
+            return
+        conn = _connect()
+        try:
+            conn.executescript(SCHEMA)
+            with conn:
+                conn.execute(
+                    "INSERT INTO stage_timings"
+                    "(application_id,stage,parent,started_at,seconds,ok,facts) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        str(application_id or ""),
+                        str(name),
+                        str(parent or ""),
+                        started_at,
+                        round(max(float(seconds), 0.0), 4),
+                        1 if ok else 0,
+                        json.dumps(_clean(facts), sort_keys=True),
+                    ),
+                )
+                if time.monotonic() >= _state["prune_after"]:
+                    cutoff = (datetime.now(UTC) - timedelta(days=KEEP_DAYS)).isoformat()
+                    conn.execute("DELETE FROM stage_timings WHERE started_at<?", (cutoff,))
+                    _state["prune_after"] = time.monotonic() + PRUNE_EVERY_SECONDS
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- a measurement never breaks the work it measures
+        _state["quiet_until"] = time.monotonic() + RETRY_SECONDS
+
+
+def _end_lap(frame: Frame, ok: bool = True):
+    lap_frame, frame.lap = frame.lap, None
+    if lap_frame is not None:
+        _insert(
+            lap_frame.application_id,
+            lap_frame.name,
+            lap_frame.parent,
+            lap_frame.started_at,
+            time.perf_counter() - lap_frame.clock,
+            ok,
+            lap_frame.facts,
+        )
+
+
+def _application(given, names: list, args: tuple, kwargs: dict) -> str:
+    """The application a decorated call acts for, from its own arguments."""
+    with contextlib.suppress(Exception):  # an unknown application is an empty one
+        if callable(given):
+            return str(given(*args, **kwargs) or "")
+        if given:
+            return str(given)
+        for key in ("application_id", "run_id"):
+            if kwargs.get(key):
+                return str(kwargs[key])
+            if key in names and names.index(key) < len(args):
+                return str(args[names.index(key)] or "")
+    return ""
+
+
+# Lower case because it reads as a function at every use: `with stage(...)`, `@stage(...)`.
+class stage:
+    """Time a block (`with stage(app, "drafting"):`) or a function (`@stage(None, "pass")`).
+
+    As a decorator the application is found on each call: the id given here, a callable
+    given the call's arguments, an argument named `application_id` or `run_id`, or else
+    the enclosing stage's application.
+    """
+
+    tally = False
+
+    def __init__(self, application_id, name: str, **facts):
+        self.application_id = application_id
+        self.name = name
+        self.facts = facts
+        self.frame: Frame | None = None
+        self.token = None
+
+    def __enter__(self):
+        with contextlib.suppress(Exception):
+            frames = _frames.get()
+            outer = frames[-1] if frames else None
+            application_id = self.application_id if isinstance(self.application_id, str) else ""
+            parent = ""
+            if outer is not None:
+                application_id = application_id or outer.application_id
+                if self.tally:
+                    parent = (outer.lap or outer).name
+                else:
+                    _end_lap(outer)
+                    parent = outer.name
+            self.frame = Frame(application_id, self.name, parent, self.facts)
+            self.token = _frames.set((*frames, self.frame))
+        return self
+
+    def __exit__(self, kind, error, trace):
+        with contextlib.suppress(Exception):
+            frame, self.frame = self.frame, None
+            if frame is not None:
+                seconds = time.perf_counter() - frame.clock
+                ok = kind is None
+                _end_lap(frame, ok)
+                try:
+                    _frames.reset(self.token)
+                except (ValueError, RuntimeError):
+                    _frames.set(tuple(f for f in _frames.get() if f is not frame))
+                if self.tally:
+                    for outer in _frames.get():
+                        for target in (outer, outer.lap):
+                            if target is not None:
+                                _add(target.facts, self.name, seconds)
+                _insert(
+                    frame.application_id,
+                    frame.name,
+                    frame.parent,
+                    frame.started_at,
+                    seconds,
+                    ok,
+                    frame.facts,
+                )
+        return False
+
+    def __call__(self, function):
+        try:
+            names = list(inspect.signature(function).parameters)
+        except (TypeError, ValueError):
+            names = []
+
+        @functools.wraps(function)
+        def timed(*args, **kwargs):
+            timer = stage(
+                _application(self.application_id, names, args, kwargs), self.name, **self.facts
+            )
+            timer.tally = self.tally
+            with timer:
+                return function(*args, **kwargs)
+
+        return timed
+
+
+def _add(facts: dict, name: str, seconds: float):
+    facts[name + "_calls"] = int(facts.get(name + "_calls", 0)) + 1
+    facts[name + "_seconds"] = round(float(facts.get(name + "_seconds", 0.0)) + seconds, 3)
+
+
+def call(name: str, application=None) -> stage:
+    """Decorator for a leaf call the stages spend their time in; see the module docstring.
+
+    `application` is a callable given the call's arguments when the application is not one
+    of them (a method that keeps it on `self`).
+    """
+    timer = stage(application, name)
+    timer.tally = True
+    return timer
+
+
+def lap(name: str | None, **facts):
+    """End the innermost stage's open lap and, given a name, start the next one."""
+    with contextlib.suppress(Exception):
+        frames = _frames.get()
+        if not frames:
+            return
+        frame = frames[-1]
+        _end_lap(frame)
+        if name:
+            frame.lap = Frame(frame.application_id, name, frame.name, facts)
+
+
+def note(**facts):
+    """Add facts to the open lap, or to the innermost stage when no lap is open."""
+    with contextlib.suppress(Exception):
+        frames = _frames.get()
+        if frames:
+            (frames[-1].lap or frames[-1]).facts.update(facts)
+
+
+def record(application_id: str, name: str, seconds: float, **facts):
+    """One row for something measured elsewhere, or a step that was decided away."""
+    _insert(application_id, name, "", datetime.now(UTC).isoformat(), seconds, True, facts)
+
+
+def queue_wait(item: dict):
+    """How long a queued application waited for the worker, read from its queue row."""
+    with contextlib.suppress(Exception):
+        if item.get("status") != "QUEUED":
+            return
+        waited = datetime.now(UTC) - datetime.fromisoformat(item["updated_at"])
+        record(item["id"], "queue_wait", max(waited.total_seconds(), 0.0))
+
+
+def rows(last: int | None = None) -> list[dict]:
+    """Recorded rows, oldest first; `last` keeps the most recent N applications.
+
+    Empty when nothing was recorded or the table cannot be read. Rows the browser service
+    wrote without an application are included when they fall inside the selected span.
+    """
+    try:
+        if not (state_root() / "recruiting.sqlite3").exists():
+            return []
+        # A report can wait for a busy database; only the measured work must not.
+        conn = _connect(timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            if last:
+                ids = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT application_id FROM stage_timings WHERE application_id!='' "
+                        "GROUP BY application_id ORDER BY MAX(id) DESC LIMIT ?",
+                        (int(last),),
+                    )
+                ]
+                if not ids:
+                    return []
+                marks = ",".join("?" * len(ids))
+                found = conn.execute(
+                    f"SELECT * FROM stage_timings WHERE application_id IN ({marks})", ids
+                ).fetchall()
+                span = (min(r["started_at"] for r in found), max(r["started_at"] for r in found))
+                found += conn.execute(
+                    "SELECT * FROM stage_timings WHERE application_id='' "
+                    "AND started_at BETWEEN ? AND ?",
+                    span,
+                ).fetchall()
+            else:
+                found = conn.execute("SELECT * FROM stage_timings").fetchall()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- no table, no rows
+        return []
+    result = []
+    for row in sorted(found, key=lambda r: r["id"]):
+        try:
+            facts = json.loads(row["facts"])
+        except ValueError:
+            facts = {}
+        result.append({**dict(row), "ok": bool(row["ok"]), "facts": facts})
+    return result

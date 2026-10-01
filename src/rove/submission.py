@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
 
-from . import boards, workflow
+from . import boards, timing, workflow
 from .live_browser import ERROR_SELECTOR, MESSAGES_JS, STATUS_SELECTOR
 from .onboarding import digest, read_approved
 from .runtime import state_root, write_private
@@ -720,7 +720,9 @@ def submit(browser, application_id: str, package_hash: str, owner_message_id: st
         return _submit(browser, application_id, package_hash, owner_message_id)
 
 
+@timing.stage(None, "submission")
 def _submit(browser, application_id: str, package_hash: str, owner_message_id: str) -> dict:
+    timing.lap("submit")
     current = browser.observe()
     adapter = enabled_adapter(current["url"])
     package = preflight(application_id, package_hash, current)
@@ -771,6 +773,7 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
             "() => document.documentElement.setAttribute('data-rove-submit-armed', '1')"
         )
         browser.click(locator)
+        timing.lap("verify")
         # Bounded: the adapter waits for its own signal, then the page is read once.
         adapter.await_result(browser.page, current, CONFIRMATION_TIMEOUT_MS)
         browser.page.wait_for_load_state("domcontentloaded", timeout=15000)

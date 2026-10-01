@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import inbound, intake, matching, memory_channel, workflow
+from . import fastpath, inbound, intake, matching, memory_channel, timing, workflow
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
 from .reasoning import GATE_KINDS
@@ -123,6 +123,7 @@ def attach_resume(application_id: str, manifest: dict):
     )
 
 
+@timing.stage(None, "hold")
 def held(
     application_id: str, status: str, reason: str, headline: str, channel: str = "action", **extra
 ) -> dict:
@@ -289,8 +290,10 @@ def skip_optional(application_id: str, questions: list):
     workflow.flush_events(application_id)
 
 
+@timing.stage(None, "pass")
 def process(application_id: str) -> dict:
     item = workflow.get(application_id)
+    timing.queue_wait(item)
     settings = workflow.config()
     (state_root() / f"applications/{application_id}/error.json").unlink(missing_ok=True)
     try:
@@ -317,13 +320,16 @@ def process(application_id: str) -> dict:
     commands: list = ["go", "park it"]
     headline = "Browser needs a look"
     try:
+        timing.lap("open")
         page = browser_call("open", url=item["url"])
         for _ in range(6):
-            if not page.get("fields"):
-                # The posting itself; application-form labels are never requirements.
+            if not page.get("fields") and not page.get("blocked"):
+                # The posting itself; application-form labels are never requirements, and
+                # a block page is not a posting.
                 posting_text = page.get("text", "") or posting_text
             if page.get("blocked"):
                 phase = "blocked_retry"
+                timing.lap("reopen")
                 workflow.record(
                     application_id,
                     "browser_access_blocked",
@@ -339,6 +345,8 @@ def process(application_id: str) -> dict:
                         "Blocked by the employer's site",
                         commands=["applied", "park it"],
                     )
+                # The retry reached a page: read it from the top, posting text included.
+                continue
             if page.get("ats_markers", {}).get("captcha_challenge"):
                 return held(
                     application_id,
@@ -371,6 +379,7 @@ def process(application_id: str) -> dict:
 
                 if credentials.lookup(credentials.account_host(page["url"])):
                     phase = "sign_in"
+                    timing.lap("sign_in")
                     page = browser_call("login", run_id=application_id)
                     if page.get("auth_page") == "login":
                         reason = (
@@ -389,6 +398,7 @@ def process(application_id: str) -> dict:
             if page.get("auth_page") == "register":
                 if workflow.owner_override(application_id, "account"):
                     phase = "account_creation"
+                    timing.lap("sign_in")
                     page = browser_call("register", run_id=application_id)
                     if not page.get("fields") and re.search(
                         r"verif|confirm your email|check your (email|inbox)|activate",
@@ -427,8 +437,12 @@ def process(application_id: str) -> dict:
                 from .reasoning import review_application, review_job
 
                 phase = "job_fit_review"
+                # One model call per job: a later pass reads the stored review back.
                 fit = review_job(application_id, page, posting_text)
-                workflow.system_line(application_id, f"fit · {fit['decision']}")
+                workflow.system_line(
+                    application_id,
+                    f"fit · {fit['decision']}" + (" · stored review" if fit.get("cached") else ""),
+                )
                 # A link the owner pasted is a decision already made: never ask again.
                 if (
                     fit["decision"] != "fit"
@@ -445,6 +459,7 @@ def process(application_id: str) -> dict:
                     channel = "shortlist"
                     break
                 phase = "resume"
+                timing.lap("resume")
                 directory = state_root() / "applications" / application_id
                 if not (directory / "resume-manifest.json").exists():
                     workflow.record(
@@ -471,14 +486,34 @@ def process(application_id: str) -> dict:
                     workflow.flush_events(application_id)
                     attach_resume(application_id, resume)
                 phase = "prepare"
+                timing.lap("fill")
                 page = browser_call("prepare", run_id=application_id)
+                timing.note(**fastpath.fill_counts(application_id, page))
                 pending = page.get("pending", [])
                 proposals: dict = {"answers": []}
                 asked: list = []
                 used: set = set()
                 if pending:
                     phase = "answer_drafting"
-                    proposals = review_application(application_id, page)
+                    kinds = fastpath.drafting_counts(pending, page.get("fields"))
+                    if fastpath.needs_model(kinds):
+                        with timing.stage(application_id, "drafting", **kinds):
+                            proposals = review_application(application_id, page)
+                            timing.note(
+                                proposals=sum(
+                                    a.get("kind") == "proposal"
+                                    for a in proposals.get("answers", [])
+                                )
+                            )
+                    else:
+                        # Nothing here is Qwen's to write or choose: no call. The questions
+                        # go to the owner exactly as they would after a needs-owner reply.
+                        timing.record(application_id, "drafting", 0.0, skipped=True, **kinds)
+                        workflow.system_line(
+                            application_id,
+                            f"drafting skipped · {kinds['questions']} pending, none needs "
+                            "writing or a model choice",
+                        )
                     page["qwen_review"] = proposals
                     drafted_keys = {
                         a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"
@@ -498,7 +533,9 @@ def process(application_id: str) -> dict:
                         skip_optional(application_id, optional)
                     if optional or used:
                         phase = "prepare"
+                        timing.lap("fill")
                         page = browser_call("prepare", run_id=application_id)
+                        timing.note(**fastpath.fill_counts(application_id, page))
                         page["qwen_review"] = proposals
                         pending = page.get("pending", [])
                 questions = question_list(asked, pending, proposals, used)
@@ -590,6 +627,7 @@ def process(application_id: str) -> dict:
                 headline = "Apply control not found"
                 break
             phase = "follow_application_link"
+            timing.lap("follow")
             page = browser_call(
                 "follow",
                 run_id=application_id,

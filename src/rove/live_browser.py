@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import sync_playwright
 
-from . import boards, form_reading, questions, workflow
+from . import boards, form_reading, questions, timing, workflow
 from .jobs import lookup_job_link, public_link
 from .onboarding import read_approved
 from .runtime import state_root, write_private
@@ -696,6 +696,7 @@ class RecruitingBrowser:
         except PlaywrightError:
             pass
 
+    @timing.call("observe", lambda self: self.run["id"])
     def observe(self) -> dict:
         if self.page is None or self.page.is_closed():
             raise ValueError("No live job page. Open a link first.")
@@ -1791,6 +1792,7 @@ def serve():
         server.serve_forever()
 
 
+@timing.call("browser")
 def browser_call(action: str, **kwargs) -> dict:
     def connect():
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
