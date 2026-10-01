@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- Synthetic application form: the ways a question can be tied to its controls.
+     The first two blocks follow a public Greenhouse job-board form (a checkbox fieldset
+     with a legend, and a phone fieldset that holds two different controls); the rest are
+     plain HTML patterns seen on employer sites. All names, ids and wording are invented. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Fabrikam Robotics - Controls Intern</title>
+<style>.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(1px,1px,1px,1px)}</style></head>
+<body>
+<form id="application-form">
+<div class="field-wrapper"><fieldset class="checkbox" id="question_31[]" aria-required="true"><legend class="label checkbox__description">Which teams interest you? <span class="required">*</span></legend>
+<div class="checkbox__wrapper"><div class="checkbox__input"><input required type="checkbox" id="question_31[]_101" name="question_31[]" value="101"></div><label for="question_31[]_101">Platform</label></div>
+<div class="checkbox__wrapper"><div class="checkbox__input"><input required type="checkbox" id="question_31[]_102" name="question_31[]" value="102"></div><label for="question_31[]_102">Perception</label></div>
+<div class="checkbox__wrapper"><div class="checkbox__input"><input required type="checkbox" id="question_31[]_103" name="question_31[]" value="103"></div><label for="question_31[]_103">Motion planning, controls</label></div>
+</fieldset></div>
+<div><fieldset class="phone-input"><legend class="visually-hidden">Phone</legend>
+<div class="phone-input__country"><label id="country-label" for="country" class="label">Country<span aria-hidden="true">*</span></label><select id="country" name="country"><option value="">Select</option><option value="US">United States +1</option><option value="CA">Canada +1</option></select></div>
+<div class="phone-input__phone"><label for="phone" class="label">Phone<span aria-hidden="true">*</span></label><input id="phone" name="phone" type="tel" aria-required="true"></div>
+</fieldset></div>
+<fieldset id="relocation"><legend>Are you willing to relocate?</legend>
+<label><input type="radio" name="relocate" value="yes"> Yes</label>
+<label><input type="radio" name="relocate" value="no"> No</label>
+</fieldset>
+<div class="field"><span id="shift-question">Which shift do you prefer?</span>
+<div role="radiogroup" aria-labelledby="shift-question">
+<label><input type="radio" name="shift" value="day"> Day</label>
+<label><input type="radio" name="shift" value="night"> Night</label>
+</div></div>
+<div role="group" aria-label="Which days can you work?">
+<label><input type="checkbox" name="day_mon"> Monday</label>
+<label><input type="checkbox" name="day_tue"> Tuesday</label>
+<label><input type="checkbox" name="day_wed"> Wednesday</label>
+</div>
+<div class="question"><div class="question-title">Have you interned before?<span class="required">*</span></div><div class="answers">
+<input type="radio" id="interned-yes" name="interned" value="1"><label for="interned-yes">Yes</label>
+<input type="radio" id="interned-no" name="interned" value="0"><label for="interned-no">No</label>
+</div></div>
+<div class="question"><p>Which tools have you used?</p>
+<label><input type="checkbox" name="tools" value="cad"> CAD</label>
+<label><input type="checkbox" name="tools" value="plc"> PLC programming</label>
+</div>
+<div class="consent"><label><input type="checkbox" name="privacy"> I have read the privacy notice</label></div>
+<div class="row"><input type="text" name="question_12345" id="input-17" placeholder="Type your response"></div>
+<div class="row flat"><span>Grade point average</span><input type="text" name="q7"><span>Expected graduation</span><input type="text" name="q8"></div>
+<div class="row"><input type="text" name="custom_9" aria-label="cards[77][field0]"></div>
+<div class="unnamed">
+<label><input type="radio" name="mystery" value="a"> Alpha</label>
+<label><input type="radio" name="mystery" value="b"> Beta</label>
+</div>
+<button type="submit">Submit application</button>
+</form>
+</body>
+</html>

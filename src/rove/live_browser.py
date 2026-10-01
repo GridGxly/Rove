@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import sync_playwright
 
-from . import workflow
+from . import form_reading, workflow
 from .jobs import lookup_job_link, public_link
 from .onboarding import read_approved
 from .runtime import state_root, write_private
@@ -363,28 +363,26 @@ OBSERVE = (
     r"""() => {
  const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden' && e.getAttribute('aria-hidden')!=='true';
  const messages=__MESSAGES__;
- const owns=(l,e)=>!l.htmlFor||!document.getElementById(l.htmlFor)||document.getElementById(l.htmlFor)===e;
- const nearest=e=>{let p=e.parentElement;for(let d=0;p&&d<4;d++,p=p.parentElement){const ls=[...p.querySelectorAll('label')].filter(l=>!l.contains(e)&&owns(l,e));if(ls.length)return ls[0].innerText.trim();}return '';};
- const label=e=>[...(e.labels||[])].map(x=>x.innerText).join(' ').trim() || e.getAttribute('aria-label') ||
-   (e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ').trim() || nearest(e) || e.getAttribute('placeholder') || '';
- const labelEls=e=>{const ls=[...(e.labels||[])];if(ls.length)return ls;const ids=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)).filter(Boolean);if(ids.length)return ids;let p=e.parentElement;for(let d=0;p&&d<4;d++,p=p.parentElement){const found=[...p.querySelectorAll('label')].filter(l=>!l.contains(e)&&owns(l,e));if(found.length)return [found[0]];}return [];};
- const requiredBy=e=>labelEls(e).some(l=>/\brequired\b/i.test(l.className)||/\*\s*$/.test((l.innerText||'').trim()));
- const groupOf=e=>{if(e.type!=='radio'&&e.type!=='checkbox')return '';const f=e.closest('fieldset,[role=radiogroup],[role=group]');if(!f)return '';
-   const t=f.querySelector('legend')||[...f.querySelectorAll('label')].find(l=>owns(l,e)&&l.control!==e);return t?t.innerText.trim():'';};
- const fields=[...document.querySelectorAll('input,textarea,select')].filter(e=>visible(e)||e.type==='file').map((e,i)=>{
+__READING__
+ const controls=[...document.querySelectorAll('input,textarea,select')].filter(shown);
+ const fields=controls.map((e,i)=>{
    e.setAttribute('data-rove-field',String(i));
-   return {ref:String(i),label:label(e),group:groupOf(e),name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
+   // A grouped radio or checkbox is one option of its group's question, never a question itself.
+   const g=groupFor(e,controls);const read=g?readOption(e):readLabel(e);
+   return {ref:String(i),label:read.text,group:g?g.label:'',name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||null,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
-    required:e.required || e.getAttribute('aria-required')==='true' || requiredBy(e),disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
+    required:e.required || e.getAttribute('aria-required')==='true' || requiredBy(e) || !!read.required,disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
     value:(['password','hidden','file'].includes(e.type)?null:e.value),maxlength:(e.maxLength>0?e.maxLength:null),
-    options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):[]};
+    options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):[],
+    ...(read.missing?{label_missing:true}:{}),...(g?{_group:{key:g.key,required:g.required,missing:g.missing}}:{})};
  }).filter(e=>e.kind!=='hidden');
  const boxes=[...new Set([...document.querySelectorAll('button[aria-pressed]')].filter(visible).map(b=>b.parentElement))].filter(c=>c.querySelectorAll(':scope > button[aria-pressed]').length>=2);
- const choices=boxes.map((c,i)=>{c.setAttribute('data-rove-choice',String(i));const buttons=[...c.querySelectorAll(':scope > button[aria-pressed]')];const box=c.querySelector('input');
-   return {ref:String(i),label:nearest(c),group:'',name:box?.name||'',id:box?.id||'',kind:'choice',tag:'buttons',role:'choice',selected:null,selection_code:null,
-    required:!!(c.parentElement&&[...c.parentElement.querySelectorAll('label')].some(l=>/required/i.test(l.className)||/\*\s*$/.test(l.innerText))),disabled:false,readonly:false,checked:false,
-    value:buttons.find(b=>b.getAttribute('aria-pressed')==='true')?.innerText.trim()||'',options:buttons.map(b=>({label:b.innerText.trim(),value:b.getAttribute('data-option')||b.innerText.trim()}))};});
+ const choices=boxes.map((c,i)=>{c.setAttribute('data-rove-choice',String(i));const buttons=[...c.querySelectorAll(':scope > button[aria-pressed]')];const box=c.querySelector('input');const read=readContainer(c);
+   return {ref:String(i),label:read.text,group:'',name:box?.name||'',id:box?.id||'',kind:'choice',tag:'buttons',role:'choice',selected:null,selection_code:null,
+    required:!!read.required||!!(c.parentElement&&[...c.parentElement.querySelectorAll('label')].some(l=>/required/i.test(l.className)||/\*\s*$/.test(l.innerText))),disabled:false,readonly:false,checked:false,
+    value:buttons.find(b=>b.getAttribute('aria-pressed')==='true')?.innerText.trim()||'',options:buttons.map(b=>({label:b.innerText.trim(),value:b.getAttribute('data-option')||b.innerText.trim()})),
+    ...(read.missing?{label_missing:true}:{})};});
  fields.push(...choices);
  const auth=[...document.querySelectorAll('button,input[type=submit],a[href],[role="button"]')].filter(visible).filter(e=>
    /^(create (an )?account|create (my )?profile|sign ?up|register|sign ?in|log ?in)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{
@@ -405,6 +403,7 @@ OBSERVE = (
  lever_verification_error:/there was an error verifying your application/i.test(document.body.innerText),
   status_region:messages('__STATUS__'),form_error:messages('__ERROR__')}};
 }""".replace("__MESSAGES__", MESSAGES_JS)
+    .replace("__READING__", form_reading.READING_JS)
     .replace("__STATUS__", STATUS_SELECTOR)
     .replace("__ERROR__", ERROR_SELECTOR)
 )
@@ -913,37 +912,8 @@ class RecruitingBrowser:
         self.run["title"] = data["title"]
         self.run["last_observation"] = version
         self.save()
-        groups = {}
-        for field in data["fields"]:
-            if field["kind"] == "radio" and field.get("name"):
-                groups.setdefault(field["name"], []).append(field)
-        for name, members in groups.items():
-            if len(members) < 2:
-                continue
-            # One question with options, not one question per radio button.
-            group = {
-                "ref": None,
-                "label": next((m["group"] for m in members if m.get("group")), "")
-                or members[0]["label"],
-                "group": "",
-                "name": name,
-                "id": "",
-                "kind": "radio_group",
-                "tag": "radios",
-                "role": "radio_group",
-                "selected": None,
-                "selection_code": None,
-                "required": any(m["required"] for m in members),
-                "disabled": all(m["disabled"] for m in members),
-                "readonly": False,
-                "checked": False,
-                "value": next((m["label"] for m in members if m["checked"]), ""),
-                "options": [
-                    {"label": m["label"], "value": m.get("value") or m["label"]} for m in members
-                ],
-                "member_refs": [m["ref"] for m in members],
-            }
-            data["fields"].append(group)
+        # One question with options, not one question per radio button or checkbox.
+        data["fields"] = form_reading.group_choices(data["fields"])
         for field in data["fields"]:
             field["key"] = workflow.field_key(field)
         passwords = [f for f in data["fields"] if f["kind"] == "password"]
@@ -971,6 +941,81 @@ class RecruitingBrowser:
             data["screenshot"] = str(image)
         write_private(state_root() / f"applications/{self.run['id']}/observation.json", data)
         return data
+
+    def set_checkboxes(self, field: dict, labels: list[str]) -> bool:
+        """Leave exactly the named options of a checkbox group checked, and verify each box."""
+        for option, ref in zip(field["options"], field["member_refs"], strict=True):
+            member = self.page.locator(f'[data-rove-field="{int(ref)}"]')
+            wanted = option["label"] in labels
+            if member.is_checked() == wanted:
+                continue
+            try:
+                member.set_checked(wanted, timeout=3000)
+            except PlaywrightError:
+                # Styled boxes hide the input; its associated label is the visible target.
+                target = member.get_attribute("id")
+                if target:
+                    self.page.locator(f'label[for="{target}"]').first.click()
+            if member.is_checked() != wanted:
+                return False
+        return True
+
+    def fill_read_question(self, field: dict, answers: dict, filled: list, pending: list) -> bool:
+        """Form reading's part of filling a page; True when the field needs nothing more.
+
+        A grouped checkbox is answered once, as its group. A checkbox group takes the
+        owner's answer, one he gave before, or the form's own decline option for voluntary
+        self-identification. A question whose text could not be read is never answered
+        from a guess or from memory: it goes to the owner as unreadable.
+        """
+        if field["kind"] in {"checkbox", "radio"} and field.get("in_group"):
+            return True
+        answer = answers.get(field["key"])
+        if answer and answer["value"].lower() == "skip":
+            if field["kind"] == "checkbox_group" and not field["required"]:
+                return True
+            # A blank recorded while the question looked optional is not an answer now.
+            answer = None if field["required"] else answer
+        if field.get("label_missing") and not answer and field["kind"] not in {"file", "password"}:
+            pending.append(form_reading.unreadable_question(field))
+            return True
+        if field["kind"] != "checkbox_group":
+            return False
+        options = [o["label"] for o in field["options"]]
+        value, source = (answer["value"], answer["source"]) if answer else (None, None)
+        if value is None:
+            value, source = workflow.recall_answer(field["label"]), "your earlier answer"
+        chosen = form_reading.match_options(value, options) if value is not None else None
+        if chosen is None and value is not None and len(options) == 1:
+            # A lone box under a question: the owner's yes ticks it.
+            chosen = options if normalized(str(value)) in {"yes", "true"} else None
+        if chosen is None and not answer:
+            declined = decline_self_identification(field["label"], options)
+            if declined:
+                chosen, source = [declined], "policy.decline_self_identification"
+        if chosen is not None and self.set_checkboxes(field, chosen):
+            filled.append(
+                {
+                    "label": field["label"],
+                    "value": ", ".join(chosen),
+                    "source": source,
+                    "key": field["key"],
+                    "control": "checkbox_group",
+                }
+            )
+            return True
+        pending.append(
+            {
+                "label": field["label"],
+                "key": field["key"],
+                "required": field["required"],
+                "options": options,
+                "reason": "Needs reviewed answer or supported control adapter"
+                if chosen is None
+                else "Selection could not be verified",
+            }
+        )
+        return True
 
     def open(self, url: str) -> dict:
         target = validate_destination(url.strip().strip("<>\"'"))
@@ -1454,6 +1499,8 @@ class RecruitingBrowser:
             pace()
             if field["kind"] == "radio" and field.get("name") in grouped:
                 continue  # handled once as its group
+            if self.fill_read_question(field, answers, filled, pending):
+                continue  # a grouped checkbox, a checkbox group, or an unreadable question
             if field["kind"] in {"radio_group", "choice"}:
                 owner_answer = answers.get(field["key"])
                 if owner_answer and owner_answer["value"].lower() == "skip":
