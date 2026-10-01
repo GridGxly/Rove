@@ -409,9 +409,22 @@ ATS_DOMAINS = {
 }  # fmt: skip
 
 
+# Domains under which anyone can get a site or a mailbox of their own. A posting hosted
+# there does not make the rest of the domain the employer.
+SHARED_SITE_DOMAINS = {
+    "github.io", "gitlab.io", "pages.dev", "vercel.app", "netlify.app", "web.app",
+    "firebaseapp.com", "herokuapp.com", "notion.site", "webflow.io", "wixsite.com",
+    "squarespace.com", "wordpress.com", "blogspot.com", "substack.com", "carrd.co",
+    "framer.website", "typeform.com", "airtable.com", "medium.com", "gmail.com",
+    "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "proton.me", "zohomail.com",
+}  # fmt: skip
+
+
 def employer_domain(url: str) -> str | None:
     domain = registrable(urlsplit(str(url or "")).hostname or "")
-    return None if not domain or domain in ATS_DOMAINS else domain
+    if not domain or domain in ATS_DOMAINS or domain in SHARED_SITE_DOMAINS:
+        return None
+    return domain
 
 
 def normalize(text) -> str:
@@ -1018,26 +1031,41 @@ def owner_reply(message: dict) -> str | None:
     if word not in CONFIRM_WORDS | DISMISS_WORDS:
         return "Reply `confirm` if that mail is real, or `ignore`."
     decision = "confirmed" if word in CONFIRM_WORDS else "dismissed"
-    with mail_db() as conn:
-        changed = conn.execute(
-            "UPDATE mail_confirmations SET status=?,owner_message_id=? "
-            "WHERE message_id=? AND status='pending'",
-            (decision, str(message.get("id") or ""), row["message_id"]),
-        ).rowcount
-    if not changed:
+    mail = None
+    if decision == "confirmed":
+        try:
+            mail = read_evidence(row["message_id"])
+        except (OSError, ValueError):
+            raise ValueError("I no longer have that mail on file, so nothing changed.") from None
+        mail["evidence_path"] = message_directory(row["message_id"]) / "message.json"
+
+    def settle(status: str, expected: str) -> bool:
+        with mail_db() as conn:
+            return bool(
+                conn.execute(
+                    "UPDATE mail_confirmations SET status=?,owner_message_id=? "
+                    "WHERE message_id=? AND status=?",
+                    (status, str(message.get("id") or ""), row["message_id"], expected),
+                ).rowcount
+            )
+
+    if not settle(decision, "pending"):
         return "That one is already settled."
-    if decision == "dismissed":
+    if mail is None:
         return "Left as it was."
-    mail = read_evidence(row["message_id"])
-    mail["evidence_path"] = message_directory(row["message_id"]) / "message.json"
-    data = apply_mail(
-        row["application_id"],
-        mail,
-        row["label"],
-        row["classifier"],
-        row["deadline"],
-        confirmed_by=str(message.get("id") or "owner"),
-    )
+    try:
+        data = apply_mail(
+            row["application_id"],
+            mail,
+            row["label"],
+            row["classifier"],
+            row["deadline"],
+            confirmed_by=str(message.get("id") or "owner"),
+        )
+    except Exception:
+        # Nothing was recorded, so the card is still open for another reply.
+        settle("pending", "confirmed")
+        raise
     if data.get("to_state") or data.get("reconciled"):
         return "Recorded."
     return "Noted in its thread. Nothing else moved."

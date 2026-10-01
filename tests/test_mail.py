@@ -823,6 +823,24 @@ def test_unauthenticated_or_weak_mail_changes_no_state(state, monkeypatch):
     assert not [p for m, path, p in posted if path == "/channels/thread-1/messages"]
 
 
+def test_a_neighbour_on_a_shared_hosting_domain_is_not_the_employer(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application("https://acme.pages.dev/jobs/1", "Acme Robotics — Software Intern")
+    assert mail.employer_domain("https://acme.pages.dev/jobs/1") is None
+    assert mail.employer_domain("https://careers.acme.example/jobs/1") == "acme.example"
+    # The mail is really from evil.pages.dev; that proves nothing about acme.pages.dev.
+    fake_zoho(
+        monkeypatch,
+        [message("1401", "hr@evil.pages.dev", "Acme Robotics application update", NOW_MS + 1)],
+        {"1401": REJECTION},
+    )
+    assert mail.tick()["held"] == 1
+    assert workflow.get(app)["status"] == "APPLIED"
+    assert len([p for p in cards(posted) if "Looks like a rejection" in p["content"]]) == 1
+
+
 def test_the_owner_confirms_or_ignores_a_held_mail_with_a_word(state, monkeypatch):
     configure(state)
     posted = recorder(monkeypatch)

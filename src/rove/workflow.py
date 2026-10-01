@@ -313,16 +313,17 @@ def sends_unattended(item: dict) -> bool:
     return source_policy(item["source"])["unattended"] or owner_said_go(item["id"])
 
 
-def raise_source(row: dict, source: str) -> dict:
-    """A better-vouched source for a link that is already queued replaces the weaker one;
-    a weaker one never changes the row. A wait that existed only because of the old
-    source ends."""
+def raise_source(row: dict, source: str, title: str = "") -> dict:
+    """A better-vouched source for a link that is already queued replaces the weaker one,
+    and names the job if the row had no title; a weaker one never changes the row. A
+    wait that existed only because of the old source ends."""
     if source_policy(source)["rank"] <= source_policy(row["source"])["rank"]:
         return row
     with db() as conn:
         conn.execute(
-            "UPDATE application_queue SET source=?,updated_at=? WHERE id=?",
-            (source, now(), row["id"]),
+            "UPDATE application_queue SET source=?,updated_at=?,"
+            "title=CASE WHEN title='' THEN ? ELSE title END WHERE id=?",
+            (source, now(), title[:300], row["id"]),
         )
     if (
         row["status"] == "NEEDS_USER"
@@ -363,7 +364,7 @@ def enqueue(url: str, *, source: str = "owner_link", title: str = "") -> dict:
         )
     already_exists = row["id"] != application_id
     if already_exists:
-        row = raise_source(row, source)
+        row = raise_source(row, source, title)
     waits = row["status"] == "QUEUED" and intake_hold(row) is not None
     return {
         "application_id": row["id"],

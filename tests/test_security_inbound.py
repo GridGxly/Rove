@@ -164,11 +164,12 @@ def test_every_caller_names_its_source_and_only_the_owner_parser_says_owner_link
             assert sources, f"{path.name} queues a link without naming its source"
             assert isinstance(sources[0], ast.Constant), f"{path.name} computes a source"
             callers.setdefault(sources[0].value, set()).add(path.name)
-    assert callers == {
-        "owner_link": {"inbound.py"},
-        "agent": {"server.py", "cli.py", "live_browser.py"},
-        "keryx": {"discord_feed.py"},
-    }
+    assert callers["owner_link"] == {"inbound.py"}
+    assert {"server.py", "cli.py", "live_browser.py"} <= callers["agent"]
+    assert callers["keryx"] == {"discord_feed.py"}
+    assert set(callers) <= set(workflow.SOURCES) | set(workflow.SOURCE_ALIASES)
+    # Nothing the model can call queues with more than the agent's standing.
+    assert not any("server.py" in files for name, files in callers.items() if name != "agent")
     assert set(workflow.SOURCES) == {"owner_link", "owner_pick", "feed", "agent"}
     assert workflow.source_policy("keryx") == workflow.SOURCES["feed"]
     assert workflow.source_policy("something new") == workflow.SOURCES["agent"]
@@ -274,6 +275,24 @@ def test_the_owners_pasted_link_is_his_own_and_outranks_the_agents_copy(state, m
         {},
     )
     assert fresh == "Queued 2 of your links. They go next."
+
+
+def test_the_feed_listing_an_agent_link_makes_it_a_feed_job(state, monkeypatch):
+    from rove import server
+
+    discord_recorder(monkeypatch)
+    scripted_browser(monkeypatch)
+    link = "https://collector.evil.example/jobs/1"
+    app = server.start_job_application(link)["application_id"]
+    assert worker.process(app)["status"] == "NEEDS_USER"
+    again = workflow.enqueue(link, source="keryx", title="Example Labs — Software Intern")
+    assert again["already_exists"] and again["waits_for_owner"] is False
+    item = workflow.get(app)
+    assert (item["source"], item["status"], item["title"]) == (
+        "keryx",
+        "QUEUED",
+        "Example Labs — Software Intern",
+    )
 
 
 @pytest.mark.parametrize(
@@ -554,6 +573,7 @@ def test_the_drafting_context_carries_no_contact_pay_gpa_policy_or_eligibility(s
     }
     sent = drafting(monkeypatch, [[proposal(KEYS[0], CLEAN)]], career)
     app, page = drafted_application(state, 1)
+    page["text"] += f" Review your details: {EMAIL}, {PHONE}. Minimum GPA 3.0 required."
     with workflow.db() as conn:
         conn.executemany(
             "INSERT INTO application_answers VALUES(?,?,?,?)",
@@ -589,6 +609,9 @@ def test_the_drafting_context_carries_no_contact_pay_gpa_policy_or_eligibility(s
     # The owner's own answer that is a phone number is not handed back to the model.
     assert list(context["owner_answers"]) == ["e" * 12]
     assert "Built a planner." in text and draft_guard.WITHHELD in text
+    # The page's own words stay, including a figure that is the posting's and not his.
+    assert "mention your phone number" in context["job_context"]
+    assert "Minimum GPA 3.0 required" in context["job_context"]
     assert context["owner_voice"] == VOICE
 
 

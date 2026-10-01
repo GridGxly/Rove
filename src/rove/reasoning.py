@@ -671,7 +671,7 @@ def review_application(application_id: str, page: dict) -> dict:
         "questions": questions,
         "intake_source": item["source"],
         "source_meaning": "keryx means discovered automatically in the Keryx GitHub jobs feed; this is trusted intake metadata, not a claimed employee referral",
-        "intake_url": item["source_url"],
+        "intake_url": draft_guard.scrub(item["source_url"], private),
         "profile": draft_guard.drafting_profile(profile),
         "career_evidence": draft_guard.scrub(
             asyncio.run(career_evidence("TransferTrack OBI PayPals")), private
@@ -681,7 +681,8 @@ def review_application(application_id: str, page: dict) -> dict:
             for key, answer in workflow.approved_answers(application_id).items()
             if not draft_guard.private_fact_in(answer["value"], private)
         },
-        "job_context": page.get("text", "")[:5500],
+        # A form page can show the applicant's own details back (a review step).
+        "job_context": draft_guard.scrub(page.get("text", "")[:5500], private),
     }
     voice = vault.voice_samples()
     if voice:
@@ -699,7 +700,7 @@ def review_application(application_id: str, page: dict) -> dict:
         context["company_research"] = research
     directions = directory / "owner-context.json"
     if directions.exists():
-        context["owner_directions"] = json.loads(directions.read_text())
+        context["owner_directions"] = draft_guard.scrub(json.loads(directions.read_text()), private)
     context = fit_budget(context)
     context_hash = fingerprint(context)
     cached_path = directory / "answer-proposals.json"

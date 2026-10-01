@@ -181,14 +181,16 @@ def private_facts(profile: dict, application_id: str | None = None) -> list[tupl
             if forms:
                 alternatives = "|".join(re.escape(form) for form in forms)
                 facts.append(("GPA", rf"(?<![\d.])(?:{alternatives})(?![\d])"))
-    if undisclosed:
-        facts.append(("GPA", GPA_STATED.pattern))
     preferences = profile["preferences"]
     for key, hourly in (("minimum_salary_usd", False), ("minimum_hourly_usd", True)):
         pattern = money(preferences[key], hourly) if preferences.get(key) else None
         if pattern:
             facts.append(("pay figure", pattern))
-    return [(kind, re.compile(pattern, re.IGNORECASE)) for kind, pattern in facts]
+    compiled = [(kind, re.compile(pattern, re.IGNORECASE)) for kind, pattern in facts]
+    if undisclosed:
+        # With no GPA to disclose, a draft that states any GPA figure is wrong as well.
+        compiled.append(("GPA", GPA_STATED))
+    return compiled
 
 
 def private_fact_in(text, facts) -> str | None:
@@ -197,10 +199,12 @@ def private_fact_in(text, facts) -> str | None:
 
 
 def scrub(value, facts):
-    """A copy of a context value with every private fact replaced, at any depth."""
+    """A copy of a context value with the owner's private facts replaced, at any depth.
+    Someone else's figures (a posting's GPA requirement) are left as they are."""
     if isinstance(value, str):
         for _kind, pattern in facts:
-            value = pattern.sub(WITHHELD, value)
+            if pattern is not GPA_STATED:
+                value = pattern.sub(WITHHELD, value)
         return value
     if isinstance(value, list):
         return [scrub(item, facts) for item in value]
