@@ -1,10 +1,12 @@
-"""Writing cleanup for Qwen drafts, following the Unslop contract.
+"""Writing cleanup for Qwen drafts, following the Unslop contract and Humanizer's tells.
 
 Unslop (https://github.com/theclaymethod/unslop, MIT) finds formulaic AI writing and
 repairs only the defective spans while preserving facts and voice. When a local clone
 is configured, its scanners run on every draft; otherwise a small built-in list of the
-same hard tells is used. Findings never change a draft silently: Qwen is asked for one
-bounded repair pass and the result is re-scanned and shown with the original.
+same hard tells is used. Humanizer (https://github.com/blader/humanizer, MIT) catalogs
+the shapes AI prose keeps even as its vocabulary changes; a digest of it runs on every
+draft either way. Findings never change a draft silently: Qwen is asked for one bounded
+repair pass and the result is re-scanned and shown with the original.
 """
 
 import json
@@ -65,14 +67,143 @@ BUILTIN_HARD = [
     "not only",
 ]
 
+# Digest of Humanizer's pattern catalog (after Wikipedia's "Signs of AI writing"). A hard
+# entry justifies a repair on one hit; a soft one counts only beside another finding.
+HUMANIZER_HARD = [
+    # staging instead of stating: contrasts, deep-sounding sayings, run-ups, straw men
+    "not merely",
+    "the real question is",
+    "at its core",
+    "what really matters",
+    "the heart of the matter",
+    "let's dive in",
+    "let's explore",
+    "let's break this down",
+    "here's what you need to know",
+    "without further ado",
+    "let's be honest",
+    "real talk",
+    "the thing is",
+    "don't get me wrong",
+    "this is not to say",
+    "some might say",
+    "one might be tempted",
+    "read that again",
+    # inflation and borrowed authority
+    "tapestry",
+    "pivotal",
+    "meticulous",
+    "meticulously",
+    "intricacies",
+    "interplay",
+    "garnered",
+    "bolster",
+    "bolstered",
+    "vibrant",
+    "enduring",
+    "indelible",
+    "underscores the",
+    "underscores its",
+    "underscore the",
+    "plays a key role",
+    "setting the stage",
+    "evolving landscape",
+    "lasting legacy",
+    "reflects a broader",
+    "the future looks bright",
+    "exciting times ahead",
+    "step in the right direction",
+    "groundbreaking",
+    "renowned",
+    "diverse array",
+    "breathtaking",
+    "nestled",
+    "exemplifies",
+    "profound",
+    "experts argue",
+    "experts agree",
+    "studies show",
+    "industry reports",
+    "serves as a",
+    "stands as a",
+    "boasts",
+    # stacked qualifiers
+    "could potentially",
+    "might arguably",
+    # leftovers from chat and drafting
+    "i hope this helps",
+    "great question",
+    "you're absolutely right",
+    "let me know if",
+    "would you like me",
+    "certainly!",
+    "of course!",
+    "as an ai",
+    "my last training",
+    "based on available information",
+    "it is believed that",
+    "in this response",
+    "in this essay",
+]
+
+HUMANIZER_SOFT = [
+    "to be clear",
+    "i'm not saying",
+    "you might think",
+    "to be fair",
+    "it's also possible",
+    "fundamentally",
+    "in reality",
+    "crucial",
+    "highlight",
+    "highlighting",
+    "enhance",
+    "valuable",
+    "align with",
+    "aligns with",
+    "additionally",
+    "actually",
+    "quietly",
+    "intricate",
+    "underscoring",
+    "emphasizing",
+    "ensuring",
+    "symbolizing",
+    "cultivating",
+    "encompassing",
+    "commitment to",
+    "associated with",
+    "linked to",
+    "tied to",
+    "connected to",
+    "functions as",
+    "represents a",
+]
+
+HUMANIZER_TELLS = (
+    "no 'not X but Y' contrasts, no run-up before the point, no closing line that restates "
+    "the answer, no hedge stacks, no list of three for rhythm, no dash as a connector, no "
+    "inflated words (pivotal, meticulous, vibrant, tapestry, testament, serves as), plain "
+    "is/has verbs, straight quotes"
+)
+
+# Two sentences for the drafting prompt; the lists above are the scanner's side of them.
+HUMANIZER_RULES = (
+    "Humanizer rules: say each point once, in plain words, as the person who did the work: "
+    + HUMANIZER_TELLS
+    + ", and sentences of different lengths. A reader should not be able to tell the text "
+    "from something the owner typed."
+)
+
 CLEANUP_PROMPT = (
     "You are Qwen, the local recruiting agent in Hermes, acting as a careful editor under "
     "the Unslop contract. You receive a short application answer and a list of flagged "
     "spans. Repair only the flagged spans with the smallest edit that keeps the meaning; "
     "copy every other sentence exactly. Preserve every fact, number, name, date, "
     "technology and claim. Add nothing: no new claims, praise, personality or conclusion. "
-    "Do not shorten the answer to fragments. Return ONLY the corrected text, no quotes, "
-    "no markdown, no explanation."
+    "Do not shorten the answer to fragments. A repair states the flagged point plainly "
+    "instead of swapping one tell for another: " + HUMANIZER_TELLS + ". Return ONLY the "
+    "corrected text, no quotes, no markdown, no explanation."
 )
 
 
@@ -106,49 +237,111 @@ def _run_scanner(scripts: Path, name: str, text: str) -> dict:
         return {}
 
 
-def builtin_scan(text: str) -> list[dict]:
-    lowered = text.lower()
+def _normalized(text: str) -> str:
+    """Lowercase with straight apostrophes; the length is unchanged so columns line up."""
+    return text.lower().replace("’", "'")
+
+
+def _phrase_hits(text: str, phrases: list[str], severity: str, category: str) -> list[dict]:
+    lowered = _normalized(text)
     hits = []
-    for phrase in BUILTIN_HARD:
+    for phrase in phrases:
         for match in re.finditer(r"(?<![a-z])" + re.escape(phrase) + r"(?![a-z])", lowered):
             hits.append(
                 {
                     "phrase": phrase,
-                    "severity": "hard",
-                    "category": "builtin",
+                    "severity": severity,
+                    "category": category,
                     "column": match.start(),
                 }
             )
-    if "—" in text:
-        hits.append(
-            {
-                "phrase": "—",
-                "severity": "soft",
-                "category": "punctuation",
-                "column": text.index("—"),
-            }
-        )
     return hits
+
+
+def builtin_scan(text: str) -> list[dict]:
+    return _phrase_hits(text, BUILTIN_HARD, "hard", "builtin")
+
+
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# An em dash anywhere, or an en dash or double hyphen used as a spaced connector; a date
+# range such as 2019–2021 is not a connector.
+CONNECTOR_DASH = re.compile(r"—|\s–\s|\s--\s")
+TRIAD = re.compile(
+    r"\b[\w'-]+(?: [\w'-]+)?, [\w'-]+(?: [\w'-]+)?,? (?:and|or) [\w'-]+", re.IGNORECASE
+)
+
+
+def _shape_hits(text: str) -> list[dict]:
+    """Humanizer's shape tells: the habits that survive a change of vocabulary."""
+    hits = []
+
+    def add(phrase: str, severity: str, column: int):
+        hits.append(
+            {"phrase": phrase, "severity": severity, "category": "humanizer-shape", "column": column}
+        )
+
+    dashes = list(CONNECTOR_DASH.finditer(text))
+    if dashes:
+        # Unslop treats two connector dashes in one paragraph as a hard violation.
+        add(dashes[0].group().strip(), "hard" if len(dashes) >= 2 else "soft", dashes[0].start())
+    sentences = [s.strip() for s in SENTENCE_END.split(text.strip()) if s.strip()]
+    for sentence in sentences:
+        if sentence.endswith("?"):
+            add(sentence[:80], "soft", text.find(sentence))
+    openers = [re.sub(r"[^a-z]", "", s.split(maxsplit=1)[0].lower()) for s in sentences]
+    for i in range(len(openers) - 2):
+        # Three sentences in a row opening on the same word; a first-person "I" is the
+        # natural opener of an application answer and is not a tell.
+        word = openers[i]
+        if word and word != "i" and openers[i + 1] == word and openers[i + 2] == word:
+            add(word, "soft", text.find(sentences[i]))
+            break
+    triads = list(TRIAD.finditer(text))
+    if len(triads) >= 2:
+        add(triads[0].group(), "soft", triads[0].start())
+    if "“" in text or "”" in text:
+        add("curly quotes", "soft", max(text.find("“"), text.find("”")))
+    return hits
+
+
+def humanizer_scan(text: str) -> list[dict]:
+    return (
+        _phrase_hits(text, HUMANIZER_HARD, "hard", "humanizer")
+        + _phrase_hits(text, HUMANIZER_SOFT, "soft", "humanizer")
+        + _shape_hits(text)
+    )
+
+
+def _merge(primary: list[dict], extra: list[dict]) -> list[dict]:
+    """Primary findings win; an extra hit on a phrase already reported is dropped."""
+    known = {str(v.get("phrase", "")).lower() for v in primary}
+    merged = primary + [hit for hit in extra if hit["phrase"].lower() not in known]
+    return sorted(merged, key=lambda v: v.get("column", 0))
 
 
 def scan(text: str) -> dict:
     """Deterministic detection; the findings are candidates, never edits."""
     scripts = scanner_dir()
+    shape = humanizer_scan(text)
     if scripts is None:
-        hits = builtin_scan(text)
-        return {"source": "builtin", "violations": hits, "structure": []}
+        return {
+            "source": "builtin",
+            "violations": _merge(builtin_scan(text), shape),
+            "structure": [],
+        }
     phrases = _run_scanner(scripts, "banned_phrase_scan.py", text)
     structure = _run_scanner(scripts, "structure_scan.py", text)
+    violations = [
+        {
+            k: v
+            for k, v in item.items()
+            if k in {"phrase", "category", "severity", "suggestion", "column"}
+        }
+        for item in phrases.get("violations", [])
+    ]
     return {
         "source": "unslop",
-        "violations": [
-            {
-                k: v
-                for k, v in item.items()
-                if k in {"phrase", "category", "severity", "suggestion", "column"}
-            }
-            for item in phrases.get("violations", [])
-        ],
+        "violations": _merge(violations, shape),
         "structure": list(structure.get("flags", [])),
     }
 

@@ -610,4 +610,11 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
         finish_attempt(application_id, result["status"], result)
     if result["status"] == "APPLIED":
         browser.close_run(application_id)
+    else:
+        workflow.attach_file(
+            application_id, directory / "form-before-submit.png", "→ The form just before the click"
+        )
+        workflow.attach_file(
+            application_id, directory / "browser.png", "→ What the page showed after"
+        )
     return result

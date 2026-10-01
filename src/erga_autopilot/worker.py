@@ -5,6 +5,7 @@ import fcntl
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from . import matching, workflow
 from .discord_feed import discord, private_env
@@ -57,12 +58,72 @@ def fit_hold(application_id: str, fit: dict) -> dict:
     }
 
 
+def attach_stop_screenshot(application_id: str):
+    """Every stop shows what the browser showed: the freshest screenshot of this run."""
+    directory = state_root() / f"applications/{application_id}"
+    candidates = [p for p in (directory / "failure.png", directory / "browser.png") if p.is_file()]
+    if not candidates:
+        return
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    if datetime.now(UTC).timestamp() - newest.stat().st_mtime > 30 * 60:
+        return
+    workflow.attach_file(application_id, newest, "→ What the browser showed when it stopped")
+
+
+def attach_resume(application_id: str, manifest: dict):
+    """The resume as sent, and Erga's rejected tailored draft when there is one, for review."""
+    directory = state_root() / f"applications/{application_id}"
+    kind = (
+        "tailored by Erga from your evidence"
+        if manifest.get("tailored")
+        else "your approved base PDF"
+    )
+    workflow.attach_file(application_id, directory / "resume.pdf", f"→ Resume as sent · {kind}")
+    tex = manifest.get("rejected_proposal_tex")
+    if not tex or not Path(tex).is_file():
+        return
+    draft = directory / "tailored-draft.pdf"
+    try:
+        import shutil
+        import subprocess
+
+        workdir = directory / "tailored-draft"
+        workdir.mkdir(exist_ok=True, mode=0o700)
+        shutil.copyfile(tex, workdir / "draft.tex")
+        subprocess.run(
+            [str(Path.home() / ".local/bin/tectonic"), "--keep-logs", "draft.tex"],
+            cwd=workdir,
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        shutil.move(workdir / "draft.pdf", draft)
+        draft.chmod(0o600)
+    except Exception as error:  # noqa: BLE001 -- a draft that cannot be rendered is reported, not fatal
+        workflow.system_line(
+            application_id, f"tailored draft render failed: {type(error).__name__}"
+        )
+        return
+    fill = manifest.get("page_fill_ratio")
+    why = (
+        f"it fills {round(float(fill) * 100)}% of the page and Erga requires 90%"
+        if fill
+        else "it failed Erga's layout check"
+    )
+    workflow.attach_file(
+        application_id,
+        draft,
+        f"→ Tailored draft Erga rejected ({why}) · not sent · for your review",
+    )
+
+
 def held(
     application_id: str, status: str, reason: str, headline: str, channel: str = "action", **extra
 ) -> dict:
     """End a run in a state the owner must act on, with one clear card in one channel."""
     workflow.set_state(application_id, status)
     workflow.action_needed(application_id, reason, headline=headline, channel=channel, **extra)
+    attach_stop_screenshot(application_id)
     return {
         "application_id": application_id,
         "status": status,
@@ -356,6 +417,8 @@ def process(application_id: str) -> dict:
                             "review": "Review the exact PDF before approving submission.",
                         },
                     )
+                    workflow.flush_events(application_id)
+                    attach_resume(application_id, resume)
                 phase = "prepare"
                 page = browser_call("prepare", run_id=application_id)
                 pending = page.get("pending", [])
@@ -1067,6 +1130,7 @@ def tick() -> dict:
                 commands=["go", "park it"],
                 headline="Preparation stopped",
             )
+            attach_stop_screenshot(queued)
             result = {
                 "application_id": queued,
                 "status": "NEEDS_USER",

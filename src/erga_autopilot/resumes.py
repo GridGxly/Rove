@@ -113,12 +113,20 @@ def prepare_resume(application_id: str, url: str) -> dict:
     if not paths:
         # Failed tailoring never silently becomes a valid generated resume. Preserve
         # the approved factual base and expose the failure in the review package.
-        return base_resume_manifest(
+        manifest = base_resume_manifest(
             directory,
             url,
             "Erga tailoring did not pass layout validation; using the approved base PDF for review.",
             data.get("application_id"),
         )
+        validation = data.get("validation") or {}
+        if manifest.get("ready") and data.get("proposal_tex"):
+            manifest.update(
+                rejected_proposal_tex=str(data["proposal_tex"]),
+                page_fill_ratio=validation.get("page_fill_ratio"),
+            )
+            write_private(directory / "resume-manifest.json", manifest)
+        return manifest
     source = paths[0]
     tex = source.with_suffix(".tex")
     if not tex.is_file():

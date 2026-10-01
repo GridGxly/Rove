@@ -978,6 +978,29 @@ def flush_events(application_id: str):
             conn.execute("UPDATE application_events SET delivery='sent' WHERE id=?", (row["id"],))
 
 
+ATTACHMENT_LIMIT = 8 * 1024 * 1024
+
+
+def attach_file(application_id: str, path, line: str) -> bool:
+    """A private file (screenshot, resume) in the application's thread, with one plain line."""
+    from pathlib import Path
+
+    from .discord_feed import discord_upload
+
+    file_path = Path(path)
+    thread = ensure_forum(application_id)
+    if not thread or not file_path.is_file() or file_path.stat().st_size > ATTACHMENT_LIMIT:
+        return False
+    try:
+        discord_upload(
+            thread, file_path, {"content": clip(line, 1900), "allowed_mentions": {"parse": []}}
+        )
+    except (httpx.HTTPError, OSError) as error:
+        delivery_failed("attachment", application_id, error)
+        return False
+    return True
+
+
 def delivery_failed(kind: str, row_id, error: Exception, application_id: str = ""):
     """One private line per failed Discord delivery, so a stuck card is diagnosable."""
     detail = ""

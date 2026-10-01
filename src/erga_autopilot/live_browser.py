@@ -813,6 +813,22 @@ class RecruitingBrowser:
         except PlaywrightError:
             pass
 
+    def picker_diagnostic(self, field: dict, typed: str, seen: list, locator):
+        """Private evidence when a picker refuses our value: what it listed and kept."""
+        with contextlib.suppress(Exception):
+            directory = state_root() / f"applications/{self.run['id']}"
+            write_private(
+                directory / f"picker-{field['key']}.json",
+                {
+                    "label": field["label"],
+                    "typed": typed,
+                    "options_seen": [str(t)[:120] for t in seen[:25]],
+                    "committed": locator.input_value()[:200],
+                    "at": workflow.now(),
+                },
+            )
+            self.page.screenshot(path=str(directory / f"picker-{field['key']}.png"))
+
     def retype_phone(self, observation: dict) -> bool:
         """The site rejected the phone: try the other format once."""
         for field in observation["fields"]:
@@ -1079,7 +1095,7 @@ class RecruitingBrowser:
             "current location",
             "city",
         }
-        identity = profile["identity"]
+        identity = profile.get("identity", {})
         city = str(identity.get("city") or "") if place else ""
         if place:
             # Pickers list "City, ST, Country": typing the city alone surfaces it.
@@ -1090,6 +1106,7 @@ class RecruitingBrowser:
         try:
             options.first.wait_for(state="visible", timeout=4000)
         except PlaywrightError:
+            self.picker_diagnostic(field, city or value, [], locator)
             if place:
                 # A custom suggestion list without ARIA roles: click the suggestion that
                 # names our city, else take the first one; accept only when the committed
@@ -1155,6 +1172,7 @@ class RecruitingBrowser:
             texts = options.all_text_contents()
             matches = [i for i, text in enumerate(texts) if normalized(text) in wanted]
         if len(matches) != 1:
+            self.picker_diagnostic(field, city or value, texts, locator)
             locator.press("Escape")
             return False
         expected = texts[matches[0]]
@@ -1846,6 +1864,13 @@ def serve():
                 response = {"result": result}
             except Exception as error:  # noqa: BLE001 -- serialize failures at the IPC boundary
                 response = {"error": str(error)[:800], "error_type": type(error).__name__}
+                run_id = request.get("run_id") if isinstance(request, dict) else None
+                if run_id and browser.page and not browser.page.is_closed():
+                    with contextlib.suppress(Exception):
+                        # Private evidence: what the tab showed when the action failed.
+                        browser.page.screenshot(
+                            path=str(state_root() / f"applications/{run_id}/failure.png")
+                        )
             self.wfile.write((json.dumps(response) + "\n").encode())
 
     with socketserver.UnixStreamServer(str(socket_path()), Handler) as server:

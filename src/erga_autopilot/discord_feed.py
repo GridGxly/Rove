@@ -26,6 +26,30 @@ def private_env() -> dict:
     return values
 
 
+def discord_upload(channel: str, path, payload: dict) -> dict:
+    """One message with one private file attached (a screenshot or the resume as sent)."""
+    import mimetypes
+    from pathlib import Path
+
+    token = private_env().get("DISCORD_BOT_TOKEN")
+    if not token:
+        raise ValueError("Discord bot credential is missing")
+    file_path = Path(path)
+    kind = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    with (
+        httpx.Client(base_url="https://discord.com/api/v10", timeout=60, trust_env=False) as c,
+        file_path.open("rb") as handle,
+    ):
+        response = c.post(
+            f"/channels/{channel}/messages",
+            headers={"Authorization": "Bot " + token},
+            data={"payload_json": json.dumps(payload)},
+            files={"files[0]": (file_path.name, handle, kind)},
+        )
+    response.raise_for_status()
+    return response.json()
+
+
 def discord(method: str, path: str, payload: dict | None = None):
     token = private_env().get("DISCORD_BOT_TOKEN")
     if not token:
