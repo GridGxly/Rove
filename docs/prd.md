@@ -80,7 +80,7 @@ Evening. One thread reads "Submission unclear · do not click again". He checks 
 |ID|Requirement|Status|Proof|
 |---|---|---|---|
 |FR-17|Unfamiliar required questions go to Qwen as one bounded call, retried once, over the approved profile, stories, evidence and posting; a harness stop is a failure card, never a draft; an option not on the form becomes a question.|Done|`test_harness_stop_is_not_a_model_answer`, `test_proposed_value_outside_the_options_becomes_a_question`, `test_qwen_review_cannot_omit_or_invent_question_keys`|
-|FR-18|Written drafts pass the Unslop scan with one bounded repair that keeps every number and name; the card shows the cleaned text and a summary.|Done|`test_drafts_get_one_bounded_cleanup_and_are_hashed_after_it`|
+|FR-18|Written drafts pass the Unslop and Humanizer scans with one bounded repair that keeps every number and name; the card shows the cleaned text and a summary. A `Story/Voice.md` note in the vault steers the voice.|Done|`test_drafts_get_one_bounded_cleanup_and_are_hashed_after_it`, `test_humanizer_scan_flags_shape_tells_and_passes_plain_prose`, `test_drafting_context_carries_the_owner_voice_note`|
 |FR-19|With `auto_use_drafts` (or `auto_submit`) drafts become answers without a `use` reply; draft cards stay and a later `answer` overrides.|Done|`test_auto_policy_uses_qwen_drafts_and_queues_exactly_one_submission`|
 |FR-20|A required question with no fact and no draft stops with one "Answers needed" card: up to six questions with options and copy-ready `answer` lines.|Done|`test_hold_fields_render_reasons_questions_and_commands_for_the_owner`|
 |FR-21|Substantive answers are preceded by company research in a restricted context.|Not started|no research code|

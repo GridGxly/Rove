@@ -104,10 +104,23 @@ Unfamiliar questions go to **Qwen through Hermes**. The request is trimmed to th
 model's window, runs as one non-streamed call with at most one harness continuation, and
 is retried once when the answer is malformed; a run that still does not finish is a
 `qwen_failure` card, never a draft. A proposed option that is not on the form's list
-becomes a question for the owner. Written drafts pass through the Unslop contract: the
-drafting prompt carries its rules, every draft is scanned, a flagged draft gets one
-bounded repair that must keep every number and name, and the card shows the cleaned text
-with a before/after summary.
+becomes a question for the owner.
+
+Written drafts follow two public rule sets, [Unslop](https://github.com/theclaymethod/unslop)
+and [Humanizer](https://github.com/blader/humanizer). The drafting prompt carries their
+rules in a few sentences. Every draft is scanned for their tells: jargon, "not X but Y",
+run-ups, closers that restate the answer, hedge stacks, lists of three for rhythm, dashes
+as connectors, inflated words, borrowed authority, chatbot leftovers, curly quotes. A hard
+tell, or two soft ones, gets one bounded Qwen repair that must keep every number and
+name; the card shows the cleaned text with a before/after summary. The Unslop scanners run
+from a local clone when `unslop_path` is set; the Humanizer digest is built in and runs
+either way. A phrase from the posting goes into a draft only when the approved evidence
+shows it, so the words an applicant-tracking system matches on stay true.
+
+If the vault has `Erga Autopilot/Story/Voice.md`, about 2,500 characters of it go to Qwen
+as `owner_voice`: the draft follows its sentence rhythm, plain words, first person and
+concrete detail without copying its sentences, and the note is never a source of facts.
+Autopilot reads that note and never writes it; the draft is re-made when it changes.
 
 Boards that need an account are recognized. Your policy asks first: the card offers
 `create account`; on approval the daemon fills the application email and a
@@ -305,6 +318,18 @@ nothing was sent: the attempt is recorded as not submitted, the application goes
 "needs you" with the site's message, and a later `go` prepares a new package. Only an
 outcome the page cannot settle (navigation without a confirmation, a timeout, a crash)
 becomes "unclear" and blocks all sending until the owner reconciles it.
+
+### Debugging a stop
+
+Every stop is visible without opening the Mac. The thread gets the browser screenshot
+taken when the run stopped, the resume PDF as it was sent, and, when Erga tailored a
+resume that failed its layout check, that rejected draft rendered to PDF with the reason
+(for example the share of the page it fills). A send that did not confirm posts the form
+just before the click and the page after it. Identifiers, adapters and package hashes go
+to `system-log`. Privately, under the application's folder in the state root, the daemon
+keeps `failure.png` for any action that raised, and for a picker that refused a value a
+`picker-<field>.json` with what was typed, the options it listed and what it kept, plus a
+screenshot.
 
 ## Records outside Discord
 

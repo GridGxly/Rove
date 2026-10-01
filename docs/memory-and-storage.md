@@ -50,6 +50,7 @@ It holds information that benefits from being readable, searchable, linkable, an
 - approved candidate profile
 - application preferences and policies
 - `introduction.md`-style narrative context
+- a `Story/Voice.md` sample of the owner's own writing
 - company notes
 - research notes
 - decisions and lessons learned
@@ -68,7 +69,8 @@ Erga Autopilot/
 │   ├── Locations.md
 │   └── Application Defaults.md
 ├── Story/
-│   └── Introduction.md
+│   ├── Introduction.md
+│   └── Voice.md
 ├── Career/
 │   ├── Skills.md
 │   ├── Projects.md
@@ -82,6 +84,12 @@ Erga Autopilot/
 ```
 
 That layout is a starting point, not a reason to create empty folders before the implementation needs them.
+
+`Story/Voice.md` is optional. Put a few paragraphs you wrote without help in it (notes,
+emails, an old essay). When it exists, Qwen gets up to about 2,500 characters of it as a
+style sample for written application answers. Autopilot reads the note and never writes
+it. It is not a candidate fact: nothing in it reaches an application unless the approved
+profile or evidence shows the same fact.
 
 The vault is private runtime data. It belongs outside the Git checkout.
 
