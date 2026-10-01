@@ -6,7 +6,6 @@ searching in Obsidian; it is never a candidate fact and never feeds the profile.
 """
 
 import json
-import os
 import re
 from pathlib import Path
 
@@ -27,9 +26,11 @@ def safe_name(text: str, limit: int = 80) -> str:
 
 def sync_answers() -> Path | None:
     """A readable copy of the answers the owner gave once; SQLite stays the exact store."""
-    if not os.environ.get("OBSIDIAN_VAULT_PATH"):
+    try:
+        # The services get the vault from the private config, not the environment.
+        path = vault_root() / "Answers.md"
+    except ValueError:
         return None
-    path = vault_root() / "Answers.md"
     rows = workflow.remembered_answers()
     lines = [
         "# Remembered answers",

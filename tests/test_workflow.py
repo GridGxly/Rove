@@ -1754,3 +1754,18 @@ def test_a_plain_reply_answers_the_only_open_question(state, monkeypatch):
         worker.thread_command("six months", app)
     assert worker.thread_command("https://example.com/not-an-answer", app) is None
     assert worker.thread_command("go", app)["kind"] == "resume"
+
+
+def test_answers_mirror_uses_the_vault_from_private_config(tmp_path, monkeypatch):
+    from rove import vault
+
+    state = tmp_path / "state"
+    notes = tmp_path / "vault"
+    (state / "config").mkdir(parents=True)
+    notes.mkdir()
+    monkeypatch.setenv("ROVE_STATE_DIR", str(state))
+    monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+    assert vault.sync_answers() is None
+    (state / "config/recruiting.json").write_text(json.dumps({"obsidian_vault_path": str(notes)}))
+    assert vault.sync_answers() == notes.resolve() / "Rove/Answers.md"
+    assert (notes / "Rove/Answers.md").read_text().startswith("# Remembered answers")
