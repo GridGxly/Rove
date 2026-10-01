@@ -203,6 +203,8 @@ def question_list(asked: list, pending: list, proposals: dict, used: set) -> lis
             "options": list(question.get("options") or []),
             "required": question.get("required", True),
         }
+        if question.get("label_missing"):
+            entry["label_missing"] = True  # the card says the question could not be read
         if key in used:
             entry["state"] = "used"
         elif key in drafts:
@@ -908,7 +910,8 @@ def apply_command(command: dict, message_id: str):
                 "INSERT OR REPLACE INTO application_answers VALUES(?,?,?,?)",
                 (application_id, field["key"], command["value"], message_id),
             )
-            if command["kind"] == "answer":
+            if command["kind"] == "answer" and not field.get("label_missing"):
+                # An answer to a question Rove could not read is for this form only.
                 remembered = [
                     o.get("label", "") if isinstance(o, dict) else str(o)
                     for o in field.get("options") or []

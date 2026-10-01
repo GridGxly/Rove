@@ -654,11 +654,20 @@ def numbered(questions) -> list[tuple[int, dict]]:
 
 
 def question_lines(pairs, limit: int = 10) -> str:
-    """Open questions with their numbers and options; the number is what the owner replies."""
+    """Open questions with their numbers and options; the number is what the owner replies.
+
+    A question whose text was not found on the form is said to be unreadable, with a
+    pointer to the screenshot; an input's name or key is never shown in its place.
+    """
+    from . import form_reading
+
     pairs = list(pairs)
     lines = []
     for number, question in pairs[:limit]:
-        label = clip(question.get("label") or question.get("name") or "Question", 120)
+        if form_reading.unreadable(question):
+            label = form_reading.owner_line(question)
+        else:
+            label = clip(question["label"], 120)
         options = question.get("options") or []
         line = f"{number}. {label}"
         if options:
