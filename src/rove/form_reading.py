@@ -85,22 +85,25 @@ READING_JS = r"""
    return '';};
  const trailing=e=>{const p=e.parentElement;if(!p)return '';const next=controlsIn(p).find(c=>c!==e&&before(e,c));
    const t=pieces(p,{after:e,stop:next}).text.slice(0,300);return machine(t)?'':t;};
- const labelText=l=>l.querySelector('select')?pieces(l,{own:l}).text:l.innerText;
+ // A label wrapped around a dropdown would read as the question plus every option:
+ // take its heading, or its text without the options.
+ const wrapped=l=>{const head=[...l.querySelectorAll(HEADING)].find(h=>!h.querySelector(CONTROLS)&&visible(h)&&pieces(h,{own:l}).text);
+   const all=pieces(l,{own:l});return {text:head?pieces(head,{own:l}).text:all.text,required:all.required};};
  // What the page itself ties to the control: its labels, then its ARIA name.
- const ownText=e=>{
-   const own=[...(e.labels||[])].map(labelText).join(' ').trim();
-   if(own&&!machine(own))return own;
+ const ownText=e=>{let required=false;
+   const own=[...(e.labels||[])].map(l=>{if(!l.querySelector('select'))return l.innerText;const read=wrapped(l);required=required||read.required;return read.text;}).join(' ').trim();
+   if(own&&!machine(own))return {text:own,required};
    const aria=e.getAttribute('aria-label');
-   if(aria&&!machine(aria))return aria;
+   if(aria&&!machine(aria))return {text:aria};
    const by=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ').trim();
-   return by&&!machine(by)?by:'';
+   return by&&!machine(by)?{text:by}:null;
  };
  // One option of a group: its own text, never the group's question.
- const readOption=e=>{const own=ownText(e)||trailing(e);if(own)return {text:own};
+ const readOption=e=>{const own=ownText(e);const text=own?own.text:trailing(e);if(text)return {text};
    const value=e.getAttribute('value')||'';return {text:value&&value!=='on'&&!machine(value)?value:''};};
  const readLabel=e=>{
    const own=ownText(e);
-   if(own)return {text:own};
+   if(own)return own;
    if(e.type==='checkbox'||e.type==='radio'){const after=trailing(e);if(after)return {text:after};}
    const near=nearestText(e);
    if(near)return {text:near};
@@ -122,17 +125,22 @@ READING_JS = r"""
    if(lead)return lead;
    return {text:nearby(c,mine),missing:true};
  };
+ // A fieldset or ARIA group names its options with its legend, its ARIA name, or (when it
+ // holds nothing but the options) a label of its own that points at no control.
+ const boxTitle=(box,first,members,loose)=>{
+   const title=box.querySelector('legend')||(loose?[...box.querySelectorAll('label')].find(l=>owns(l,first)&&l.control!==first&&!members.includes(l.control)):null);
+   const named=title?title.innerText.trim():(box.getAttribute('aria-label')||(box.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')).trim();
+   if(!named||machine(named))return null;
+   return {text:named,required:box.getAttribute('aria-required')==='true'||(!!title&&(/\brequired\b/i.test(title.className)||!!title.querySelector('[class*="required" i]')||/\*\s*$/.test(named)))};};
  // The question a radio or checkbox group answers; never one option's text.
  const groupLabel=members=>{const first=members[0];
    const box=first.closest('fieldset,[role=radiogroup],[role=group]');
-   if(box&&controlsIn(box).every(c=>members.includes(c))){
-     const marked=box.getAttribute('aria-required')==='true';
-     const title=box.querySelector('legend')||[...box.querySelectorAll('label')].find(l=>owns(l,first)&&l.control!==first&&!members.includes(l.control));
-     const named=title?title.innerText.trim():(box.getAttribute('aria-label')||(box.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')).trim();
-     if(named&&!machine(named))return {text:named,required:marked||(!!title&&(/\brequired\b/i.test(title.className)||!!title.querySelector('[class*="required" i]')||/\*\s*$/.test(named)))};
-   }
+   const inside=box?controlsIn(box):[];
+   if(box&&inside.every(c=>members.includes(c))){const named=boxTitle(box,first,members,true);if(named)return named;}
    const lead=leading(first,members);
    if(lead)return lead;
+   // Options with a write-in after them ("Other: ___") are still the fieldset's question.
+   if(box&&inside.filter(c=>c.type==='radio'||c.type==='checkbox').every(c=>members.includes(c))&&!inside.some(c=>!members.includes(c)&&before(c,first))){const named=boxTitle(box,first,members,false);if(named)return named;}
    const card=template(first);
    if(card)return card;
    return {text:nearby(first,members),missing:true};

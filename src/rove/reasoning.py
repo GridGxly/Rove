@@ -655,7 +655,8 @@ def review_application(application_id: str, page: dict) -> dict:
     approved = read_approved()
     if page["profile_hash"] != approved["profile_hash"]:
         raise PermissionError("Application and approved profile versions differ")
-    questions = [q for q in page.get("pending", []) if q.get("key")]
+    # A question whose text could not be read has nothing to draft from; it stays with the owner.
+    questions = [q for q in page.get("pending", []) if q.get("key") and not q.get("label_missing")]
     if not questions:
         return {"answers": []}
     profile = approved["profile"]

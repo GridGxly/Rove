@@ -976,6 +976,8 @@ class RecruitingBrowser:
                 return True
             # A blank recorded while the question looked optional is not an answer now.
             answer = None if field["required"] else answer
+        if field.get("label_missing") and answer and "auto-draft:" in answer["source"]:
+            answer = None  # only the owner's own words answer a question nobody could read
         if field.get("label_missing") and not answer and field["kind"] not in {"file", "password"}:
             pending.append(form_reading.unreadable_question(field))
             return True

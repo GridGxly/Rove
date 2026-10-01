@@ -12,7 +12,7 @@ import pytest
 from patchright.sync_api import sync_playwright
 from test_live_submission import ASHBY_FORM, FORM
 
-from rove import form_reading, live_browser, worker, workflow
+from rove import form_reading, worker, workflow
 from rove.live_browser import RecruitingBrowser
 from rove.onboarding import approve, digest, draft, propose, read_approved
 from rove.runtime import state_root
@@ -43,13 +43,19 @@ ASHBY_SPONSORSHIP = (
 
 
 @pytest.fixture
-def reader(tmp_path, monkeypatch):
-    """A recruiting browser on an offline page; `read(html)` loads a page and observes it."""
+def state(tmp_path, monkeypatch):
+    """A temporary state root and vault, with Discord off and no pacing."""
     monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
-    monkeypatch.setattr(live_browser.workflow, "config", lambda: {"human_pacing": False})
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": False, "human_pacing": False})
+    return tmp_path / "state"
+
+
+@pytest.fixture
+def reader(state):
+    """A recruiting browser on an offline page; `read(html)` loads a page and observes it."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         runtime = RecruitingBrowser(headless=True)
@@ -66,7 +72,7 @@ def reader(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def approved(tmp_path, reader):
+def approved(tmp_path, state):
     """A synthetic approved profile, frozen the way an application freezes it."""
     pdf = tmp_path / "approved.pdf"
     pdf.write_bytes(b"%PDF-1.4 synthetic approved resume")
@@ -198,6 +204,10 @@ def test_fieldset_legend_names_its_group_and_not_the_fields_beside_it(reader):
     assert teams["name"] == "question_31[]"
     relocate = asked["Are you willing to relocate?"]
     assert relocate["kind"] == "radio_group" and option_labels(relocate) == ["Yes", "No"]
+    # Options with a write-in after them are still the legend's question.
+    found = asked["How did you find this role?"]
+    assert found["kind"] == "radio_group" and option_labels(found) == ["Career fair", "Other"]
+    assert asked["Other source"]["kind"] == "text"
     # A fieldset around different controls is a section: each control keeps its own label.
     assert asked["Country*"]["tag"] == "select" and asked["Phone*"]["kind"] == "tel"
     assert "Phone" not in asked
@@ -217,6 +227,22 @@ def test_aria_names_and_container_headings_name_their_groups(reader):
     assert tools["kind"] == "checkbox_group" and option_labels(tools) == ["CAD", "PLC programming"]
     privacy = asked["I have read the privacy notice"]
     assert privacy["kind"] == "checkbox" and not privacy.get("in_group")
+    # The question's label sits outside the fieldset and points at no control.
+    outside = questions(
+        reader.read(
+            "<title>Apply</title><form><div class='entry'>"
+            "<label class='title required' for='sched'>Which schedule suits you?</label><fieldset>"
+            "<div><span><input type='checkbox' id='sched_0' name='sched'></span>"
+            "<label for='sched_0'>Weekdays</label></div>"
+            "<div><span><input type='checkbox' id='sched_1' name='sched'></span>"
+            "<label for='sched_1'>Weekends</label></div></fieldset></div>"
+            "<div class='entry'><label for='n'>Name</label><input id='n' name='name'></div></form>"
+        )
+    )
+    schedule = outside["Which schedule suits you?"]
+    assert schedule["kind"] == "checkbox_group" and schedule["required"]
+    assert option_labels(schedule) == ["Weekdays", "Weekends"]
+    assert outside["Name"]["kind"] == "text"
 
 
 def test_a_question_without_text_is_marked_unreadable_and_never_named_by_its_input(reader):
@@ -423,6 +449,16 @@ def test_an_unreadable_question_goes_to_the_owner_and_is_never_filled_from_a_gue
     card = workflow.question_lines(workflow.numbered(listed))
     assert card.count("Look at the screenshot in the thread") == 3
     assert "q1" not in card and "pick" not in card
+    # A model draft, even one used under the owner's draft policy, never answers it.
+    drafted = {
+        pending[0]["key"]: {
+            "value": "guess@example.invalid",
+            "source": "owner Discord message auto-draft:0123456789ab",
+        }
+    }
+    _, again = reader._fill_page(RUN, reader.observe(), approved, drafted)
+    assert reader.page.locator("input[name=q1]").input_value() == ""
+    assert [q["key"] for q in again] == [q["key"] for q in pending]
     # What the owner then says is used for this form.
     answers = {
         pending[0]["key"]: {"value": "alex@example.invalid", "source": "owner Discord message 3"},
@@ -436,7 +472,52 @@ def test_an_unreadable_question_goes_to_the_owner_and_is_never_filled_from_a_gue
     ]
 
 
-def test_an_answer_to_an_unreadable_question_is_not_remembered_for_other_forms(reader, approved):
+def test_qwen_is_not_asked_to_draft_an_answer_to_an_unreadable_question(
+    state, approved, monkeypatch
+):
+    from rove import reasoning
+
+    async def evidence(_query):
+        return {"results": []}
+
+    monkeypatch.setattr(reasoning, "career_evidence", evidence)
+    monkeypatch.setattr(reasoning, "company_context", lambda *_: "")
+    monkeypatch.setattr(reasoning, "generate", lambda *a, **k: pytest.fail("nothing to draft"))
+    unread = form_reading.unreadable_question(
+        {"label": "Email", "key": "aaaaaaaaaaaa", "required": True, "options": []}
+    )
+    page = {"profile_hash": approved["profile_hash"], "pending": [unread], "text": ""}
+    application_id = workflow.enqueue("https://jobs.example.com/unread")["application_id"]
+    (state / "applications" / application_id).mkdir(parents=True, exist_ok=True)
+    assert reasoning.review_application(application_id, page) == {"answers": []}
+    asked = []
+
+    def fake_generate(directory, context, basename, attempts=2):
+        asked.append([q["key"] for q in context["questions"]])
+        answer = {
+            "key": "bbbbbbbbbbbb",
+            "kind": "needs_user",
+            "value": "",
+            "sources": [],
+            "explanation": "Only the owner knows.",
+        }
+        return {
+            "model": "m",
+            "result": {
+                "completed": True,
+                "turn_exit_reason": "text_response(finish_reason=stop)",
+                "final_response": json.dumps({"answers": [answer]}),
+            },
+        }
+
+    monkeypatch.setattr(reasoning, "generate", fake_generate)
+    page["pending"].append({"key": "bbbbbbbbbbbb", "label": "Why this team?"})
+    result = reasoning.review_application(application_id, page)
+    assert asked == [["bbbbbbbbbbbb"]]
+    assert [a["key"] for a in result["answers"]] == ["bbbbbbbbbbbb"]
+
+
+def test_an_answer_to_an_unreadable_question_is_not_remembered_for_other_forms(state, approved):
     application_id = workflow.enqueue("https://jobs.example.com/1")["application_id"]
     fields = [
         {"label": "Notes", "name": "q2", "kind": "text", "options": [], "required": True} | extra
