@@ -461,10 +461,14 @@ def test_failed_submission_request_leaves_the_package_reviewable(state, monkeypa
 
 
 def test_queue_holds_for_waiting_applications_unless_owner_resumes(state):
-    first = workflow.enqueue("https://jobs.example.com/a")["application_id"]
-    second = workflow.enqueue("https://jobs.example.com/b")["application_id"]
+    first = workflow.enqueue("https://jobs.example.com/a", source="keryx")["application_id"]
+    second = workflow.enqueue("https://jobs.example.com/b", source="keryx")["application_id"]
     workflow.set_state(first, "NEEDS_USER")
     assert worker.next_queued(1) is None
     assert worker.next_queued(2) == second
+    # A link the owner pasted is worked next, however many holds are waiting.
+    pasted = workflow.enqueue("https://jobs.example.com/pasted")["application_id"]
+    assert worker.next_queued(1) == pasted
+    workflow.set_state(pasted, "DEFERRED")
     worker.apply_command({"kind": "resume", "application_id": first}, "msg-1")
     assert worker.next_queued(1) == first

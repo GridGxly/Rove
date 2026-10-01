@@ -109,6 +109,21 @@ def option_matches(option_label: str, value) -> bool:
     return a == b or (a in COUNTRY_ALIASES and b in COUNTRY_ALIASES)
 
 
+PLACE_LABELS = {
+    "location",
+    "current location",
+    "location city",
+    "city",
+    "city state",
+    "where are you located",
+}
+
+
+def is_place_label(label) -> bool:
+    name = " ".join(re.sub(r"\b(optional|required)\b", " ", normalized(label or "")).split())
+    return name in PLACE_LABELS
+
+
 def phone_variants(value) -> list[str]:
     """National digits first (sites with their own +1 selector reject a repeated code),
     then the international form; a non-US number is left as written."""
@@ -1135,6 +1150,12 @@ class RecruitingBrowser:
                 committed = normalized(locator.input_value())
                 if city and normalized(city) in committed:
                     return True
+                if not committed:
+                    # No suggestion list at all: a plain input keeps what we type.
+                    locator.fill(value)
+                    locator.press("Tab")
+                    if city and normalized(city) in normalized(locator.input_value()):
+                        return True
                 with contextlib.suppress(Exception):
                     # Private evidence for the next fix: what the picker showed.
                     self.page.screenshot(
@@ -1583,7 +1604,9 @@ class RecruitingBrowser:
                     field.get("placeholder") or "",
                     re.IGNORECASE,
                 )
+                or is_place_label(field["label"])
             ):
+                # Place fields are pickers nearly everywhere, even without ARIA hints.
                 field = {**field, "role": "combobox"}
             if field["role"] == "combobox" and value is None:
                 locator.click()

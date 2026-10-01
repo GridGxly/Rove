@@ -79,3 +79,13 @@ def test_same_value_accepts_a_phone_in_any_national_or_international_form():
     assert not same_value("2025550123", "8632589846")
     assert same_value("Ralph", "Ralph ")
     assert not same_value("Ralph", "Ralp")
+
+
+def test_place_labels_are_recognised_with_or_without_qualifiers():
+    from erga_autopilot.live_browser import is_place_label
+
+    assert is_place_label("Current location")
+    assert is_place_label("Location (Optional)")
+    assert is_place_label("City *")
+    assert not is_place_label("Office location preference")
+    assert not is_place_label("Phone Number")
