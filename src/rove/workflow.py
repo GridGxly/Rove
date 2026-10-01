@@ -1006,7 +1006,8 @@ def research_page_name(url: str) -> str:
 def research_outcome(found: dict) -> dict:
     """What a research record amounts to, without its text or its links."""
     site = clip("".join(re.findall(r"[a-z0-9.-]+", str(found.get("site") or "").lower())), 80)
-    urls = [u for u in found.get("urls") or [] if isinstance(u, str)][:RESEARCH_PAGES]
+    listed = found.get("urls") if isinstance(found.get("urls"), list) else []
+    urls = [u for u in listed if isinstance(u, str)][:RESEARCH_PAGES]
     pages = list(dict.fromkeys(research_page_name(url) for url in urls))
     if found.get("text"):
         outcome = "read"
