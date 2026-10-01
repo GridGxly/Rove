@@ -1115,6 +1115,28 @@ def test_a_site_that_says_already_applied_stops_before_anything_is_sent(state, m
         ).fetchone()
     payload = json.loads(row["data"])
     assert payload["commands"] == ["applied", "park it"] and "already" in payload["reason"]
+    # The owner's one-word reply reconciles it: applied, with a receipt that says it was
+    # manual, no attempt row (the browser never clicked), and the card withdrawn.
+    from erga_autopilot.worker import thread_command
+
+    command = thread_command("applied", app)
+    assert command == {
+        "kind": "reconcile",
+        "application_id": app,
+        "outcome": "applied",
+        "word": "applied",
+    }
+    apply_command(command, "m-applied")
+    assert workflow.get(app)["status"] == "APPLIED"
+    receipt = json.loads((state / "applications" / app / "receipt.json").read_text())
+    assert receipt["status"] == "APPLIED" and "manually" in receipt["reason"]
+    assert receipt["owner_message_id"] == "m-applied"
+    with workflow.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM live_submission_attempts").fetchone()[0] == 0
+        deliveries = [r[0] for r in conn.execute("SELECT delivery FROM owner_notices")]
+    assert deliveries == ["withdrawn"]
+    with pytest.raises(PermissionError):  # an applied application is never reopened
+        apply_command(thread_command("go", app), "m-go")
 
 
 def test_profile_facts_resolve_from_the_meaning_of_a_label_not_its_exact_wording():

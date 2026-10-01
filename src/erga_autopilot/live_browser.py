@@ -1183,6 +1183,15 @@ class RecruitingBrowser:
             return False
         expected = texts[matches[0]]
         options.nth(matches[0]).click()
+        if place and city:
+            # A place picker commits the suggestion into the input: that text is the proof.
+            self.page.wait_for_timeout(300)
+            committed = normalized(locator.input_value())
+            if normalized(city) in committed:
+                locator.press("Escape")
+                return True
+            self.picker_diagnostic(field, city, texts, locator)
+            return False
         # Refocusing emits React Select's current selected country (its visual
         # single-value label contains only a dial code shared by many countries).
         locator.press("Tab")

@@ -18,6 +18,36 @@ def test_builtin_scan_finds_hard_tells_and_leaves_plain_prose_alone(monkeypatch)
     assert clean["violations"] == [] and not unslop.needs_cleanup(clean)
 
 
+def test_humanizer_scan_flags_shape_tells_and_passes_plain_prose(monkeypatch):
+    monkeypatch.setattr(workflow, "config", dict)
+    staged = (
+        "Let's dive in. My work serves as a foundation for meticulous engineering — careful, "
+        "fast, and vibrant — and it could potentially matter. Why does that matter?"
+    )
+    report = unslop.scan(staged)
+    phrases = {v["phrase"] for v in report["violations"]}
+    assert {"let's dive in", "serves as a", "meticulous", "vibrant", "could potentially"} <= phrases
+    humanizer = [v for v in report["violations"] if v["category"].startswith("humanizer")]
+    assert len(humanizer) >= 3 and unslop.needs_cleanup(report)
+    # Two connector dashes in one paragraph are a hard tell; one question is only soft.
+    severity = {v["phrase"]: v["severity"] for v in report["violations"]}
+    assert severity["—"] == "hard" and severity["Why does that matter?"] == "soft"
+    assert [v["column"] for v in report["violations"]] == sorted(
+        v["column"] for v in report["violations"]
+    )
+    plain = unslop.scan(
+        "I wrote the import script in Python and ran it against 56 student records. "
+        "The first run failed on dates. I fixed the parser and reran it the same night."
+    )
+    assert plain["violations"] == [] and not unslop.needs_cleanup(plain)
+    # A soft tell alone is advisory; a second finding makes it a repair.
+    soft = unslop.scan("I am ensuring the import is correct. The parser is done.")
+    assert not unslop.needs_cleanup(soft) and len(soft["violations"]) == 1
+    assert not unslop.preserved_facts(
+        "Cut p95 from 900 ms to 120 ms.", "Cut p95 latency to 120 ms."
+    )
+
+
 def test_fact_preservation_rejects_dropped_numbers_or_names():
     original = "I built 56 Supabase migrations and a Next.js site for TransferTrack."
     assert unslop.preserved_facts(

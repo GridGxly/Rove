@@ -882,7 +882,33 @@ def ensure_forum(application_id: str) -> str | None:
         raise RuntimeError("Forum creation result is uncertain; reconcile before retrying")
     record(application_id, "forum_creation_attempt", {})
     title = display_title(item)
-    thread = discord(
+    try:
+        thread = create_forum_post(application_id, settings, item, title)
+    except httpx.TransportError as error:
+        if not isinstance(error, httpx.ReadTimeout):
+            # Nothing reached Discord: the attempt marker must not block the next tick.
+            with db() as conn:
+                conn.execute(
+                    "DELETE FROM application_events WHERE application_id=? AND kind='forum_creation_attempt'",
+                    (application_id,),
+                )
+        raise
+    set_state(application_id, item["status"], thread_id=thread["id"])
+    system_line(application_id, f"opened · {item['url']} · {forum_url(application_id)}")
+    with db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_checkpoints VALUES(?,?)", (thread["id"], thread["id"])
+        )
+    with db() as conn:
+        conn.execute(
+            "UPDATE application_events SET delivery='sent' WHERE application_id=? AND kind='forum_creation_attempt'",
+            (application_id,),
+        )
+    return thread["id"]
+
+
+def create_forum_post(application_id: str, settings: dict, item: dict, title: str) -> dict:
+    return discord(
         "POST",
         f"/channels/{settings['forum_channel_id']}/threads",
         {
@@ -913,18 +939,6 @@ def ensure_forum(application_id: str) -> str | None:
             },
         },
     )
-    set_state(application_id, item["status"], thread_id=thread["id"])
-    system_line(application_id, f"opened · {item['url']} · {forum_url(application_id)}")
-    with db() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO workflow_checkpoints VALUES(?,?)", (thread["id"], thread["id"])
-        )
-    with db() as conn:
-        conn.execute(
-            "UPDATE application_events SET delivery='sent' WHERE application_id=? AND kind='forum_creation_attempt'",
-            (application_id,),
-        )
-    return thread["id"]
 
 
 def flush_events(application_id: str):

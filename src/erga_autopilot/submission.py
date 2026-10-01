@@ -315,6 +315,10 @@ def preflight(application_id: str, package_hash: str, current: dict) -> dict:
         or approved["profile_hash"] != package["profile_hash"]
     ):
         raise PermissionError("Approved profile changed after preparation")
+    if current.get("ats_markers", {}).get("captcha_challenge"):
+        raise PermissionError(
+            "A CAPTCHA is visible; solve it in the recruiting browser, then reply go"
+        )
     if current["url"] != package["url"] or current.get("manual_takeover_required"):
         raise PermissionError("The application destination or authentication state changed")
     if form_state(current["fields"]) != form_state(package["form_state"]):
@@ -449,7 +453,7 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
         workflow.transition(
             application_id,
             "APPLIED",
-            "verified employer confirmation after one owner-approved submit",
+            str(evidence.get("reason") or "verified employer confirmation after one submit"),
             f"receipt {receipt.name}",
         )
     else:
@@ -507,6 +511,28 @@ def reconcile(application_id: str, outcome: str, owner_message_id: str):
         "NEEDS_USER",
         "owner verified nothing was submitted",
         f"owner message {owner_message_id}; prepare and review again before another attempt",
+    )
+    if workflow.config().get("auto_submit"):
+        # The owner said nothing went out: prepare it again without another reply.
+        with workflow.db() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO owner_commands VALUES(?,?,?,?,?,?)",
+                (
+                    f"{owner_message_id}:resume",
+                    application_id,
+                    "resume",
+                    json.dumps({"kind": "resume", "application_id": application_id}),
+                    "applied",
+                    workflow.now(),
+                ),
+            )
+        workflow.set_state(application_id, "QUEUED")
+        return
+    workflow.action_needed(
+        application_id,
+        "You confirmed nothing was sent. Reply `go` to prepare and review it again.",
+        commands=["go", "park it"],
+        headline="Ready to try again",
     )
 
 

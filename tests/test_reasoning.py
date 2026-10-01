@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -481,3 +483,76 @@ def test_drafts_are_shortened_to_the_fields_limit_at_a_sentence_boundary():
     assert result["answers"][0]["value"].endswith(".")
     assert "Shortened" in result["answers"][0]["explanation"]
     assert length_problems(result, questions) == ""
+
+
+def test_voice_samples_read_the_story_note_only_when_it_exists(tmp_path, monkeypatch):
+    from erga_autopilot import vault
+
+    root = tmp_path / "vault"
+    root.mkdir()
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(root))
+    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    assert vault.voice_samples() == ""
+    note = root / "Erga Autopilot/Story/Voice.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("---\ntype: story\n---\nI fixed the import by hand. It took a week.\n")
+    assert vault.voice_samples() == "I fixed the import by hand. It took a week."
+    long_note = "I wrote this sentence myself. " * 400
+    note.write_text(long_note)
+    sample = vault.voice_samples()
+    assert 1250 < len(sample) <= 2500 and sample.endswith(".")
+    assert note.read_text() == long_note
+    monkeypatch.delenv("OBSIDIAN_VAULT_PATH")
+    assert vault.voice_samples() == ""
+
+
+def test_drafting_context_carries_the_owner_voice_note(state, monkeypatch):
+    from erga_autopilot.onboarding import read_approved
+
+    note = Path(os.environ["OBSIDIAN_VAULT_PATH"]) / "Erga Autopilot/Story/Voice.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("I like small tools. I wrote the first one in a weekend.\n")
+
+    async def evidence(_query):
+        return {"results": []}
+
+    monkeypatch.setattr(reasoning, "career_evidence", evidence)
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": False})
+    captured = []
+    key = "abcdef012345"
+
+    def fake_generate(directory, context, basename, attempts=2):
+        captured.append(context)
+        answers = [
+            {
+                "key": key,
+                "kind": "proposal",
+                "value": "Short.",
+                "sources": ["ev_1"],
+                "explanation": "e",
+            }
+        ]
+        return {
+            "model": "m",
+            "result": {
+                "completed": True,
+                "turn_exit_reason": "text_response(finish_reason=stop)",
+                "final_response": json.dumps({"answers": answers}),
+            },
+        }
+
+    monkeypatch.setattr(reasoning, "generate", fake_generate)
+    page = {
+        "profile_hash": read_approved()["profile_hash"],
+        "pending": [{"key": key, "label": "Why us?"}],
+        "text": "",
+    }
+    with_note = workflow.enqueue("https://jobs.example.com/voice")["application_id"]
+    (state / "applications" / with_note).mkdir(parents=True)
+    reasoning.review_application(with_note, page)
+    assert captured[0]["owner_voice"] == "I like small tools. I wrote the first one in a weekend."
+    note.unlink()
+    without = workflow.enqueue("https://jobs.example.com/plain")["application_id"]
+    (state / "applications" / without).mkdir(parents=True)
+    reasoning.review_application(without, page)
+    assert "owner_voice" not in captured[1]

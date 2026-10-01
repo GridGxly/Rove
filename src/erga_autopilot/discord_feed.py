@@ -218,7 +218,13 @@ def tick(seed: bool = False) -> dict:
                     ("Cycle", job.get("cycle") or "Not listed", True),
                     ("Track", str(job.get("program", "")).replace("-", " ").title() or "—", True),
                 ],
-                footer="Queued" if queued else "Not queued · the posting has no employer link",
+                footer=(
+                    "Already tracked"
+                    if queued and queued.get("already_exists")
+                    else "Queued"
+                    if queued
+                    else "Not queued · the posting has no employer link"
+                ),
             )
             with db:
                 db.execute("UPDATE feed_outbox SET status='sending' WHERE key=?", (row["key"],))

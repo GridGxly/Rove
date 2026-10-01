@@ -61,3 +61,12 @@ The recruiting browser is driven with [Patchright](https://github.com/Kaliiiiiii
 ## Unslop
 
 The drafting rules digest and the built-in list of AI-writing tells in `src/erga_autopilot/unslop.py` derive from [Unslop](https://github.com/theclaymethod/unslop) by Clayton Kim, MIT License. The scanners themselves run from a local clone when one is configured.
+
+## Humanizer
+
+The `HUMANIZER_HARD` and `HUMANIZER_SOFT` tell lists, the shape checks (connector dashes,
+lists of three, repeated sentence openers, questions, curly quotes) and the Humanizer
+rules sentence in `src/erga_autopilot/unslop.py` are a digest of
+[Humanizer](https://github.com/blader/humanizer) by Siqi Chen, MIT License
+(Copyright (c) 2025 Siqi Chen), which follows Wikipedia's "Signs of AI writing" guide.
+No Humanizer code is copied; the lists restate its pattern catalog.

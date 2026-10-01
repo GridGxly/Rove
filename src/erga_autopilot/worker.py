@@ -214,7 +214,8 @@ def queue_auto_submit(application_id: str, package_hash: str) -> str:
     message_id = f"auto-submit:{application_id}:{package_hash[:12]}"
     with workflow.db() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO owner_commands VALUES(?,?,?,?,?,?)",
+            "INSERT INTO owner_commands VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(message_id) DO UPDATE SET status='applied', created_at=excluded.created_at",
             (
                 message_id,
                 application_id,
@@ -255,7 +256,10 @@ def process(application_id: str) -> dict:
     item = workflow.get(application_id)
     settings = workflow.config()
     (state_root() / f"applications/{application_id}/error.json").unlink(missing_ok=True)
-    workflow.ensure_forum(application_id)
+    try:
+        workflow.ensure_forum(application_id)
+    except Exception as error:
+        raise PhaseError("forum", error) from error
     workflow.set_state(application_id, "PREPARING", error=None)
     phase = "open"
     final_state = "NEEDS_USER"

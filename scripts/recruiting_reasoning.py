@@ -25,6 +25,10 @@ ANSWER_PROMPT = (
     "When a question lists options, a proposal value must be one of those options verbatim. "
     "Write application prose in a direct, personal voice, with concrete facts and no marketing "
     "filler. Keep written answers below 130 words, and within max_chars when a question gives one. "
+    "When the input carries owner_voice, that is the owner's own writing: match its sentence "
+    "rhythm, plain words, first person, concrete detail and restraint; never copy or lightly "
+    "rephrase its sentences, and never take a fact from it that the approved profile or evidence "
+    "does not show. "
     "Where the posting names skills, tools or themes the approved evidence truly shows, use "
     "the posting's own words for them so an applicant-tracking system matches them; never "
     "claim a skill the evidence does not show. When a question asks for one project or "
@@ -94,7 +98,7 @@ def main():
     from erga_autopilot.runtime import api_key, write_private
 
     config = load_config()
-    from erga_autopilot.unslop import CLEANUP_PROMPT, RULES
+    from erga_autopilot.unslop import CLEANUP_PROMPT, HUMANIZER_RULES, RULES
 
     context = json.loads(args.input.read_text())
     kind = context.get("review_type")
@@ -103,7 +107,7 @@ def main():
     elif kind == "cleanup":
         system = CLEANUP_PROMPT
     else:
-        system = ANSWER_PROMPT + " " + RULES
+        system = ANSWER_PROMPT + " " + RULES + " " + HUMANIZER_RULES
     agent = AIAgent(
         model=config["model"]["default"],
         provider="custom",
