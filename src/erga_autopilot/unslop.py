@@ -277,7 +277,12 @@ def _shape_hits(text: str) -> list[dict]:
 
     def add(phrase: str, severity: str, column: int):
         hits.append(
-            {"phrase": phrase, "severity": severity, "category": "humanizer-shape", "column": column}
+            {
+                "phrase": phrase,
+                "severity": severity,
+                "category": "humanizer-shape",
+                "column": column,
+            }
         )
 
     dashes = list(CONNECTOR_DASH.finditer(text))

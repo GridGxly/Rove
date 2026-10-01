@@ -17,14 +17,14 @@ from typing import Annotated, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from . import unslop, workflow
+from . import unslop, vault, workflow
 from .evidence import career_evidence
 from .onboarding import read_approved
 from .runtime import state_root, write_private
 
 # Bump when the prompts in scripts/recruiting_reasoning.py change so cached
 # reviews produced by an older prompt are never reused silently.
-PROMPT_VERSION = "2026-09-30.4"
+PROMPT_VERSION = "2026-09-30.5"
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 
 
@@ -668,6 +668,11 @@ def review_application(application_id: str, page: dict) -> dict:
         "owner_answers": workflow.approved_answers(application_id),
         "job_context": page.get("text", "")[:5500],
     }
+    voice = vault.voice_samples()
+    if voice:
+        # The owner's own writing, bounded by the vault reader; a style sample the
+        # prompt must not copy or cite, never a source of facts.
+        context["owner_voice"] = voice
     directions = directory / "owner-context.json"
     if directions.exists():
         context["owner_directions"] = json.loads(directions.read_text())

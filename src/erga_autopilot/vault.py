@@ -164,3 +164,32 @@ def sync_application(application_id: str) -> Path | None:
     )
     atomic_private(path, text)
     return path
+
+
+VOICE_SAMPLE_CHARS = 2500
+
+
+def voice_samples(limit: int = VOICE_SAMPLE_CHARS) -> str:
+    """The owner's own writing from `Story/Voice.md`, or "" when there is none.
+
+    Read only: Autopilot never writes this note. It is a style sample for drafting, not a
+    candidate fact. Front matter is dropped and the text is cut at a sentence or line end
+    near the limit so the model sees whole sentences.
+    """
+    try:
+        path = vault_root() / "Story" / "Voice.md"
+    except ValueError:
+        return ""
+    if not path.is_file():
+        return ""
+    text = path.read_text(errors="replace")
+    if text.startswith("---\n"):
+        _, closed, body = text[4:].partition("\n---\n")
+        if closed:
+            text = body
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    boundary = max(cut.rfind("\n"), cut.rfind(". "))
+    return (cut[: boundary + 1] if boundary > limit // 2 else cut).strip()

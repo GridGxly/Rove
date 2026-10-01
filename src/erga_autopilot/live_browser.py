@@ -1151,22 +1151,28 @@ class RecruitingBrowser:
             wanted |= {normalized(", ".join(parts)), normalized(", ".join(parts[:2]))}
         texts = options.all_text_contents()
         matches = [i for i, text in enumerate(texts) if normalized(text) in wanted]
-        if not matches and place:
-            # A place typeahead lists "City, ST, Country": take the option that starts with
-            # our city, preferring one that also names our state.
+        if not matches and place and city:
+            # A place picker geocodes after a pause and may list "Loading" first: poll until
+            # an option starts with our city, preferring one that also names our state.
             state = normalized(str(identity.get("state_region") or ""))
-            starts = [
-                i
-                for i, text in enumerate(texts)
-                if city and normalized(text).startswith(normalized(city))
-            ]
-            with_state = [i for i in starts if state and state in normalized(texts[i])]
-            matches = (with_state or starts)[:1]
+            for _ in range(12):
+                texts = options.all_text_contents()
+                starts = [
+                    i
+                    for i, text in enumerate(texts)
+                    if normalized(text).startswith(normalized(city))
+                ]
+                with_state = [i for i in starts if state and state in normalized(texts[i])]
+                matches = (with_state or starts)[:1]
+                if matches:
+                    break
+                self.page.wait_for_timeout(500)
         if not matches:
             locator.fill(value)
             try:
                 options.filter(has_text=value).first.wait_for(timeout=5000)
             except PlaywrightError:
+                self.picker_diagnostic(field, value, texts, locator)
                 locator.press("Escape")
                 return False
             texts = options.all_text_contents()
