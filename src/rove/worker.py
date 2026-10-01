@@ -1178,13 +1178,14 @@ def prune_excluded() -> int:
 
     A job a hard rule now excludes, one whose listing scores below the digest bar, and a
     second copy of a role already queued for another place are parked with the reason; the
-    rest keep a score for the queue order. A link the owner pasted or a job they picked
-    from the digest is theirs to decide and is never pruned.
+    rest keep a score for the queue order. A link the owner pasted, a job they picked
+    from the digest, and a job they told to go again are theirs to decide and never pruned.
     """
     with workflow.db() as conn:
         rows = conn.execute(
             "SELECT id,title,url,source_url FROM application_queue WHERE status='QUEUED' "
-            "AND source NOT IN ('owner_link','owner_pick')"
+            "AND source NOT IN ('owner_link','owner_pick') AND id NOT IN (SELECT application_id "
+            "FROM owner_commands WHERE kind IN ('resume','proceed','account'))"
         ).fetchall()
     if not rows:
         return 0

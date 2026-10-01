@@ -24,7 +24,6 @@ QUEUE_AT = 70  # this score and above is queued and announced
 DIGEST_AT = 35  # this score and above is offered in the daily digest; below it is dropped
 SCORE_BAND = 10  # within a band of this many points the newest job goes first
 OWNER_PICK = "owner_pick"  # the queue source of a job the owner said yes to in the digest
-OWNER_SOURCES = ("owner_link", OWNER_PICK)
 
 # Every point a job can gain or lose. A title that names no wanted role never reaches
 # the digest, whatever else it earns.
@@ -1122,7 +1121,7 @@ def digest_reply(message: dict, owner: str, channel: str) -> bool:
         raise ValueError(
             f"There is no number {unknown[0]} on today's list; it goes up to {len(lines)}."
         )
-    queued, skipped = [], 0
+    queued, tracked, skipped = [], [], 0
     stamp = basis(_profile_hash())
     for number_, answer in sorted(reply.items()):
         line = lines[number_]
@@ -1131,10 +1130,13 @@ def digest_reply(message: dict, owner: str, channel: str) -> bool:
         application_id = None
         if answer == "yes":
             title = f"{line.get('company') or ''} — {line.get('title') or ''}".strip(" —")
-            application_id = workflow.enqueue(line["url"], source=OWNER_PICK, title=title)[
-                "application_id"
-            ]
-            queued.append(str(line.get("company") or line.get("title") or "one"))
+            result = workflow.enqueue(line["url"], source=OWNER_PICK, title=title)
+            name = str(line.get("company") or line.get("title") or "one")
+            if result["already_exists"]:
+                tracked.append(name)  # the same link is an application already; nothing new
+            else:
+                application_id = result["application_id"]
+                queued.append(name)
         else:
             skipped += 1
         line["answer"] = answer
@@ -1162,10 +1164,13 @@ def digest_reply(message: dict, owner: str, channel: str) -> bool:
         flush_digests()
     parts = []
     if queued:
-        parts.append("Queued " + workflow.clip(", ".join(queued), 300))
+        parts.append("queued " + workflow.clip(", ".join(queued), 300))
+    if tracked:
+        parts.append("already on your list: " + workflow.clip(", ".join(tracked), 300))
     if skipped:
-        parts.append(f"skipped {skipped}" if parts else f"Skipped {skipped}")
+        parts.append(f"skipped {skipped}")
     if parts:
+        parts[0] = parts[0][0].upper() + parts[0][1:]
         try:
             send(
                 "POST",

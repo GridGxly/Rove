@@ -543,6 +543,17 @@ def test_none_skips_the_whole_list_and_several_numbers_fit_in_one_reply(
     assert posts(sent, "short")[-1]["content"] == "Skipped 4."
 
 
+def test_yes_to_a_link_that_is_already_an_application_adds_nothing(state, monkeypatch, tmp_path):
+    sent = open_digest(state, monkeypatch, tmp_path)
+    pasted = workflow.enqueue("https://jobs.example.com/qa?utm_source=friend")["application_id"]
+    workflow.set_state(pasted, "APPLIED")
+    assert intake.digest_reply(owner("3 yes, 4 no"), "owner", "short") is True
+    assert queue() == [("", "owner_link", "APPLIED")]
+    assert posts(sent, "short")[-1]["content"] == (
+        "Already on your list: Globex Example · skipped 1."
+    )
+
+
 def test_an_expired_digest_is_withdrawn_and_its_open_lines_return_with_new_numbers(
     state, monkeypatch, tmp_path
 ):
@@ -717,6 +728,9 @@ def test_queued_feed_jobs_are_rescored_and_junk_is_parked_with_the_reason(
         scores = {r[0]: r[1] for r in conn.execute("SELECT application_id,score FROM queue_scores")}
     assert scores[kept] == score(good)["score"] and unlisted in scores and junk not in scores
     assert worker.prune_excluded() == 0
+    # A parked job the owner tells to go again is theirs to decide: it is not parked twice.
+    worker.apply_command({"kind": "resume", "application_id": junk}, "m-go")
+    assert worker.prune_excluded() == 0 and workflow.get(junk)["status"] == "QUEUED"
 
 
 def clock(monkeypatch, moment: datetime):

@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import date
+from datetime import datetime
 
 import pytest
 
@@ -266,7 +266,7 @@ def test_feed_announces_each_job_once_and_supersedes_stale_duplicates(state, mon
         "location": "Remote",
         "url": "https://jobs.example.com/once",
         # The feed scores the term, so it stays ahead of the day the suite runs.
-        "cycle": f"summer-{date.today().year + 1}",
+        "cycle": f"summer-{datetime.now().astimezone().year + 1}",
     }
     with discord_feed.feed_db() as db:
         db.execute("INSERT INTO feed_cursor VALUES(1,0)")
