@@ -182,6 +182,8 @@ def test_board_pages_are_recognised_by_their_exact_hosts(url, board):
         "https://jobs.example/recruiting.paylocity.com/Recruiting/Jobs/Apply/990001",
         "http://recruiting.paylocity.com/Recruiting/Jobs/Apply/990001",
         "https://recruiting.paylocity.com:8443/Recruiting/Jobs/Apply/990001",
+        "https://recruiting.paylocity.com:port/Recruiting/Jobs/Apply/990001",
+        "https://owner@recruiting.paylocity.com/Recruiting/Jobs/Apply/990001",
         "https://apply.workable.com.example.net/larkspur-labs/j/A1B2C3D4E5",
         "https://applyworkable.com/larkspur-labs/j/A1B2C3D4E5",
         "https://applytojob.com/apply/Zx9Kq2LmNp",
@@ -392,7 +394,23 @@ def test_bamboohr_form_is_read(show):
     assert [c["label"] for c in seen["final_controls"]] == [bamboohr.FINAL_CONTROL["label"]]
     assert seen["ats_markers"]["bamboohr_form"] is True
     assert show.page.locator(bamboohr.FINAL_CONTROL["selector"]).count() == 1
+
+
+def test_the_bamboohr_honeypot_is_never_offered_as_a_question(show):
+    """An answer in the trap field marks the application as a bot's, so it is not a field."""
+    seen = show("bamboohr", "apply")
     assert show.page.locator(bamboohr.HONEYPOT).count() == 1
+    raw = show.page.evaluate(live_browser.OBSERVE)["fields"]
+    trap = [f for f in raw if bamboohr.is_trap(f)]
+    assert [f["id"] for f in trap] == ["nickname_hpxmpl"]
+    assert field(seen, "leave this field blank") is None
+    assert not any(f["id"].startswith("nickname_") for f in seen["fields"])
+    assert len(seen["fields"]) == len(raw) - 1
+    # Only the board that has the trap filters it, and only that one field.
+    assert boards.fillable(BAMBOOHR, raw) == [f for f in raw if f not in trap]
+    assert boards.fillable(f"{JAZZHR}/Zx9Kq2LmNp/Field-Technician", raw) == raw
+    assert boards.fillable("https://careers.example.com/jobs/12345", raw) == raw
+    assert not bamboohr.is_trap({"label": "Nickname", "id": "nickname", "name": "nickname"})
 
 
 def resume_upload(observation: dict) -> bool:
@@ -441,11 +459,6 @@ READING_GAPS = {
         "jazzhr",
         "apply",
         lambda seen: [c["label"] for c in seen["final_controls"]] == ["Submit Application"],
-    ),
-    "bamboohr hides a honeypot in an aria-hidden wrapper; it must not be a field": (
-        "bamboohr",
-        "apply",
-        lambda seen: field(seen, "leave this field blank") is None,
     ),
     "bamboohr selects are a toggle button over an aria-hidden select": (
         "bamboohr",

@@ -896,6 +896,8 @@ class RecruitingBrowser:
         if self.page is None or self.page.is_closed():
             raise ValueError("No live job page. Open a link first.")
         data = self.page.evaluate(OBSERVE)
+        # A board's honeypot must stay empty: it is never offered as a question.
+        data["fields"] = boards.fillable(self.page.url, data.get("fields", []))
         head = data.get("title", "") + "\n" + data.get("text", "")[:3000]
         marker = BLOCK_MARKERS.search(head)
         closed = CLOSED_MARKERS.search(head)

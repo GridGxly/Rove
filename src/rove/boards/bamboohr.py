@@ -34,6 +34,7 @@ FINAL_CONTROL = {
     "label": "Submit Application",
 }
 HONEYPOT = 'input[id^="nickname_"]'
+HONEYPOT_LABEL = "please leave this field blank"
 SUCCESS_TEXT = r"application was submitted successfully"
 SUCCESS_LINE = r"^your application was submitted successfully\.?$"
 CAPTCHA_TEXT = r"confirm you[’']re not a robot|error occurred with recaptcha"
@@ -94,6 +95,13 @@ def form_definition_url(url: str) -> str | None:
     """Where the site publishes this job's posting and form fields as JSON."""
     found = job(url)
     return f"https://{found[0]}.{DOMAIN}/careers/{found[1]}/detail" if found else None
+
+
+def is_trap(field: dict) -> bool:
+    """The form's honeypot: an answer in it marks the application as a bot's."""
+    label = " ".join(str(field.get("label") or "").lower().split())
+    names = (str(field.get("id") or ""), str(field.get("name") or ""))
+    return label == HONEYPOT_LABEL or any(re.fullmatch(r"nickname_\w+", n) for n in names)
 
 
 class BambooHRV1(BoardAdapter):

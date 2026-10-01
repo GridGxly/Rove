@@ -47,10 +47,14 @@ SETTLED_JS = (
 
 def parts(url: str) -> tuple[str, list[str], str]:
     """Host, path segments and query of a public HTTPS URL; an empty host otherwise."""
-    parsed = urlsplit(url or "")
-    if parsed.scheme != "https" or parsed.port not in (None, 443) or parsed.username:
+    try:
+        parsed = urlsplit(str(url or ""))
+        plain = parsed.scheme == "https" and parsed.port in (None, 443) and not parsed.username
+    except ValueError:  # a malformed address is nobody's job page
         return "", [], ""
-    host = (parsed.hostname or "").lower().rstrip(".")
+    if not plain:
+        return "", [], ""
+    host = (parsed.hostname or "").lower()
     return host, [p for p in parsed.path.split("/") if p], parsed.query
 
 

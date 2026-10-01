@@ -34,3 +34,9 @@ def apply_url(url: str) -> str | None:
     """Where the application form for a posting lives."""
     board = board_for(url)
     return board.apply_url(url) if board else None
+
+
+def fillable(url: str, fields: list[dict]) -> list[dict]:
+    """The observed fields without a board's honeypot: it is never a question to answer."""
+    trap = getattr(board_for(url), "is_trap", None)
+    return [f for f in fields if not trap(f)] if trap else fields
