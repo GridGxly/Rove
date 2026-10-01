@@ -393,7 +393,9 @@ def test_unattended_sending_keeps_the_daily_cap_and_the_gap_except_for_pasted_li
     def attempt(app: str, minutes_ago: int):
         with workflow.db() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO live_submission_attempts VALUES(?,?,?,?,?)",
+                "INSERT OR REPLACE INTO live_submission_attempts"
+                "(application_id,package_hash,owner_message_id,status,created_at) "
+                "VALUES(?,?,?,?,?)",
                 (
                     app,
                     "a" * 64,

@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import inbound, matching, memory_channel, workflow
+from . import inbound, intake, matching, memory_channel, workflow
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
 from .reasoning import GATE_KINDS
@@ -432,7 +432,7 @@ def process(application_id: str) -> dict:
                 # A link the owner pasted is a decision already made: never ask again.
                 if (
                     fit["decision"] != "fit"
-                    and item["source"] != "owner_link"
+                    and intake.fit_may_hold(item["source"], fit)
                     and not workflow.owner_override(application_id, "proceed")
                 ):
                     hold = fit_hold(application_id, fit)
@@ -1065,6 +1065,9 @@ def poll_commands():
                 # Nobody else's message is parsed, answered or acted on, in any channel.
                 continue
             try:
+                if intake.digest_reply(message, owner, channel):
+                    # A numbered reply to the daily digest, read before any card's words.
+                    continue
                 handled = inbound.owner_message(message, channel, settings, threads)
                 if handled is not None:
                     # A pasted link, a reply on a mail card, or taking back a mail's step.
@@ -1171,33 +1174,42 @@ def run_approved_submissions() -> list[dict]:
 
 
 def prune_excluded() -> int:
-    """Queued feed jobs are re-checked against the approved rules before the browser opens.
+    """Queued feed jobs are re-scored against the approved rules before the browser opens.
 
-    A link the owner pasted is theirs to decide and is never pruned.
+    A job a hard rule now excludes, one whose listing scores below the digest bar, and a
+    second copy of a role already queued for another place are parked with the reason; the
+    rest keep a score for the queue order. A link the owner pasted or a job they picked
+    from the digest is theirs to decide and is never pruned.
     """
     with workflow.db() as conn:
         rows = conn.execute(
-            "SELECT id,title FROM application_queue WHERE status='QUEUED' AND source!='owner_link'"
+            "SELECT id,title,url,source_url FROM application_queue WHERE status='QUEUED' "
+            "AND source NOT IN ('owner_link','owner_pick')"
         ).fetchall()
     if not rows:
         return 0
-    prefs = matching.read_approved()["profile"]["preferences"]
     pruned = 0
-    for row in rows:
-        company, _, title = row["title"].partition(" — ")
-        if not title:
-            company, title = "", row["title"]
-        reason = matching.excluded_by_rules(title, company, prefs)
-        if reason:
-            workflow.set_state(row["id"], "DEFERRED", error="excluded by your rules: " + reason)
-            pruned += 1
+    for application_id, reason in intake.rescore_queue(rows, matching.read_approved()):
+        workflow.set_state(application_id, "DEFERRED", error=reason)
+        pruned += 1
     return pruned
 
 
 def next_queued(max_waiting: int):
+    """The next application to prepare: the owner's resumes, then pasted links, then
+    digest picks, then feed jobs by score (the newest first within a score band).
+
+    With `auto_submit` on, holds waiting on the owner never stop the queue; the daily cap
+    and the per-platform gap are the brakes, and a job on a platform still inside its gap
+    gives way to the best job on another platform. With it off, `max_waiting` holds stop
+    feed jobs until the owner answers.
+    """
+    settings = workflow.config()
+    unattended = bool(settings.get("auto_submit"))
+    now = datetime.now(UTC)
     with workflow.db() as conn:
-        # An explicit owner resume/proceed is processed even while other
-        # applications wait; otherwise the queue holds until the owner answers.
+        intake.prepare_pacing(conn)
+        # An explicit owner resume/proceed is processed even while other applications wait.
         resumed = conn.execute(
             "SELECT q.id FROM application_queue q JOIN owner_commands c ON c.application_id=q.id "
             "WHERE q.status='QUEUED' AND c.kind IN ('resume','proceed','account') AND c.status='applied' "
@@ -1212,33 +1224,33 @@ def next_queued(max_waiting: int):
         if pasted:
             # A link the owner pasted is worked next, however many holds are waiting.
             return pasted[0]
+        resting: set = set()
+        if unattended:
+            # Unattended sending is paced from the attempts on record.
+            if intake.daily_cap_reached(conn, settings, now):
+                return None
+            if intake.inside_global_gap(conn, settings, now):
+                return None
+            resting = intake.resting_platforms(conn, settings, now)
+        candidates = conn.execute(
+            "SELECT id,url FROM application_queue WHERE status='QUEUED' AND source='owner_pick' "
+            "ORDER BY created_at"
+        ).fetchall()
         waiting = conn.execute(
             "SELECT COUNT(*) FROM application_queue WHERE status IN ('NEEDS_USER','READY_FOR_REVIEW')"
         ).fetchone()[0]
-        if waiting >= max_waiting:
-            return None
-        settings = workflow.config()
-        if settings.get("auto_submit"):
-            # Unattended sending is paced: a daily cap the owner sets, counted from attempts.
-            cap = int(settings.get("max_submissions_per_day", 10))
-            today = datetime.now(UTC).strftime("%Y-%m-%d")
-            sent_today = conn.execute(
-                "SELECT COUNT(*) FROM live_submission_attempts WHERE created_at LIKE ?",
-                (today + "%",),
-            ).fetchone()[0]
-            if sent_today >= cap:
-                return None
-            # Sites score form duration and burst rate; unattended sends keep a human gap.
-            gap = timedelta(minutes=int(settings.get("min_minutes_between_submissions", 8)))
-            last = conn.execute("SELECT MAX(created_at) FROM live_submission_attempts").fetchone()[
-                0
-            ]
-            if last and datetime.now(UTC) - datetime.fromisoformat(last) < gap:
-                return None
-        queued = conn.execute(
-            "SELECT id FROM application_queue WHERE status='QUEUED' ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-    return queued[0] if queued else None
+        if unattended or waiting < max_waiting:
+            candidates += conn.execute(
+                "SELECT q.id,q.url FROM application_queue q LEFT JOIN queue_scores s "
+                "ON s.application_id=q.id WHERE q.status='QUEUED' "
+                "AND q.source NOT IN ('owner_link','owner_pick') "
+                "ORDER BY COALESCE(s.score,0)/? DESC,q.created_at DESC",
+                (intake.SCORE_BAND,),
+            ).fetchall()
+        for row in candidates:
+            if not resting or intake.platform_of(row["url"]) not in resting:
+                return row["id"]
+    return None
 
 
 def tick() -> dict:
@@ -1266,7 +1278,7 @@ def tick() -> dict:
             ).fetchone()
         if active:
             return {"waiting_on": dict(active)}
-        queued = next_queued(int(settings.get("max_waiting_applications", 1)))
+        queued = next_queued(intake.number(settings, "max_waiting_applications", 1))
         if not queued:
             return {"idle": True}
         try:

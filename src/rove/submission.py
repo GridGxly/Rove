@@ -541,7 +541,8 @@ def claim_attempt(application_id: str, package_hash: str, owner_message_id: str)
         if prior and prior["status"] != "NOT_SUBMITTED":
             raise PermissionError("A submission attempt already exists; do not retry")
         conn.execute(
-            "INSERT OR REPLACE INTO live_submission_attempts VALUES(?,?,?,?,?)",
+            "INSERT OR REPLACE INTO live_submission_attempts"
+            "(application_id,package_hash,owner_message_id,status,created_at) VALUES(?,?,?,?,?)",
             (application_id, package_hash, owner_message_id, "SUBMITTING", workflow.now()),
         )
         conn.execute(
