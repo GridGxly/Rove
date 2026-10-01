@@ -9,9 +9,9 @@ from typing import ClassVar
 
 import pytest
 
-from erga_autopilot import live_browser, submission, worker, workflow
-from erga_autopilot.live_browser import RecruitingBrowser
-from erga_autopilot.onboarding import approve, digest, draft, propose
+from rove import live_browser, submission, worker, workflow
+from rove.live_browser import RecruitingBrowser
+from rove.onboarding import approve, digest, draft, propose
 
 FORM = b"""<!doctype html><title>Synthetic Board</title><form id="application-form">
 <label for="f">First name</label><input id="f" name="first" required>
@@ -231,7 +231,7 @@ def generic_only(monkeypatch):
 
 @pytest.fixture
 def board(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
@@ -312,7 +312,7 @@ def test_guard_blocks_native_submit_until_one_approved_attempt_is_armed(board):
     runtime, base, state = board
     run_id, package_hash = prepared(runtime, base, state, 7)
     url = runtime.page.url
-    runtime.page.locator('[data-autopilot-submit="0"]').click()
+    runtime.page.locator('[data-rove-submit="0"]').click()
     runtime.page.wait_for_timeout(500)
     assert Board.posts == [] and runtime.page.url == url
     with pytest.raises(PermissionError, match="owner approval"):
@@ -409,7 +409,7 @@ def test_unassociated_labels_radio_groups_and_button_choices_resolve_from_approv
 
 
 def test_account_creation_and_sign_in_use_the_encrypted_store_and_never_leak(board):
-    from erga_autopilot import credentials
+    from rove import credentials
 
     runtime, base, state = board
     opened = runtime.open(f"{base}/acme/jobs/11")

@@ -7,7 +7,7 @@ fixture remains a separate test. Discovery never creates an application or submi
 ## Job source
 
 The owner explicitly selects [GodlyDonuts/keryx](https://github.com/GodlyDonuts/keryx).
-`autopilot jobs sync` resolves one immutable upstream commit, downloads its schema-2
+`rove jobs sync` resolves one immutable upstream commit, downloads its schema-2
 US snapshot from the fixed GitHub source, validates it, and imports it transactionally.
 The snapshot, checksum and source revision remain in private local storage.
 
@@ -17,11 +17,11 @@ local catalog without deleting the history. Invalid, empty or duplicate-ID snaps
 leave the previous catalog intact. Search terms and candidate facts never leave the Mac.
 
 ```sh
-uv run autopilot jobs sync
-uv run autopilot jobs status
-uv run autopilot jobs search --query software --program internship --limit 5
-uv run autopilot jobs read --id job_synthetic_example
-uv run autopilot jobs matches --limit 10
+uv run rove jobs sync
+uv run rove jobs status
+uv run rove jobs search --query software --program internship --limit 5
+uv run rove jobs read --id job_synthetic_example
+uv run rove jobs matches --limit 10
 ```
 
 Match batches support 1–25 listings. General keyword search is paged in groups of
@@ -64,12 +64,12 @@ repeatedly. Conflicts must be surfaced before approval. Identity documents, full
 banking details, credentials and authentication codes do not belong in this interview.
 
 ```sh
-uv run autopilot onboarding status
-uv run autopilot onboarding status --section education
-uv run autopilot onboarding show
-uv run autopilot onboarding propose --section education \
+uv run rove onboarding status
+uv run rove onboarding status --section education
+uv run rove onboarding show
+uv run rove onboarding propose --section education \
   --file /private/reviewed-education.json --expected-hash REVIEWED_DRAFT_HASH
-uv run autopilot onboarding approve --expected-hash REVIEWED_DRAFT_HASH
+uv run rove onboarding approve --expected-hash REVIEWED_DRAFT_HASH
 ```
 
 `propose` replaces one complete section, validates its schema, checks the previous
@@ -79,7 +79,7 @@ outside Git; SQLite records revisions/events and unresolved evidence conflicts.
 
 `approve` is a local owner operation after review of that exact draft. It is never
 an MCP tool. It rejects stale hashes and unresolved conflicts, creates an immutable
-profile snapshot, and writes the structured canonical `Erga Autopilot/Profile/Candidate.md`
+profile snapshot, and writes the structured canonical `Rove/Profile/Candidate.md`
 note in the configured Obsidian vault. A partial reviewed profile still reports its
 missing fields; approval does not invent them or enable submission. Before use, both
 snapshot and canonical note are validated against the approved hash. Manual edits
@@ -103,12 +103,12 @@ receives that broader Erga tool inventory. No generic path or config selector is
 After approving a profile, build its local retrieval copy:
 
 ```sh
-uv run autopilot memory index
-uv run autopilot memory search --query "Example project"
+uv run rove memory index
+uv run rove memory search --query "Example project"
 ```
 
-This writes `Erga Autopilot/Retrieval/Approved profile.md` in the vault, registers only
-that file in the `erga-candidate` QMD index / `approved-profile` collection, and indexes
+This writes `Rove/Retrieval/Approved profile.md` in the vault, registers only
+that file in the `rove-candidate` QMD index / `approved-profile` collection, and indexes
 it for keyword search. It does not index drafts, research, unrelated vault notes or
 the synthetic candidate. The canonical profile remains `Profile/Candidate.md`.
 After each approved change, rerun the index command. Retrieval rejects a stale

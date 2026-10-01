@@ -1,6 +1,6 @@
 # Third-party notices
 
-Rove, formerly Erga Autopilot, is an independent project by Ralph Clavens Love Noel.
+Rove is an independent project by Ralph Clavens Love Noel.
 
 It started from [Erga](https://github.com/Adr1an04/erga-mcp), a local-first recruiting assistant maintained by Adrian (`Adr1an04`) and the Erga contributors.
 
@@ -42,7 +42,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-The Erga logo mark and wordmark used by this repository are derived from the upstream Erga asset under the same MIT license. The Autopilot label is an addition for this project.
+The Rove logo and mark in `docs/assets/` are this project's own. This repository does not ship the Erga logo mark or wordmark.
 
 ## Other dependencies
 
@@ -60,13 +60,13 @@ The recruiting browser is driven with [Patchright](https://github.com/Kaliiiiiii
 
 ## Unslop
 
-The drafting rules digest and the built-in list of AI-writing tells in `src/erga_autopilot/unslop.py` derive from [Unslop](https://github.com/theclaymethod/unslop) by Clayton Kim, MIT License. The scanners themselves run from a local clone when one is configured.
+The drafting rules digest and the built-in list of AI-writing tells in `src/rove/unslop.py` derive from [Unslop](https://github.com/theclaymethod/unslop) by Clayton Kim, MIT License. The scanners themselves run from a local clone when one is configured.
 
 ## Humanizer
 
 The `HUMANIZER_HARD` and `HUMANIZER_SOFT` tell lists, the shape checks (connector dashes,
 lists of three, repeated sentence openers, questions, curly quotes) and the Humanizer
-rules sentence in `src/erga_autopilot/unslop.py` are a digest of
+rules sentence in `src/rove/unslop.py` are a digest of
 [Humanizer](https://github.com/blader/humanizer) by Siqi Chen, MIT License
 (Copyright (c) 2025 Siqi Chen), which follows Wikipedia's "Signs of AI writing" guide.
 No Humanizer code is copied; the lists restate its pattern catalog.

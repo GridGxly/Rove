@@ -56,7 +56,7 @@ uv run python scripts/hermes_small_context.py /path/to/hermes-agent
 
 Enable `HERMES_AUTOPILOT_16K=1` only for this certified local configuration. The script backs up the original file, is idempotent, and refuses an unrecognized upstream constant. An update can overwrite the patch: review and retest it after updating Hermes. The server still advertises and enforces its real 16K limit; it does not pretend to offer 64K. This patch does not change tool authorization.
 
-The MCP server command is the absolute path to this checkout's `.venv/bin/autopilot`, with argument `mcp` and the checkout as its working directory. The historical certification allowlist was:
+The MCP server command is the absolute path to this checkout's `.venv/bin/rove`, with argument `mcp` and the checkout as its working directory. The historical certification allowlist was:
 
 - `prepare_synthetic_application`
 - `read_synthetic_evidence`
@@ -66,7 +66,7 @@ The MCP server command is the absolute path to this checkout's `.venv/bin/autopi
 The production allowlist now uses the thirteen real tools in
 [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection), replacing those four
 fixture tools. Disable every built-in Hermes toolset for this profile; set each
-platform's toolsets to `mcp-erga-autopilot`. Set `tools.tool_search.enabled: off` so
+platform's toolsets to `mcp-rove`. Set `tools.tool_search.enabled: off` so
 the small schemas are present directly. Within the MCP server's `tools` config, set
 `resources: false` and `prompts: false`; a name exclusion alone does not suppress
 Hermes' generated wrappers. The tools discovered globally by Hermes are not necessarily
@@ -101,10 +101,10 @@ validation is separate from tailoring quality or application approval.
 
 A reviewed fixture PDF can be copied to `synthetic/erga-synthetic-resume.pdf` under the private runtime root, with its SHA-256 in `synthetic/resume-manifest.json`. The manifest cannot choose another filename. The browser fails closed if those PDF bytes change. Without a provisioned manifest, the standalone smoke test creates a synthetic text resume.
 
-QMD is installed under `~/.local/share/erga-autopilot/qmd`. Certification uses the
-isolated `erga-autopilot` index and `autopilot-synthetic` collection. Real approved
-profile retrieval uses the separate `erga-candidate` index and `approved-profile`
-collection, rebuilt with `autopilot memory index`. The Node installation works with
+QMD is installed under `~/.local/share/rove/qmd`. Certification uses the
+isolated `rove` index and `rove-synthetic` collection. Real approved
+profile retrieval uses the separate `rove-candidate` index and `approved-profile`
+collection, rebuilt with `rove memory index`. The Node installation works with
 packaged SQLite/extension support, so a separate Homebrew SQLite installation was
 unnecessary on the tested machine.
 
@@ -119,9 +119,9 @@ From the checkout:
 ```sh
 uv sync
 uv run patchright install chromium
-uv run autopilot start
-uv run autopilot status
-uv run autopilot stop
+uv run rove start
+uv run rove status
+uv run rove stop
 ```
 
 `start` starts the official oMLX app-managed service, waits for its model inventory, and starts the Hermes gateway. Weights load on the first inference request. `stop` drains/stops Hermes before stopping oMLX.
@@ -129,20 +129,20 @@ uv run autopilot stop
 Individual components:
 
 ```sh
-uv run autopilot model start
-uv run autopilot model stop
-uv run autopilot model restart
-uv run autopilot model status
-uv run autopilot model logs
-uv run autopilot gateway start
-uv run autopilot gateway stop
-uv run autopilot gateway restart
-uv run autopilot gateway status
+uv run rove model start
+uv run rove model stop
+uv run rove model restart
+uv run rove model status
+uv run rove model logs
+uv run rove gateway start
+uv run rove gateway stop
+uv run rove gateway restart
+uv run rove gateway status
 ```
 
-Hermes starts the narrow Rove MCP process as needed. `uv run autopilot mcp` is the foreground MCP entry point; it expects a stdio client. `uv run autopilot smoke` runs the visible browser fixture directly.
+Hermes starts the narrow Rove MCP process as needed. `uv run rove mcp` is the foreground MCP entry point; it expects a stdio client. `uv run rove smoke` runs the visible browser fixture directly.
 
-For overlapping memory measurements, `uv run autopilot smoke --hold-seconds 60` keeps the prepared browser open before closing it. The CLI accepts 0–120 seconds and reports the hold separately from mechanical work. The MCP tool uses the default zero-second hold.
+For overlapping memory measurements, `uv run rove smoke --hold-seconds 60` keeps the prepared browser open before closing it. The CLI accepts 0–120 seconds and reports the hold separately from mechanical work. The MCP tool uses the default zero-second hold.
 
 ## Verification and benchmarks
 
@@ -150,8 +150,8 @@ For overlapping memory measurements, `uv run autopilot smoke --hold-seconds 60` 
 uv run pytest -q
 uv run ruff check src tests scripts
 uv run python scripts/check_staged.py
-uv run autopilot smoke
-uv run autopilot benchmark /private/synthetic-4k.json /private/synthetic-8k.json /private/synthetic-16k.json
+uv run rove smoke
+uv run rove benchmark /private/synthetic-4k.json /private/synthetic-8k.json /private/synthetic-16k.json
 ```
 
 Prompt files contain arrays of OpenAI-format messages. Keep raw requests, output, measurements and screenshots outside Git. The 16K test must reserve space for generation; 15,872 input tokens plus 512 output tokens reaches 16,384.

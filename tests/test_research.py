@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from erga_autopilot import research
+from rove import research
 
 HOME = """<html><head><title>Acme Robotics</title>
 <meta name="description" content="Acme Robotics builds warehouse robots for mid-size grocers.">
@@ -58,7 +58,7 @@ def serve(mock_http, pages: dict, log: list):
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     (tmp_path / "vault").mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path / "vault"))
     return tmp_path
@@ -98,7 +98,7 @@ def test_company_context_reads_three_pages_and_keeps_company_sentences(
     record = json.loads((state / "state/applications/app-synthetic-1/research.json").read_text())
     assert record["site"] == "acme.example" and record["urls"] == log and record["fetched_at"]
     assert record["text"] == text and record["done"]
-    note = (state / "vault/Erga Autopilot/Research/acme.example.md").read_text()
+    note = (state / "vault/Rove/Research/acme.example.md").read_text()
     assert note.startswith("---\ntype: research\n")
     assert "untrusted research, not a profile fact" in note
     assert "https://acme.example/about-us" in note and text in note
@@ -112,7 +112,7 @@ def test_an_ats_posting_without_an_employer_link_gets_no_research(state, monkeyp
     assert research.company_context("app-synthetic-2", posting, ATS_URL) == ""
     record = json.loads((state / "state/applications/app-synthetic-2/research.json").read_text())
     assert record["text"] == "" and record["done"] and "no employer site" in record["note"]
-    assert not (state / "vault/Erga Autopilot/Research").exists()
+    assert not (state / "vault/Rove/Research").exists()
 
 
 def test_employer_site_prefers_the_posting_host_unless_it_is_an_ats_or_a_board():

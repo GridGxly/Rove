@@ -15,8 +15,8 @@ import pytest
 import test_workflow
 from test_workflow import no_ids, owner_channels, seed_feed
 
-from erga_autopilot import discord_feed, reasoning, submission, worker, workflow
-from erga_autopilot.worker import apply_command, thread_command
+from rove import discord_feed, reasoning, submission, worker, workflow
+from rove.worker import apply_command, thread_command
 
 # The approved synthetic profile and private state root, as test_workflow builds them.
 state = test_workflow.state

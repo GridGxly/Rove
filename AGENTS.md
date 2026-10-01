@@ -4,7 +4,7 @@ Read this file before changing code, setup, configuration, docs, or agent behavi
 
 ## What this project is
 
-Rove, formerly Erga Autopilot, is a local-first recruiting assistant built for one person running it on their own machine.
+Rove is a local-first recruiting assistant built for one person running it on their own machine.
 
 It started from [Erga](https://github.com/Adr1an04/erga-mcp), which already handles application tracking, career evidence, resume tailoring, Git-backed project evidence, and recruiting-mail reconciliation. Rove keeps that foundation and adds the parts needed to actually work through applications: job intake, applicant memory, a Discord control surface, browser automation, detailed application history, and recruiting follow-up.
 
@@ -166,7 +166,7 @@ Real recruiting state belongs outside the Git checkout. The repository is for co
 A normal local state root is expected to live somewhere like:
 
 ```text
-~/.config/erga-autopilot/
+~/.config/rove/
 ```
 
 The private Obsidian vault may live elsewhere, but its path is local configuration and its contents are never public fixtures.

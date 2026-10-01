@@ -9,7 +9,7 @@ from .runtime import state_root
 
 SERVICE_PATH = str(Path.home() / ".local/bin") + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# (name, autopilot command, launchd interval in seconds; None keeps a daemon running).
+# (name, rove command, launchd interval in seconds; None keeps a daemon running).
 # Each timed tick decides for itself whether it is enabled, so an unconfigured service
 # (the feed without feed.json, mail without the Zoho values) runs and does nothing.
 SERVICES = [
@@ -21,7 +21,7 @@ SERVICES = [
 
 
 def install():
-    executable = Path(__file__).resolve().parents[2] / ".venv/bin/autopilot"
+    executable = Path(__file__).resolve().parents[2] / ".venv/bin/rove"
     if not executable.is_file():
         raise ValueError("Install the project virtual environment first")
     agents = Path.home() / "Library/LaunchAgents"
@@ -30,7 +30,7 @@ def install():
     logs.mkdir(parents=True, exist_ok=True, mode=0o700)
     result = []
     for name, command, interval in SERVICES:
-        label = "dev.erga-autopilot." + name
+        label = "dev.rove." + name
         path = agents / (label + ".plist")
         data = {
             "Label": label,
@@ -41,7 +41,7 @@ def install():
                 # from the installing shell forced a reload (and a browser restart) whenever
                 # the shell differed. Every tool the services run is addressed absolutely.
                 "PATH": SERVICE_PATH,
-                "AUTOPILOT_STATE_DIR": str(state_root()),
+                "ROVE_STATE_DIR": str(state_root()),
             },
             "StandardOutPath": str(logs / (name + ".out.log")),
             "StandardErrorPath": str(logs / (name + ".err.log")),

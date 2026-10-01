@@ -97,17 +97,17 @@ async def career_evidence(query: str) -> dict:
 def search_synthetic_memory(query: str, semantic: bool = False) -> dict:
     if not query.strip() or len(query) > 300 or query.startswith("-"):
         raise ValueError("Use a plain search phrase of 1–300 characters")
-    executable = Path.home() / ".local/share/erga-autopilot/qmd/node_modules/.bin/qmd"
+    executable = Path.home() / ".local/share/rove/qmd/node_modules/.bin/qmd"
     # One short-lived process per retrieval: no resident helper models between queries.
     result = subprocess.run(
         [
             str(executable),
             "--index",
-            "erga-autopilot",
+            "rove",
             "vsearch" if semantic else "search",
             query,
             "-c",
-            "autopilot-synthetic",
+            "rove-synthetic",
             "-n",
             "3",
             "--format",

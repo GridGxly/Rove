@@ -50,7 +50,7 @@ Hermes build needs an explicit 16K compatibility patch; stock Hermes in that bui
 expects at least 64K. Certification used four fixture tools; production uses thirteen
 real tools with generic MCP wrappers disabled. Real evidence
 requires a separate, reviewed Erga master, and approved profile changes require
-`autopilot memory index` to refresh QMD. See the runtime page before updating it.
+`rove memory index` to refresh QMD. See the runtime page before updating it.
 
 If QMD is disabled, the minimum Node.js version may be lower and should follow the current requirements of the remaining Node-based tools. The reference full setup uses Node.js 22+ because the current Hermes QMD skill requires it.
 
@@ -174,18 +174,18 @@ The reference setup installs Erga from the project's own fork,
 [GridGxly/erga-mcp](https://github.com/GridGxly/erga-mcp), branch
 `fetch-headers-and-job-text`, as a `uv` tool. That branch is upstream `main` plus one
 commit: Erga's job fetch sends ordinary browser request headers, and `intake_job_url`
-accepts a `job_text` argument so Autopilot can hand over the posting its own browser
+accepts a `job_text` argument so Rove can hand over the posting its own browser
 already captured when a careers site refuses Erga's direct fetch. The fork's `main`
 tracks upstream and carries nothing of its own.
 
 ```bash
 uv tool install --force --python 3.12 \
   "git+https://github.com/GridGxly/erga-mcp@fetch-headers-and-job-text"
-erga review --config ~/.config/erga-autopilot/erga/config.toml
+erga review --config ~/.config/rove/erga/config.toml
 ```
 
 That installs `erga`, `erga-mcp`, and `erga-tokens` under `~/.local/bin`, which is where
-Autopilot's Erga bridge expects `erga-mcp`.
+Rove's Erga bridge expects `erga-mcp`.
 
 To pull Adrian's updates into the fork and reinstall:
 
@@ -201,8 +201,8 @@ uv lock --check && uv run ruff format --check && uv run ruff check && uv run myp
 git push origin fetch-headers-and-job-text
 uv tool install --force --python 3.12 \
   "git+https://github.com/GridGxly/erga-mcp@fetch-headers-and-job-text"
-erga review --config ~/.config/erga-autopilot/erga/config.toml
-.venv/bin/pytest -q   # Autopilot's suite, from this repository
+erga review --config ~/.config/rove/erga/config.toml
+.venv/bin/pytest -q   # Rove's suite, from this repository
 ```
 
 Keep the fork's `main` fast-forward only so later upstream merges stay clean. Record the
@@ -239,7 +239,7 @@ The repository should refer to logical names in code and docs. Real IDs belong i
 
 ### Zoho Mail
 
-Zoho is optional. When it is configured, `autopilot mail tick` reads the Inbox of one Zoho
+Zoho is optional. When it is configured, `rove mail tick` reads the Inbox of one Zoho
 Mail account every 15 minutes and classifies recruiting mail about sent applications; see
 [Application workflow](application-workflow.md#recruiting-mail).
 
@@ -271,7 +271,7 @@ It never sends, moves, or deletes mail. Setup, once:
 
    `data[0].accountId` is the value.
 5. Put the four values in the private env file the services read, `config/setup.env`
-   under the state root (`~/.config/erga-autopilot/` by default), one `KEY=value` per line:
+   under the state root (`~/.config/rove/` by default), one `KEY=value` per line:
 
    ```text
    ZOHO_CLIENT_ID
@@ -284,8 +284,8 @@ It never sends, moves, or deletes mail. Setup, once:
    `https://mail.zoho.eu`); the matching accounts server is derived from it, or set
    `ZOHO_ACCOUNTS_BASE` explicitly.
 6. Write private `config/mail.json` with `{"enabled": true}` (optional `lookback_days`,
-   default 3, for the first tick only) and run `uv run autopilot install-services`, which
-   installs the `dev.erga-autopilot.mail` launch agent next to the feed. `uv run autopilot
+   default 3, for the first tick only) and run `uv run rove install-services`, which
+   installs the `dev.rove.mail` launch agent next to the feed. `uv run rove
    mail status` shows whether the values were found, without printing them.
 
 Those names are safe to document. Their real values, the refresh token above all, are
@@ -313,7 +313,7 @@ ZOHO_CLIENT_ID=replace-me
 ZOHO_CLIENT_SECRET=replace-me
 ZOHO_REFRESH_TOKEN=replace-me
 ZOHO_ACCOUNT_ID=replace-me
-OBSIDIAN_VAULT_PATH=/path/to/private/autopilot-vault
+OBSIDIAN_VAULT_PATH=/path/to/private/rove-vault
 ```
 
 Every value above is synthetic. Never copy a real local `.env`, OAuth response, Discord ID set, credential file, vault path, or token into the repository.
@@ -327,7 +327,7 @@ Real runtime state belongs outside the repository checkout.
 A normal Rove runtime root can live under:
 
 ```text
-~/.config/erga-autopilot/
+~/.config/rove/
 ```
 
 Expected categories may include:

@@ -11,7 +11,7 @@ from .memory import search_candidate_memory
 from .onboarding import SECTIONS, onboarding_status, propose, read_approved
 from .runtime import state_root, write_private
 
-mcp = MCPServer("erga-autopilot")
+mcp = MCPServer("rove")
 
 
 @mcp.tool()

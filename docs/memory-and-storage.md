@@ -22,7 +22,7 @@ Discord sits beside those layers as the remote control surface and human-readabl
 
 The current implementation validates the canonical candidate note, creates immutable
 approved snapshots, and exposes section reads and bounded Erga evidence reads.
-`autopilot memory index` creates a rebuildable retrieval copy of the approved profile
+`rove memory index` creates a rebuildable retrieval copy of the approved profile
 inside the vault and indexes only that file in a separate QMD collection. Version and
 file-hash checks block stale or edited retrieval copies. Drafts and research are not
 included. See [Onboarding and jobs](onboarding-and-jobs.md) for the concrete workflow.
@@ -60,7 +60,7 @@ It holds information that benefits from being readable, searchable, linkable, an
 A reference vault can look like this:
 
 ```text
-Erga Autopilot/
+Rove/
 ├── Profile/
 │   ├── Candidate.md
 │   ├── Education.md
@@ -138,7 +138,7 @@ When provenance matters, store the source URL, retrieval date, and enough contex
 Company research is the research note Rove writes today. Before Qwen drafts a written
 answer, trusted code reads up to three public pages from the employer's own site and keeps
 the sentences that say what the company does, its size or stage, its product and its
-values. The text is written to `Erga Autopilot/Research/<employer host>.md`, marked
+values. The text is written to `Rove/Research/<employer host>.md`, marked
 untrusted at the top, with the source URLs and the fetch time; the next application to
 the same employer overwrites it. What Qwen sees is the private `research.json` under the
 application's folder in the state root, so editing the note changes no draft. Nothing in
@@ -291,7 +291,7 @@ nothing in a mail becomes a candidate fact. See [Application workflow](applicati
 ## Application notes and credentials
 
 Each application also gets a readable note in the vault under
-`Erga Autopilot/Applications/`, rewritten from SQLite and the private artifacts on every
+`Rove/Applications/`, rewritten from SQLite and the private artifacts on every
 change. It is a mirror for reading and searching, not a candidate fact, and it is not
 indexed as profile memory. Employer-account credentials never enter the vault, Discord,
 or model context; they live in `credentials/store.enc` under the private state root with

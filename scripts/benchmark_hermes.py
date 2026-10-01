@@ -26,9 +26,9 @@ def main():
     from run_agent import AIAgent
     from tools.mcp_tool_discovery import discover_mcp_tools
 
-    from erga_autopilot.benchmark import request
-    from erga_autopilot.metrics import memory_snapshot
-    from erga_autopilot.runtime import api_key, state_root, write_private
+    from rove.benchmark import request
+    from rove.metrics import memory_snapshot
+    from rove.runtime import api_key, state_root, write_private
 
     config = load_config()
     discover_mcp_tools()
@@ -42,7 +42,7 @@ def main():
             provider="custom",
             base_url=config["model"]["base_url"],
             api_key=api_key(),
-            enabled_toolsets=["mcp-erga-autopilot"],
+            enabled_toolsets=["mcp-rove"],
             disabled_toolsets=config["agent"]["disabled_toolsets"],
             quiet_mode=True,
             skip_context_files=True,
@@ -57,7 +57,7 @@ def main():
             },
         )
         names = [x["function"]["name"] for x in agent.tools]
-        assert names and all(n.startswith("mcp__erga_autopilot__") for n in names), names
+        assert names and all(n.startswith("mcp__rove__") for n in names), names
 
         def capture_request(req, wire=wire):
             if req.url.path != "/v1/chat/completions":

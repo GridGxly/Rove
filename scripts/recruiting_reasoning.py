@@ -100,10 +100,10 @@ def main():
     from hermes_cli.config import load_config
     from run_agent import AIAgent
 
-    from erga_autopilot.runtime import api_key, write_private
+    from rove.runtime import api_key, write_private
 
     config = load_config()
-    from erga_autopilot.unslop import CLEANUP_PROMPT, HUMANIZER_RULES, RULES
+    from rove.unslop import CLEANUP_PROMPT, HUMANIZER_RULES, RULES
 
     context = json.loads(args.input.read_text())
     kind = context.get("review_type")
@@ -112,7 +112,7 @@ def main():
     elif kind == "cleanup":
         system = CLEANUP_PROMPT
     elif kind == "recruiting_mail":
-        from erga_autopilot.mail import MAIL_PROMPT
+        from rove.mail import MAIL_PROMPT
 
         system = MAIL_PROMPT
     else:

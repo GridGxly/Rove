@@ -1,6 +1,6 @@
 """Human-readable application notes in the private Obsidian vault.
 
-One note per application under `Erga Autopilot/Applications/`, rebuilt from SQLite and
+One note per application under `Rove/Applications/`, rebuilt from SQLite and
 the private artifacts whenever the application changes. The note is for reading and
 searching in Obsidian; it is never a candidate fact and never feeds the profile.
 """

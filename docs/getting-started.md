@@ -4,7 +4,7 @@ Rove is still experimental. Some of this guide describes the setup the project i
 
 Start with synthetic data and prepare-only browser runs. Do not connect real recruiting data until the earlier pieces work and the security checks pass.
 
-See [Local runtime](local-runtime.md) for the implemented certification commands and pinned model. `uv run autopilot smoke` launches the dedicated browser against a local synthetic form. It does not accept production application URLs.
+See [Local runtime](local-runtime.md) for the implemented certification commands and pinned model. `uv run rove smoke` launches the dedicated browser against a local synthetic form. It does not accept production application URLs.
 
 Before installing the full stack, read [Requirements to run](requirements.md). It tracks the software, services, accounts, APIs, memory/storage layers, local configuration, browser setup, and network access a complete installation needs.
 
@@ -78,8 +78,6 @@ uv sync
 
 If your hardware needs different runtime settings, keep those changes in your own clone or fork so they are easy to track.
 
-Rove was renamed from Erga Autopilot, but the internal names have not moved yet. The Python package is still `erga_autopilot`, the command is still `uv run autopilot`, the launchd labels are still `dev.erga-autopilot.*`, the state root is still `~/.config/erga-autopilot/`, and the vault folder is still `Erga Autopilot/`. Running installs, saved state, and vault notes depend on those identifiers, so they will change in a separate step with a migration. Use the old names wherever this guide shows them.
-
 ## Keep live data outside Git
 
 The Git checkout is for code, docs, schemas, migrations, tests, and synthetic fixtures.
@@ -87,7 +85,7 @@ The Git checkout is for code, docs, schemas, migrations, tests, and synthetic fi
 Live runtime data should live somewhere outside the repository, for example:
 
 ```text
-~/.config/erga-autopilot/
+~/.config/rove/
 ├── config/
 ├── secrets/
 ├── state/
@@ -151,7 +149,7 @@ The reference setup uses a private Obsidian vault outside the repository.
 A starting layout can be:
 
 ```text
-Erga Autopilot/
+Rove/
 ├── Profile/
 ├── Story/
 ├── Career/
@@ -326,10 +324,10 @@ The current build order is:
 12. prepare-only browser reliability and ATS adapter testing
 13. controlled submission
 14. recruiting-mail tracking
-15. restricted autopilot
+15. restricted unattended operation
 16. operations, backups, and upgrade testing
 
-Do not jump straight to autopilot because the browser can click Submit.
+Do not jump straight to unattended operation because the browser can click Submit.
 
 ## Next
 

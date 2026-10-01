@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from erga_autopilot import reasoning, unslop, workflow
-from erga_autopilot.onboarding import approve, digest, draft, propose
+from rove import reasoning, unslop, workflow
+from rove.onboarding import approve, digest, draft, propose
 
 
 def test_builtin_scan_finds_hard_tells_and_leaves_plain_prose_alone(monkeypatch):
@@ -61,7 +61,7 @@ def test_fact_preservation_rejects_dropped_numbers_or_names():
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
@@ -72,7 +72,7 @@ def state(tmp_path, monkeypatch):
 
 
 def test_drafts_get_one_bounded_cleanup_and_are_hashed_after_it(state, monkeypatch):
-    from erga_autopilot.onboarding import read_approved
+    from rove.onboarding import read_approved
 
     application_id = workflow.enqueue("https://jobs.example.com/1")["application_id"]
     (state / "applications" / application_id).mkdir(parents=True)

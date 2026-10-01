@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "erga-autopilot"
+name = "rove"
 version = "0.1.0"
 description = "Rove: local, prepare-only recruiting automation with explicit authority boundaries"
 requires-python = ">=3.12,<3.15"
@@ -18,13 +18,13 @@ dependencies = [
 ]
 
 [project.scripts]
-autopilot = "erga_autopilot.cli:main"
+rove = "rove.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.12"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/erga_autopilot"]
+packages = ["src/rove"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

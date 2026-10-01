@@ -8,7 +8,7 @@ rejected (see [Recruiting mail](#recruiting-mail)); unattended submission is an 
 
 ## Intake and visibility
 
-`autopilot feed tick` checks the fixed Keryx source. An unchanged revision does not
+`rove feed tick` checks the fixed Keryx source. An unchanged revision does not
 redownload the snapshot. New matching internships enter a deduplicated notification
 outbox and application queue; each job is announced once, and later Keryx metadata
 changes to a known job do not re-post it. Each tick publishes the newest pending
@@ -118,7 +118,7 @@ from a local clone when `unslop_path` is set; the Humanizer digest is built in a
 either way. A phrase from the posting goes into a draft only when the approved evidence
 shows it, so the words an applicant-tracking system matches on stay true.
 
-If the vault has `Erga Autopilot/Story/Voice.md`, about 2,500 characters of it go to Qwen
+If the vault has `Rove/Story/Voice.md`, about 2,500 characters of it go to Qwen
 as `owner_voice`: the draft follows its sentence rhythm, plain words, first person and
 concrete detail without copying its sentences, and the note is never a source of facts.
 Rove reads that note and never writes it; the draft is re-made when it changes.
@@ -142,7 +142,7 @@ drops a few true sentences. Qwen is told to use the text only to say true things
 the company and to tie the approved evidence to them, never to claim the applicant did
 anything with the company, and never as instructions. The result is cached under the
 application (`research.json`, with the URLs and the fetch time) and copied to
-`Erga Autopilot/Research/<employer host>.md` in the vault, marked untrusted. A site that
+`Rove/Research/<employer host>.md` in the vault, marked untrusted. A site that
 does not answer is noted privately and tried once more on a later preparation; the draft
 goes without research, and research never stops a run.
 
@@ -327,7 +327,7 @@ the question's wording without qualifiers plus its options, and filled on any la
 that asks the same question, with the source "your earlier answer". When the new form
 offers options, the remembered value is used only if it is one of them. `skip` is never
 remembered. The exact store is the `answer_memory` table in SQLite; a readable copy is
-`Answers.md` in the vault's `Erga Autopilot` folder. Approved profile facts come first,
+`Answers.md` in the vault's `Rove` folder. Approved profile facts come first,
 remembered answers second, Qwen drafts third; only what none of them covers reaches the
 owner.
 
@@ -378,7 +378,7 @@ screenshot.
 
 ## Recruiting mail
 
-`autopilot mail tick` runs every 15 minutes as its own launchd service and is off until
+`rove mail tick` runs every 15 minutes as its own launchd service and is off until
 private `config/mail.json` sets `enabled` and the private env holds the four Zoho values
 (see [Requirements](requirements.md#zoho-mail)). Each tick refreshes a Zoho access token,
 lists the Inbox messages newer than the checkpoint (`mail_checkpoints` in SQLite; the first
@@ -447,7 +447,7 @@ application that was sent is never moved back into preparation, whatever a threa
 says. The full text of each handled mail is kept privately under `mail/messages/<id>/` in
 the state root, with Qwen's input and output beside it when it ran.
 
-`autopilot mail status` shows the switches, the checkpoint and the message counts
+`rove mail status` shows the switches, the checkpoint and the message counts
 without any secret.
 
 ## Records outside Discord
@@ -455,10 +455,10 @@ without any secret.
 SQLite holds the queue, events, answers, commands, and attempts. Private per-application
 directories hold the observation, package, resume, receipts, screenshots, the company
 research cache, and Qwen input and output. The vault gets one readable note per application under
-`Erga Autopilot/Applications/` (status, links, job fit, filled values with sources, open
+`Rove/Applications/` (status, links, job fit, filled values with sources, open
 questions with drafts, timeline), rewritten on every change; it mirrors local state and is
 never a candidate fact. Company research goes to one note per employer site under
-`Erga Autopilot/Research/`, marked untrusted. Credentials live only in the encrypted local
+`Rove/Research/`, marked untrusted. Credentials live only in the encrypted local
 store.
 
 ## Local configuration
@@ -479,15 +479,15 @@ announcements kept, default 40). Private `config/mail.json` holds the mail servi
 values live in the private env file, never in JSON.
 
 ```sh
-uv run autopilot install-services
-uv run autopilot feed seed
-uv run autopilot workflow status
-uv run autopilot workflow enqueue --url https://jobs.example.com/internship
-uv run autopilot workflow tick
-uv run autopilot workflow resume --id APPLICATION_ID
-uv run autopilot browser status
-uv run autopilot mail status
-uv run autopilot mail tick
+uv run rove install-services
+uv run rove feed seed
+uv run rove workflow status
+uv run rove workflow enqueue --url https://jobs.example.com/internship
+uv run rove workflow tick
+uv run rove workflow resume --id APPLICATION_ID
+uv run rove browser status
+uv run rove mail status
+uv run rove mail tick
 ```
 
 `workflow resume` and `workflow defer` are local owner operations equivalent to the
@@ -504,7 +504,7 @@ reconciliation. The worker holds the only processing lock, so a `PREPARING` appl
 older than fifteen minutes is a crashed run and is handed back to the owner. When the
 local model server is down the worker starts it once and otherwise leaves the queue
 waiting instead of failing applications. After updating browser code, restart the
-browser service (`launchctl kickstart -k gui/$UID/dev.erga-autopilot.browser`); the
+browser service (`launchctl kickstart -k gui/$UID/dev.rove.browser`); the
 Chrome window and its tabs survive the restart.
 
 ## Hermes tools

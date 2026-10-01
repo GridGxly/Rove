@@ -80,8 +80,8 @@ id_dsa
 secrets/
 mcp-tokens/
 
-# Autopilot live state
-.erga-autopilot/
+# Rove live state
+.rove/
 state/
 runtime/
 private/

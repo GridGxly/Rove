@@ -4,9 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from erga_autopilot import submission, worker, workflow
-from erga_autopilot.onboarding import approve, digest, draft, propose, read_approved
-from erga_autopilot.submission import GenericV1, GreenhouseV1, LeverV1, package_digest
+from rove import submission, worker, workflow
+from rove.onboarding import approve, digest, draft, propose, read_approved
+from rove.submission import GenericV1, GreenhouseV1, LeverV1, package_digest
 
 URL = "https://job-boards.greenhouse.io/example/jobs/123"
 LEVER_POSTING = "0f3c7a1e-5b2d-4c8e-9a6f-1d2e3f4a5b6c"
@@ -16,7 +16,7 @@ FINAL = [{"ref": "0", "label": "Submit application"}]
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))

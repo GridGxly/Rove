@@ -6,7 +6,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 from patchright.sync_api import sync_playwright
 
-from erga_autopilot import browser
+from rove import browser
 
 
 def test_changed_provisioned_resume_fails_closed(tmp_path):

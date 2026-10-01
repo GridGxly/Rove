@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/erga-autopilot-logo.svg" width="760" alt="Rove" />
+  <img src="docs/assets/rove-logo.svg" width="760" alt="Rove" />
 </p>
 
 <p align="center">
@@ -159,15 +159,13 @@ uv sync
 
 Then follow [docs/getting-started.md](docs/getting-started.md).
 
-The project was called Erga Autopilot until September 2026. The Python package `erga_autopilot`, the `autopilot` command, the `erga-autopilot` package name in `pyproject.toml`, the `dev.erga-autopilot.*` launchd labels, the `~/.config/erga-autopilot/` state root, and the `Erga Autopilot/` folder in the Obsidian vault keep the old identifier for now. Installed services, saved state, and vault notes depend on those names, so they will move in a separate step with a migration rather than a find-and-replace.
-
 If you want the original local-first recruiting assistant without browser auto-application behavior, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
 
 ## Status
 
 The local Discord/Hermes/oMLX stack, Erga evidence, QMD retrieval and synthetic prepare-only browser workflow have been verified. Real Keryx job intake, reviewed candidate onboarding, approved profile/evidence reads and version-checked QMD profile retrieval are implemented; see [Onboarding and jobs](docs/onboarding-and-jobs.md). The production Hermes tool list uses these real workflows. See [Local runtime](docs/local-runtime.md) for the tested configuration and [Runtime measurements](docs/runtime-benchmarks.md) for results and limits. The [application workflow](docs/application-workflow.md) connects a durable queue, a background recruiting browser, code-checked Qwen job-fit review, deterministic preparation, Erga intake, Qwen/Hermes answer proposals, forum recording, and owner-approved single-attempt submission on public Greenhouse boards with an independent confirmation contract. The recruiting browser is a background Chrome the daemon launches itself, drafts pass the Unslop and Humanizer rules and follow the owner's voice note when one exists, account-walled boards are handled with an owner-approved encrypted account, multi-page forms advance step by step, and each application has a readable note in the vault. Other submission adapters and mail reconciliation are not implemented yet.
 
-The project is being built in stages: local runtime, model certification, Hermes/Obsidian memory, Erga integration, transactional state, Discord control, onboarding, job intake, resume/research workflows, prepare-only browser automation, controlled submission, recruiting lifecycle tracking, and finally restricted autopilot.
+The project is being built in stages: local runtime, model certification, Hermes/Obsidian memory, Erga integration, transactional state, Discord control, onboarding, job intake, resume/research workflows, prepare-only browser automation, controlled submission, recruiting lifecycle tracking, and finally restricted unattended operation.
 
 Working code is not the same thing as safe unattended submission. Irreversible behavior stays behind test gates until the earlier pieces have been proven.
 

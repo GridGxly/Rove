@@ -8,8 +8,8 @@ client with their own synthetic employer site.
 import httpx
 import pytest
 
-from erga_autopilot import research
-from erga_autopilot.jobs import public_link
+from rove import research
+from rove.jobs import public_link
 
 real_http_client = research.http_client
 

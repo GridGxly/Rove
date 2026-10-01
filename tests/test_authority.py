@@ -3,8 +3,8 @@ import hashlib
 import pytest
 from pydantic import ValidationError
 
-from erga_autopilot.browser import SYNTHETIC, Profile, resolve, verify_upload
-from erga_autopilot.state import State
+from rove.browser import SYNTHETIC, Profile, resolve, verify_upload
+from rove.state import State
 
 
 def test_missing_sensitive_fact_never_guessed():

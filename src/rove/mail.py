@@ -499,7 +499,7 @@ MAIL_PROMPT = (
 INSTRUCTION_LIKE = re.compile(
     r"\b(?:ignore|disregard|forget|override)\b[^.!?\n]{0,40}\b(?:instruction|prompt|rule|previous|above)"
     r"|\bsystem prompt\b|\byou are (?:an?|the|now) (?:ai|assistant|model|agent|bot)\b|\bas an ai\b"
-    r"|\b(?:assistant|agent|model|autopilot|qwen|hermes|claude|gpt)\b[^.!?\n]{0,30}"
+    r"|\b(?:assistant|agent|model|rove|qwen|hermes|claude|gpt)\b[^.!?\n]{0,30}"
     r"\b(?:must|should|shall|will now|need to|have to)\b"
     r"|\b(?:run|execute|upload|download|delete|forward|paste|print|reveal|send)\b[^.!?\n]{0,40}"
     r"\b(?:command|script|file|password|token|credential|secret|key|ssh|resume|profile|address|phone)\b"

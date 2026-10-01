@@ -229,7 +229,7 @@ def vault_note() -> Path:
     vault = Path(configured).expanduser().resolve()
     if not vault.is_dir():
         raise ValueError("Configured Obsidian vault is not a directory")
-    return vault / "Erga Autopilot/Profile/Candidate.md"
+    return vault / "Rove/Profile/Candidate.md"
 
 
 def draft() -> dict:

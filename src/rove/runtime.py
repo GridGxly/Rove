@@ -13,13 +13,13 @@ BASE_URL = "http://127.0.0.1:8000/v1"
 
 
 def state_root() -> Path:
-    p = Path(os.environ.get("AUTOPILOT_STATE_DIR", "~/.config/erga-autopilot")).expanduser()
+    p = Path(os.environ.get("ROVE_STATE_DIR", "~/.config/rove")).expanduser()
     p.mkdir(parents=True, exist_ok=True, mode=0o700)
     return p
 
 
 def api_key() -> str:
-    if key := os.environ.get("AUTOPILOT_MODEL_API_KEY"):
+    if key := os.environ.get("ROVE_MODEL_API_KEY"):
         return key
     settings = Path.home() / ".omlx/settings.json"
     return json.loads(settings.read_text())["auth"]["api_key"]

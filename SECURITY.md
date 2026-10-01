@@ -365,7 +365,7 @@ The project should keep synthetic adversarial tests for at least:
 
 Tests should prove that forbidden actions did not happen, not just that the model printed a refusal.
 
-Restricted autopilot should not be enabled while those tests fail.
+Restricted unattended operation should not be enabled while those tests fail.
 
 ## Reporting a vulnerability
 

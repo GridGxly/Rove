@@ -372,7 +372,7 @@ OBSERVE = (
  const groupOf=e=>{if(e.type!=='radio'&&e.type!=='checkbox')return '';const f=e.closest('fieldset,[role=radiogroup],[role=group]');if(!f)return '';
    const t=f.querySelector('legend')||[...f.querySelectorAll('label')].find(l=>owns(l,e)&&l.control!==e);return t?t.innerText.trim():'';};
  const fields=[...document.querySelectorAll('input,textarea,select')].filter(e=>visible(e)||e.type==='file').map((e,i)=>{
-   e.setAttribute('data-autopilot-field',String(i));
+   e.setAttribute('data-rove-field',String(i));
    return {ref:String(i),label:label(e),group:groupOf(e),name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||null,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
@@ -381,23 +381,23 @@ OBSERVE = (
     options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):[]};
  }).filter(e=>e.kind!=='hidden');
  const boxes=[...new Set([...document.querySelectorAll('button[aria-pressed]')].filter(visible).map(b=>b.parentElement))].filter(c=>c.querySelectorAll(':scope > button[aria-pressed]').length>=2);
- const choices=boxes.map((c,i)=>{c.setAttribute('data-autopilot-choice',String(i));const buttons=[...c.querySelectorAll(':scope > button[aria-pressed]')];const box=c.querySelector('input');
+ const choices=boxes.map((c,i)=>{c.setAttribute('data-rove-choice',String(i));const buttons=[...c.querySelectorAll(':scope > button[aria-pressed]')];const box=c.querySelector('input');
    return {ref:String(i),label:nearest(c),group:'',name:box?.name||'',id:box?.id||'',kind:'choice',tag:'buttons',role:'choice',selected:null,selection_code:null,
     required:!!(c.parentElement&&[...c.parentElement.querySelectorAll('label')].some(l=>/required/i.test(l.className)||/\*\s*$/.test(l.innerText))),disabled:false,readonly:false,checked:false,
     value:buttons.find(b=>b.getAttribute('aria-pressed')==='true')?.innerText.trim()||'',options:buttons.map(b=>({label:b.innerText.trim(),value:b.getAttribute('data-option')||b.innerText.trim()}))};});
  fields.push(...choices);
  const auth=[...document.querySelectorAll('button,input[type=submit],a[href],[role="button"]')].filter(visible).filter(e=>
    /^(create (an )?account|create (my )?profile|sign ?up|register|sign ?in|log ?in)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{
-   e.setAttribute('data-autopilot-auth',String(i));const t=(e.innerText||e.value||'').trim();return {ref:String(i),label:t,intent:/sign ?in|log ?in/i.test(t)?'login':'register'};});
+   e.setAttribute('data-rove-auth',String(i));const t=(e.innerText||e.value||'').trim();return {ref:String(i),label:t,intent:/sign ?in|log ?in/i.test(t)?'login':'register'};});
  const nav=[...document.querySelectorAll('button,input[type=submit],[role="button"]')].filter(visible).filter(e=>
    /^(next|continue|save (and|&) continue|next step)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{
-   e.setAttribute('data-autopilot-nav',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};});
+   e.setAttribute('data-rove-nav',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};});
  const links=[...document.querySelectorAll('a[href],button,[role="button"]')].filter(visible).filter(e=>
    /^(apply( now| for this (job|position))?|apply on (the )?(employer|company) (site|website)|apply for this job|start application|continue application)$/i.test(e.innerText.trim())).map((e,i)=>{
-   e.setAttribute('data-autopilot-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
+   e.setAttribute('data-rove-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
  });
  return {title:document.title,text:document.body.innerText.slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
- final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-autopilot-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};}),
+ final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-rove-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};}),
  ats_markers:{captcha_challenge:[...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"],.g-recaptcha,.h-captcha,.cf-turnstile')].some(e=>{const r=e.getBoundingClientRect();return visible(e)&&r.width>=200&&r.height>=60;}),
  already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
  greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content'),
@@ -417,7 +417,7 @@ OBSERVE = (
 # evaluates scripts in an isolated world, so a window variable would never be seen.
 PREPARE_GUARD = (
     "document.addEventListener('submit',e=>{"
-    "if(document.documentElement.getAttribute('data-erga-submit-armed')!=='1'){"
+    "if(document.documentElement.getAttribute('data-rove-submit-armed')!=='1'){"
     "e.preventDefault();e.stopImmediatePropagation();}},true)"
 )
 
@@ -584,7 +584,7 @@ SUGGESTION_JS = """(city) => {
     .filter(e => { const t = (e.innerText || '').trim(); return t.length > 0 && t.length < 160 && norm(t).includes(wanted); });
   if (!candidates.length) return false;
   candidates.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
-  candidates[0].setAttribute('data-autopilot-suggestion', '1');
+  candidates[0].setAttribute('data-rove-suggestion', '1');
   return true;
 }"""
 RENDERED_JS = FIELDS_JS + " || document.body.innerText.trim().length > 200"
@@ -607,7 +607,7 @@ CONSENT_JS = """() => {
     for (let depth = 0; holder && depth < 8; depth++, holder = holder.parentElement) {
       const text = label(holder);
       if (/cookie|consent/i.test(text) && text.length < 2000) {
-        button.setAttribute('data-autopilot-consent', '1');
+        button.setAttribute('data-rove-consent', '1');
         return label(button);
       }
     }
@@ -861,7 +861,7 @@ class RecruitingBrowser:
                 )
                 if not alternative:
                     return False
-                locator = self.page.locator(f'[data-autopilot-field="{int(field["ref"])}"]')
+                locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 self.type_value(locator, alternative)
                 return True
         return False
@@ -877,9 +877,9 @@ class RecruitingBrowser:
         try:
             if not self.page.evaluate(CONSENT_JS):
                 return
-            self.click(self.page.locator('[data-autopilot-consent="1"]').first, timeout=3000)
+            self.click(self.page.locator('[data-rove-consent="1"]').first, timeout=3000)
             self.page.wait_for_function(
-                "() => { const b = document.querySelector('[data-autopilot-consent]');"
+                "() => { const b = document.querySelector('[data-rove-consent]');"
                 " return !b || !b.getBoundingClientRect().height; }",
                 timeout=3000,
             )
@@ -1053,7 +1053,7 @@ class RecruitingBrowser:
         item = next((x for x in self.observation["application_links"] if x["ref"] == ref), None)
         if not item:
             raise PermissionError("Only an observed application-start link may be followed")
-        locator = self.page.locator(f'[data-autopilot-link="{int(ref)}"]')
+        locator = self.page.locator(f'[data-rove-link="{int(ref)}"]')
         if normalized(locator.inner_text()) != normalized(item["label"]):
             raise ValueError("Application link changed")
         if item["url"]:
@@ -1139,7 +1139,7 @@ class RecruitingBrowser:
                             break
                     if found:
                         self.click(
-                            self.page.locator('[data-autopilot-suggestion="1"]').first,
+                            self.page.locator('[data-rove-suggestion="1"]').first,
                             timeout=4000,
                         )
                     else:
@@ -1222,7 +1222,7 @@ class RecruitingBrowser:
         if normalized(field["label"]) == "country":
             try:
                 self.page.wait_for_function(
-                    "({ref,value})=>{const e=document.querySelector('[data-autopilot-field=\"'+ref+'\"]');return e?.closest('.select__container')?.querySelector('[aria-live]')?.textContent.includes('option '+value+', selected.')}",
+                    "({ref,value})=>{const e=document.querySelector('[data-rove-field=\"'+ref+'\"]');return e?.closest('.select__container')?.querySelector('[aria-live]')?.textContent.includes('option '+value+', selected.')}",
                     arg={"ref": field["ref"], "value": value},
                     timeout=3000,
                 )
@@ -1268,9 +1268,7 @@ class RecruitingBrowser:
         """Select one observed option of a radio group or button group and verify it."""
         if field["kind"] == "radio_group":
             index = next(i for i, o in enumerate(field["options"]) if o["label"] == label)
-            member = self.page.locator(
-                f'[data-autopilot-field="{int(field["member_refs"][index])}"]'
-            )
+            member = self.page.locator(f'[data-rove-field="{int(field["member_refs"][index])}"]')
             try:
                 member.check(timeout=3000)
             except PlaywrightError:
@@ -1279,14 +1277,14 @@ class RecruitingBrowser:
                 if target:
                     self.page.locator(f'label[for="{target}"]').first.click()
             return member.is_checked()
-        container = self.page.locator(f'[data-autopilot-choice="{int(field["ref"])}"]')
+        container = self.page.locator(f'[data-rove-choice="{int(field["ref"])}"]')
         button = container.get_by_role("button", name=label, exact=True)
         if button.count() != 1:
             return False
         self.click(button)
         try:
             self.page.wait_for_function(
-                "({ref,label})=>[...document.querySelector('[data-autopilot-choice=\"'+ref+'\"]').querySelectorAll('button[aria-pressed]')].some(b=>b.innerText.trim()===label&&b.getAttribute('aria-pressed')==='true')",
+                "({ref,label})=>[...document.querySelector('[data-rove-choice=\"'+ref+'\"]').querySelectorAll('button[aria-pressed]')].some(b=>b.innerText.trim()===label&&b.getAttribute('aria-pressed')==='true')",
                 arg={"ref": field["ref"], "label": label},
                 timeout=3000,
             )
@@ -1300,7 +1298,7 @@ class RecruitingBrowser:
         )
         if control is None:
             raise ValueError(f"No {intent} control is visible on this page")
-        return self.page.locator(f'[data-autopilot-auth="{int(control["ref"])}"]'), control
+        return self.page.locator(f'[data-rove-auth="{int(control["ref"])}"]'), control
 
     def register(self, run_id: str) -> dict:
         """Create the employer account the owner approved: email, generated password, nothing else."""
@@ -1331,7 +1329,7 @@ class RecruitingBrowser:
                     or field["kind"] in {"file", "hidden"}
                 ):
                     continue
-                locator = self.page.locator(f'[data-autopilot-field="{int(field["ref"])}"]')
+                locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 label = normalized(field["label"] + " " + field["name"])
                 if field["kind"] == "password":
                     locator.fill(password)
@@ -1389,7 +1387,7 @@ class RecruitingBrowser:
             for field in before["fields"]:
                 if field["disabled"] or field["kind"] in {"file", "hidden"}:
                     continue
-                locator = self.page.locator(f'[data-autopilot-field="{int(field["ref"])}"]')
+                locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 label = normalized(field["label"] + " " + field["name"])
                 if field["kind"] == "password":
                     locator.fill(account["password"])
@@ -1519,7 +1517,7 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            locator = self.page.locator(f'[data-autopilot-field="{int(field["ref"])}"]')
+            locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
             if field["kind"] == "file":
                 # Resume uploads are a separate, explicit preparation action, using a
                 # frozen file only. Other requested files always remain unresolved.
@@ -1770,7 +1768,7 @@ class RecruitingBrowser:
             if pending or result.get("final_controls") or not nav:
                 break
             # A complete step of a multi-page form: continue once, then keep filling.
-            self.click(self.page.locator(f'[data-autopilot-nav="{int(nav[0]["ref"])}"]'))
+            self.click(self.page.locator(f'[data-rove-nav="{int(nav[0]["ref"])}"]'))
             self.settle()
             self.wait_for_fields()
             before = self.observe()
@@ -1933,7 +1931,7 @@ def browser_call(action: str, **kwargs) -> dict:
         client = connect()
     except (FileNotFoundError, ConnectionRefusedError):
         subprocess.run(
-            ["launchctl", "kickstart", f"gui/{os.getuid()}/dev.erga-autopilot.browser"],
+            ["launchctl", "kickstart", f"gui/{os.getuid()}/dev.rove.browser"],
             check=True,
             capture_output=True,
         )

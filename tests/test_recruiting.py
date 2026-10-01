@@ -3,8 +3,8 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from erga_autopilot.jobs import ingest, job_status, public_link, search_jobs
-from erga_autopilot.onboarding import (
+from rove.jobs import ingest, job_status, public_link, search_jobs
+from rove.onboarding import (
     approve,
     digest,
     draft,
@@ -18,7 +18,7 @@ from erga_autopilot.onboarding import (
 
 @pytest.fixture
 def local_state(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
@@ -129,7 +129,7 @@ def test_conflicting_evidence_blocks_approval(local_state):
 
 
 def test_matching_never_uses_unapproved_facts_and_respects_role_exclusions(local_state):
-    from erga_autopilot.matching import review_matches
+    from rove.matching import review_matches
 
     roles = [job("software"), job("ml"), job("newgrad")]
     roles[1]["title"] = "Machine Learning Software Intern"
@@ -158,7 +158,7 @@ def test_matching_never_uses_unapproved_facts_and_respects_role_exclusions(local
 def test_candidate_memory_blocks_unapproved_stale_and_modified_sources(local_state, monkeypatch):
     import subprocess
 
-    from erga_autopilot import memory
+    from rove import memory
 
     calls = []
 
@@ -203,7 +203,7 @@ def test_candidate_memory_blocks_unapproved_stale_and_modified_sources(local_sta
 def test_real_mcp_reads_only_approved_sections_and_exposes_no_approval(local_state):
     import asyncio
 
-    from erga_autopilot.server import mcp, read_candidate_section
+    from rove.server import mcp, read_candidate_section
 
     with pytest.raises(ValueError, match="No candidate"):
         read_candidate_section("identity")
@@ -219,7 +219,7 @@ def test_real_mcp_reads_only_approved_sections_and_exposes_no_approval(local_sta
 
 
 def test_abbreviated_ai_ml_titles_match_the_machine_learning_exclusion():
-    from erga_autopilot.matching import contains
+    from rove.matching import contains
 
     assert contains("Summer 2027 AI/ML Software Development Internship", "machine learning")
     assert contains("ML Engineer Intern", "machine learning")

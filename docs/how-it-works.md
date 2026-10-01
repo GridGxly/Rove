@@ -120,7 +120,7 @@ It stores knowledge that benefits from being readable, searchable, linkable, and
 A reference layout may look like:
 
 ```text
-Erga Autopilot/
+Rove/
 ├── Profile/
 ├── Story/
 ├── Career/

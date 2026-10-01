@@ -724,7 +724,7 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
     if adapter.scope(current["url"]) != adapter.scope(package["url"]):
         raise PermissionError("The live page is not the reviewed employer job")
     control = package["final_controls"][0]
-    locator = browser.page.locator(f'[data-autopilot-submit="{int(control["ref"])}"]')
+    locator = browser.page.locator(f'[data-rove-submit="{int(control["ref"])}"]')
     if locator.count() != 1 or not locator.is_enabled():
         raise PermissionError("Final application control is unavailable")
     if normalized(locator.inner_text()) != normalized(control["label"]):
@@ -765,7 +765,7 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
     try:
         # The code-owned preparation guard is armed for this one observed click only.
         browser.page.evaluate(
-            "() => document.documentElement.setAttribute('data-erga-submit-armed', '1')"
+            "() => document.documentElement.setAttribute('data-rove-submit-armed', '1')"
         )
         browser.click(locator)
         # Bounded: the adapter waits for its own signal, then the page is read once.
@@ -801,7 +801,7 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
     finally:
         try:
             browser.page.evaluate(
-                "() => document.documentElement.removeAttribute('data-erga-submit-armed')"
+                "() => document.documentElement.removeAttribute('data-rove-submit-armed')"
             )
         except PlaywrightError:
             pass

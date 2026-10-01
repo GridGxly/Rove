@@ -270,7 +270,7 @@ The security suite should include synthetic cases for:
 
 The tests should check the result, not just the model's wording. A passing test proves that an arbitrary file was never opened, an authoritative profile note was never changed, or a forbidden tool was never called, not merely that Qwen said "I won't do that."
 
-Restricted autopilot should not be enabled while these tests fail.
+Restricted unattended operation should not be enabled while these tests fail.
 
 ## If you modify the project
 

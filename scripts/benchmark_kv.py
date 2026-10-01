@@ -9,8 +9,8 @@ import json
 
 import httpx
 
-from erga_autopilot.benchmark import request
-from erga_autopilot.runtime import MODEL, api_key, state_root, write_private
+from rove.benchmark import request
+from rove.runtime import MODEL, api_key, state_root, write_private
 
 
 def main():

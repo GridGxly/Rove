@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from erga_autopilot import reasoning, workflow
-from erga_autopilot.onboarding import approve, digest, draft, propose
+from rove import reasoning, workflow
+from rove.onboarding import approve, digest, draft, propose
 
 PROFILE = {
     "education": {"schools": [{"graduation_month": "2027-12"}]},
@@ -154,7 +154,7 @@ def test_generate_retries_once_then_reports_the_harness_reason(tmp_path, monkeyp
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
@@ -237,7 +237,7 @@ def test_cached_review_is_re_evaluated_by_current_code_rules(state, monkeypatch)
     monkeypatch.setattr(reasoning, "career_evidence", evidence)
     monkeypatch.setattr(reasoning, "generate", lambda *a, **k: pytest.fail("Qwen must not run"))
     page = {"url": "https://jobs.example.com/2", "text": "posting", "fields": []}
-    from erga_autopilot.onboarding import read_approved
+    from rove.onboarding import read_approved
 
     context_hash = reasoning.fingerprint(
         {
@@ -434,7 +434,7 @@ def test_an_internship_term_is_not_a_graduation_window():
 
 
 def test_class_standing_is_decided_by_code_from_the_graduation_month():
-    from erga_autopilot.reasoning import class_standing, evaluate_requirements
+    from rove.reasoning import class_standing, evaluate_requirements
 
     assert class_standing("Rising seniors in a CS program", "2027-12", "Summer 2027 internship")[
         0
@@ -472,7 +472,7 @@ def test_class_standing_is_decided_by_code_from_the_graduation_month():
 
 
 def test_drafts_are_shortened_to_the_fields_limit_at_a_sentence_boundary():
-    from erga_autopilot.reasoning import length_problems, shorten_to_fit
+    from rove.reasoning import length_problems, shorten_to_fit
 
     questions = [{"key": "k1", "max_chars": 120}, {"key": "k2", "max_chars": None}]
     long = "First sentence here. " * 7 + "Second one follows. " + "Third closes it."
@@ -486,14 +486,14 @@ def test_drafts_are_shortened_to_the_fields_limit_at_a_sentence_boundary():
 
 
 def test_voice_samples_read_the_story_note_only_when_it_exists(tmp_path, monkeypatch):
-    from erga_autopilot import vault
+    from rove import vault
 
     root = tmp_path / "vault"
     root.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(root))
-    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     assert vault.voice_samples() == ""
-    note = root / "Erga Autopilot/Story/Voice.md"
+    note = root / "Rove/Story/Voice.md"
     note.parent.mkdir(parents=True)
     note.write_text("---\ntype: story\n---\nI fixed the import by hand. It took a week.\n")
     assert vault.voice_samples() == "I fixed the import by hand. It took a week."
@@ -507,9 +507,9 @@ def test_voice_samples_read_the_story_note_only_when_it_exists(tmp_path, monkeyp
 
 
 def test_drafting_context_carries_the_owner_voice_note(state, monkeypatch):
-    from erga_autopilot.onboarding import read_approved
+    from rove.onboarding import read_approved
 
-    note = Path(os.environ["OBSIDIAN_VAULT_PATH"]) / "Erga Autopilot/Story/Voice.md"
+    note = Path(os.environ["OBSIDIAN_VAULT_PATH"]) / "Rove/Story/Voice.md"
     note.parent.mkdir(parents=True, exist_ok=True)
     note.write_text("I like small tools. I wrote the first one in a weekend.\n")
 
@@ -559,7 +559,7 @@ def test_drafting_context_carries_the_owner_voice_note(state, monkeypatch):
 
 
 def test_drafting_context_carries_company_research(state, monkeypatch):
-    from erga_autopilot.onboarding import read_approved
+    from rove.onboarding import read_approved
 
     async def evidence(_query):
         return {"results": []}

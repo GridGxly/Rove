@@ -9,7 +9,7 @@ from pathlib import Path
 from .onboarding import atomic_private, read_approved, vault_note
 from .runtime import state_root
 
-INDEX = "erga-candidate"
+INDEX = "rove-candidate"
 COLLECTION = "approved-profile"
 
 
@@ -18,7 +18,7 @@ def projection_path() -> Path:
 
 
 def _qmd(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    executable = Path.home() / ".local/share/erga-autopilot/qmd/node_modules/.bin/qmd"
+    executable = Path.home() / ".local/share/rove/qmd/node_modules/.bin/qmd"
     return subprocess.run(
         [str(executable), "--index", INDEX, *args],
         capture_output=True,
@@ -74,7 +74,7 @@ def _current_index() -> dict:
     approved = read_approved()
     stamp = state_root() / "memory/profile-index.json"
     if not stamp.is_file():
-        raise ValueError("Approved profile memory has not been indexed; run autopilot memory index")
+        raise ValueError("Approved profile memory has not been indexed; run rove memory index")
     record = json.loads(stamp.read_text())
     path = projection_path()
     if (
@@ -82,7 +82,7 @@ def _current_index() -> dict:
         or not path.is_file()
         or (hashlib.sha256(path.read_bytes()).hexdigest() != record["projection_sha256"])
     ):
-        raise ValueError("Candidate memory is stale or changed; run autopilot memory index")
+        raise ValueError("Candidate memory is stale or changed; run rove memory index")
     return record
 
 

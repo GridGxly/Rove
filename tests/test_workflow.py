@@ -3,14 +3,14 @@ import re
 
 import pytest
 
-from erga_autopilot import discord_feed, workflow
-from erga_autopilot.onboarding import approve, digest, draft, propose
-from erga_autopilot.worker import apply_command, parse_command
+from rove import discord_feed, workflow
+from rove.onboarding import approve, digest, draft, propose
+from rove.worker import apply_command, parse_command
 
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
-    monkeypatch.setenv("AUTOPILOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
@@ -117,7 +117,7 @@ def test_feed_queue_deduplicates_changes(state):
 def test_browser_dns_and_label_boundaries(state, monkeypatch):
     import socket
 
-    from erga_autopilot.live_browser import resolve_known, validate_destination
+    from rove.live_browser import resolve_known, validate_destination
 
     monkeypatch.setattr(
         socket,
@@ -134,7 +134,7 @@ def test_browser_dns_and_label_boundaries(state, monkeypatch):
 
 
 def test_qwen_review_cannot_omit_or_invent_question_keys():
-    from erga_autopilot.reasoning import parse_review
+    from rove.reasoning import parse_review
 
     key = "abcdef012345"
     proposal = {
@@ -157,7 +157,7 @@ def test_qwen_review_cannot_omit_or_invent_question_keys():
 
 
 def test_owner_draft_approval_binds_exact_version(state):
-    from erga_autopilot.onboarding import read_approved
+    from rove.onboarding import read_approved
 
     app = workflow.enqueue("https://jobs.example.com/1")["application_id"]
     directory = state / "applications" / app
@@ -200,7 +200,7 @@ def test_owner_draft_approval_binds_exact_version(state):
 
 
 def test_same_ats_different_employer_or_job_is_not_same_scope():
-    from erga_autopilot.live_browser import job_scope
+    from rove.live_browser import job_scope
 
     expected = job_scope("https://job-boards.greenhouse.io/example/jobs/123")
     assert expected == job_scope("https://boards.greenhouse.io/example/jobs/123?source=feed")
@@ -209,7 +209,7 @@ def test_same_ats_different_employer_or_job_is_not_same_scope():
 
 
 def test_empty_command_channel_keeps_first_future_command(state, monkeypatch):
-    from erga_autopilot import worker
+    from rove import worker
 
     monkeypatch.setattr(workflow, "config", lambda: {"control_channel_id": "control"})
     monkeypatch.setattr(worker, "private_env", lambda: {"DISCORD_OWNER_USER_ID": "owner"})
@@ -324,8 +324,8 @@ def test_feed_announces_each_job_once_and_supersedes_stale_duplicates(state, mon
 def test_failed_erga_intake_keeps_the_approved_base_resume_with_a_warning(
     state, monkeypatch, tmp_path
 ):
-    from erga_autopilot import resumes
-    from erga_autopilot.onboarding import read_approved
+    from rove import resumes
+    from rove.onboarding import read_approved
 
     pdf = tmp_path / "approved.pdf"
     pdf.write_bytes(b"%PDF-1.4 approved base")
@@ -351,8 +351,8 @@ def test_failed_erga_intake_keeps_the_approved_base_resume_with_a_warning(
 def test_erga_intake_passes_the_captured_posting_text_only_when_it_exists(
     state, monkeypatch, tmp_path
 ):
-    from erga_autopilot import resumes
-    from erga_autopilot.onboarding import read_approved
+    from rove import resumes
+    from rove.onboarding import read_approved
 
     pdf = tmp_path / "approved.pdf"
     pdf.write_bytes(b"%PDF-1.4 approved base")
@@ -399,7 +399,7 @@ def test_erga_intake_passes_the_captured_posting_text_only_when_it_exists(
 
 
 def test_tracking_parameters_do_not_create_duplicate_applications(state):
-    from erga_autopilot.jobs import public_link
+    from rove.jobs import public_link
 
     plain = public_link("https://jobs.example.com/apply/9?gh_jid=123&utm_source=x&ref=feed")
     assert plain == "https://jobs.example.com/apply/9?gh_jid=123"
@@ -447,7 +447,7 @@ def test_discord_outage_keeps_events_pending_instead_of_failing_the_run(state, m
 
 
 def test_closed_keryx_posting_parks_the_queued_application(state, monkeypatch):
-    from erga_autopilot.jobs import database
+    from rove.jobs import database
 
     url = "https://jobs.example.com/closed"
     application_id = workflow.enqueue(url, source="keryx", title="Example — Intern")[
@@ -480,7 +480,7 @@ def test_closed_keryx_posting_parks_the_queued_application(state, monkeypatch):
 
 
 def test_application_note_is_written_to_the_vault(state, monkeypatch, tmp_path):
-    from erga_autopilot.vault import note_path, sync_application
+    from rove.vault import note_path, sync_application
 
     application_id = workflow.enqueue("https://jobs.example.com/note", title="Example — Intern")[
         "application_id"
@@ -527,7 +527,7 @@ def test_application_note_is_written_to_the_vault(state, monkeypatch, tmp_path):
 
 
 def test_account_command_parses_and_resumes_a_held_application(state):
-    from erga_autopilot.worker import apply_command, parse_command
+    from rove.worker import apply_command, parse_command
 
     application_id = workflow.enqueue("https://jobs.example.com/acct")["application_id"]
     command = parse_command(
@@ -606,7 +606,7 @@ def test_owner_cards_are_durable_and_retried_on_the_next_tick(state, monkeypatch
 
 
 def test_queued_feed_jobs_are_deferred_when_approved_rules_exclude_them(state, monkeypatch):
-    from erga_autopilot import matching, worker
+    from rove import matching, worker
 
     prefs = {
         "excluded_title_keywords": ["machine learning"],
@@ -665,7 +665,7 @@ def test_submit_prefix_binds_the_full_package_hash(state):
 
 
 def test_use_prefix_resolves_the_exact_proposal_and_stores_its_full_hash(state):
-    from erga_autopilot.onboarding import read_approved
+    from rove.onboarding import read_approved
 
     app = workflow.enqueue("https://jobs.example.com/use")["application_id"]
     directory = state / "applications" / app
@@ -708,7 +708,7 @@ def gate(kind: str, requirement: str, status: str) -> dict:
 
 
 def test_fit_hold_names_conflicts_and_unchecked_eligibility_without_qwen_prose():
-    from erga_autopilot.worker import fit_hold
+    from rove.worker import fit_hold
 
     fit = {
         "decision": "needs_review",
@@ -731,7 +731,7 @@ def test_fit_hold_names_conflicts_and_unchecked_eligibility_without_qwen_prose()
 
 
 def test_fit_hold_without_conflicts_asks_about_unchecked_eligibility_only():
-    from erga_autopilot.worker import fit_hold
+    from rove.worker import fit_hold
 
     fit = {
         "decision": "needs_review",
@@ -967,7 +967,7 @@ def test_brief_keeps_whole_leading_sentences_and_never_goes_empty():
 
 
 def test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist(state, monkeypatch):
-    from erga_autopilot import reasoning, worker
+    from rove import reasoning, worker
 
     form = {
         "url": "https://jobs.example.com/form",
@@ -1000,7 +1000,7 @@ def test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist(sta
         "unverified": [],
         "requirements": [gate("sponsorship", "No visa sponsorship", "conflict")],
     }
-    from erga_autopilot import submission
+    from rove import submission
 
     monkeypatch.setattr(reasoning, "review_job", lambda *a: review)
     monkeypatch.setattr(reasoning, "review_application", lambda *a: pytest.fail("nothing to draft"))
@@ -1027,7 +1027,7 @@ def test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist(sta
 
 
 def test_auto_policy_uses_qwen_drafts_and_queues_exactly_one_submission(state, monkeypatch):
-    from erga_autopilot import reasoning, submission, worker
+    from rove import reasoning, submission, worker
 
     form = {
         "url": "https://jobs.example.com/form",
@@ -1127,7 +1127,7 @@ def test_auto_policy_uses_qwen_drafts_and_queues_exactly_one_submission(state, m
 
 
 def test_self_identification_questions_take_the_forms_decline_option():
-    from erga_autopilot.live_browser import decline_self_identification, resolve_choice
+    from rove.live_browser import decline_self_identification, resolve_choice
 
     options = ["Male", "Female", "Non-binary", "I don't wish to answer"]
     assert decline_self_identification("Gender", options) == "I don't wish to answer"
@@ -1141,7 +1141,7 @@ def test_self_identification_questions_take_the_forms_decline_option():
 
 
 def test_a_site_that_says_already_applied_stops_before_anything_is_sent(state, monkeypatch):
-    from erga_autopilot import worker
+    from rove import worker
 
     page = {
         "url": "https://jobs.example.com/form",
@@ -1167,7 +1167,7 @@ def test_a_site_that_says_already_applied_stops_before_anything_is_sent(state, m
     assert payload["commands"] == ["applied", "park it"] and "already" in payload["reason"]
     # The owner's one-word reply reconciles it: applied, with a receipt that says it was
     # manual, no attempt row (the browser never clicked), and the card withdrawn.
-    from erga_autopilot.worker import thread_command
+    from rove.worker import thread_command
 
     command = thread_command("applied", app)
     assert command == {
@@ -1190,7 +1190,7 @@ def test_a_site_that_says_already_applied_stops_before_anything_is_sent(state, m
 
 
 def test_profile_facts_resolve_from_the_meaning_of_a_label_not_its_exact_wording():
-    from erga_autopilot.live_browser import phone_variants, resolve_known
+    from rove.live_browser import phone_variants, resolve_known
 
     profile = {
         "identity": {
@@ -1299,7 +1299,7 @@ def test_go_proceeds_past_a_fit_hold_and_resumes_otherwise(state):
 
 
 def proposals_file(state, app, answers):
-    from erga_autopilot.onboarding import read_approved
+    from rove.onboarding import read_approved
 
     directory = state / "applications" / app
     directory.mkdir(parents=True, exist_ok=True)
@@ -1384,7 +1384,7 @@ def test_numbered_replies_bind_the_exact_question_and_draft(state):
 
 
 def test_question_list_numbers_open_drafted_and_used_questions_in_form_order():
-    from erga_autopilot.worker import question_list
+    from rove.worker import question_list
 
     asked = [
         {"key": "aaaaaaaaaaaa", "label": "Why us?", "required": True},
@@ -1635,7 +1635,7 @@ def test_system_channel_is_looked_up_once_by_name_and_kept_in_config(state, monk
 
 
 def test_a_thread_reply_that_cannot_apply_gets_one_plain_line(state, monkeypatch):
-    from erga_autopilot import worker
+    from rove import worker
 
     app = workflow.enqueue("https://jobs.example.com/plain")["application_id"]
     workflow.set_state(app, "NEEDS_USER", thread_id="t1")
@@ -1694,7 +1694,7 @@ def test_an_answer_given_once_is_remembered_for_the_same_question_on_any_form(st
 
 
 def test_a_reply_on_a_card_in_action_needed_names_its_application(state, monkeypatch):
-    from erga_autopilot import worker
+    from rove import worker
 
     owner_channels(monkeypatch)
     app = workflow.enqueue(
@@ -1726,7 +1726,7 @@ def test_a_reply_on_a_card_in_action_needed_names_its_application(state, monkeyp
 
 
 def test_a_plain_reply_answers_the_only_open_question(state, monkeypatch):
-    from erga_autopilot import worker
+    from rove import worker
 
     owner_channels(monkeypatch)
     app = workflow.enqueue(
