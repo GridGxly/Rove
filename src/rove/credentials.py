@@ -5,8 +5,10 @@ file next to it. Passwords never enter Discord, the vault, model context, or log
 the only reader is the browser daemon when it fills a sign-in form.
 """
 
+import contextlib
 import json
 import os
+import re
 import secrets
 import string
 from datetime import UTC, datetime
@@ -17,6 +19,12 @@ from cryptography.fernet import Fernet
 from .runtime import state_root
 
 ALPHABET = string.ascii_letters + string.digits + "!@#$%^&*-_=+"
+REDACTED = "[redacted]"
+# The browser driver quotes the value it was typing in a failed action's call log.
+TYPED_VALUE = re.compile(
+    r"""\b(fill|type|press_sequentially|pressSequentially|select_option|selectOption)\((["']).*?\2\)""",
+    re.DOTALL,
+)
 
 
 def _paths():
@@ -102,3 +110,18 @@ def summary() -> list[dict]:
         }
         for host, item in _load().items()
     ]
+
+
+def scrub(text, extra=()) -> str:
+    """Text that is safe to leave this process: no stored or in-flight password, and no
+    value the browser driver quoted from a field it was filling.
+
+    Used wherever an error is written to a file, a log, Discord or another process.
+    """
+    text = str(text)
+    known = [str(s) for s in extra if s]
+    with contextlib.suppress(Exception):  # an unreadable store must not block the scrub
+        known += [str(item["password"]) for item in _load().values() if item.get("password")]
+    for secret in sorted(set(known), key=len, reverse=True):
+        text = text.replace(secret, REDACTED)
+    return TYPED_VALUE.sub(lambda match: f'{match.group(1)}("{REDACTED}")', text)

@@ -22,6 +22,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import httpx
 
 from . import vault, workflow
+from .destinations import ats_vendor
 from .live_browser import approved_ats, normalized, validate_destination
 from .onboarding import atomic_private
 from .runtime import state_root, write_private
@@ -185,6 +186,7 @@ def excluded(host: str) -> bool:
     return (
         not host
         or "." not in host
+        or ats_vendor(host)
         or approved_ats(f"https://{host}/")
         or any(host == h or host.endswith("." + h) for h in NOT_EMPLOYER_HOSTS)
     )

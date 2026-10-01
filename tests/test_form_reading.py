@@ -12,7 +12,7 @@ import pytest
 from patchright.sync_api import sync_playwright
 from test_live_submission import ASHBY_FORM, FORM
 
-from rove import form_reading, worker, workflow
+from rove import form_reading, live_browser, worker, workflow
 from rove.live_browser import RecruitingBrowser
 from rove.onboarding import approve, digest, draft, propose, read_approved
 from rove.runtime import state_root
@@ -752,6 +752,7 @@ def test_an_upload_that_changes_the_form_is_waited_out_and_read_again(
     page.goto("https://forms.example.test/apply")
     # A pass that types like a person: a prefilled value must not be typed over.
     monkeypatch.setattr(workflow, "config", lambda: {"enabled": False, "human_pacing": False})
+    monkeypatch.setattr(live_browser, "validate_destination", lambda url: url)  # no DNS here
     seen = reader.observe()
     reader.run["profile_hash"] = approved["profile_hash"]
     assert [f["id"] for f in seen["fields"]] == ["forced", "resume", "first", "last", "email"]

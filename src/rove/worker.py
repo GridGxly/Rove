@@ -21,7 +21,7 @@ from . import (
     workflow,
 )
 from .discord_feed import discord, private_env
-from .live_browser import browser_call
+from .live_browser import browser_call, owner_words
 from .reasoning import GATE_KINDS
 from .resumes import one_erga_pass, prepare_resume, start_preparation
 from .runtime import state_root, write_private
@@ -553,6 +553,19 @@ def process(application_id: str) -> dict:
                     )
                     channel = "shortlist"
                     break
+                # The form's host must be a board or one the owner let a form be filled
+                # on: decided here, before anything is typed or the thread says "sending".
+                from .submission import fill_hold
+
+                site = fill_hold(application_id, page.get("url") or item["url"])
+                if site:
+                    return held(
+                        application_id,
+                        site["status"],
+                        site["reason"],
+                        site["headline"],
+                        commands=site["commands"],
+                    )
                 phase = "resume"
                 timing.lap("resume")
                 # The first fill uploads the resume, so the background intake joins here.
@@ -704,6 +717,18 @@ def process(application_id: str) -> dict:
                 )
                 headline = "Apply control not found"
                 break
+            from .submission import link_hold
+
+            site = link_hold(application_id, page.get("url") or "", links[0].get("url"))
+            if site:
+                # The Apply control leads to another site: one the owner has to let in.
+                return held(
+                    application_id,
+                    site["status"],
+                    site["reason"],
+                    site["headline"],
+                    commands=site["commands"],
+                )
             phase = "follow_application_link"
             timing.lap("follow")
             page = browser_call(
@@ -1393,8 +1418,12 @@ def run_approved_submissions() -> list[dict]:
             if workflow.get(application_id)["status"] == "READY_FOR_REVIEW":
                 workflow.action_needed(
                     application_id,
-                    "Submission was not attempted: " + str(error)[:600] + ". Nothing was sent. "
-                    "Reply `go` to prepare it again.",
+                    # The browser's own plain words (an unsafe redirect, a first send to
+                    # a new employer) are the reason as they stand.
+                    owner_words(str(error))
+                    or "Submission was not attempted: "
+                    + str(error)[:600]
+                    + ". Nothing was sent. Reply `go` to prepare it again.",
                     commands=["go"],
                     headline="Submission not attempted",
                 )
@@ -1653,6 +1682,8 @@ def work(settings: dict, reachable: bool = True) -> dict:
             )
         elif detail.startswith(overlays.HOLD_WORDS):
             reason = overlays.HOLD_WORDS  # a pop-up code would not guess on
+        elif owner_words(detail):
+            reason = owner_words(detail)  # the browser already said it in plain words
         else:
             reason = (
                 f"Preparation stopped during {failure.phase.replace('_', ' ')}: "

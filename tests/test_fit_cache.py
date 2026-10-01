@@ -427,6 +427,8 @@ def prepare_worker(monkeypatch, pending: list, fields: list) -> tuple[list, list
         return {"answers": []}
 
     monkeypatch.setattr(worker, "browser_call", browser)
+    # The scripted form lives on no board: no first-time-on-this-site hold here.
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": False, "first_send_hold": "off"})
     monkeypatch.setattr(reasoning, "review_job", lambda *a: dict(FIT))
     monkeypatch.setattr(reasoning, "review_application", review_application)
     monkeypatch.setattr(

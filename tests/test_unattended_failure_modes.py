@@ -7,7 +7,9 @@ nothing sent twice. These tests drive the worker with a scripted browser and a f
 Discord; the synthetic board in test_live_submission.py covers the click itself.
 """
 
+import fcntl
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -15,7 +17,7 @@ import pytest
 import test_workflow
 from test_workflow import no_ids, owner_channels, seed_feed
 
-from rove import discord_feed, reasoning, submission, worker, workflow
+from rove import discord_feed, live_browser, reasoning, submission, worker, workflow
 from rove.worker import apply_command, thread_command
 
 # The approved synthetic profile and private state root, as test_workflow builds them.
@@ -175,7 +177,9 @@ def test_a_block_that_clears_on_the_retry_continues_to_the_fit_review(state, mon
         reasoning, "review_job", lambda app, observed, posting: reviewed.append(observed) or FIT
     )
     base = workflow.config()
-    monkeypatch.setattr(workflow, "config", lambda: {**base, "auto_submit": True})
+    monkeypatch.setattr(
+        workflow, "config", lambda: {**base, "auto_submit": True, "first_send_hold": "off"}
+    )
     app = feed_job("retry")
     result = worker.process(app)
     assert calls == ["open", "reopen", "prepare"]
@@ -553,3 +557,301 @@ def test_a_reply_that_cannot_apply_gets_one_plain_line_and_changes_nothing(state
     assert notices == [("sent",)]  # the standing card is untouched
     assert len(posts(discord_calls)) == 1
     assert event_kinds(app).count("needs_action") == 1
+
+
+def attempts() -> list[tuple]:
+    with workflow.db() as conn:
+        return [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT application_id,status FROM live_submission_attempts ORDER BY created_at"
+            )
+        ]
+
+
+def test_two_ticks_racing_on_one_application_claim_a_single_attempt(state, monkeypatch):
+    app = workflow.enqueue("https://jobs.example.com/race")["application_id"]
+    package_hash = "d" * 64
+    workflow.set_state(app, "READY_FOR_REVIEW", package_hash=package_hash)
+    apply_command({"kind": "submit", "application_id": app, "package_hash": package_hash}, "m-send")
+    racers = 8
+    start = threading.Barrier(racers)
+    outcomes: list[str] = []
+
+    def claim():
+        start.wait()
+        try:
+            submission.claim_attempt(app, package_hash, "m-send")
+            outcomes.append("claimed")
+        except Exception as error:  # noqa: BLE001 -- every outcome is counted below
+            outcomes.append(f"{type(error).__name__}: {error}")
+
+    threads = [threading.Thread(target=claim) for _ in range(racers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert len(outcomes) == racers and outcomes.count("claimed") == 1, outcomes
+    refused = [o for o in outcomes if o != "claimed"]
+    assert all(o.startswith("PermissionError: ") for o in refused), refused
+    assert attempts() == [(app, "SUBMITTING")]
+    assert workflow.get(app)["status"] == "SUBMITTING"
+    with workflow.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM job_sends").fetchone()[0] == 1
+    # A second worker tick while one runs does nothing at all.
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": True})
+    monkeypatch.setattr(worker, "browser_call", lambda *a, **k: pytest.fail("no browser call"))
+    monkeypatch.setattr(worker, "poll_commands", lambda: pytest.fail("the tick did not yield"))
+    with open(state / "workflow.lock", "a") as running:
+        fcntl.flock(running, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert worker.tick() == {"already_running": True}
+    # And the next tick, alone, waits on the claimed attempt instead of sending again.
+    monkeypatch.setattr(worker, "poll_commands", lambda: None)
+    assert worker.tick() == {"waiting_on": {"id": app, "status": "SUBMITTING"}}
+    assert attempts() == [(app, "SUBMITTING")]
+
+
+def test_the_daily_cap_turns_over_at_midnight_utc(state, monkeypatch):
+    clock = {"now": datetime(2026, 9, 30, 23, 59, 59, 999999, tzinfo=UTC)}
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+
+    monkeypatch.setattr(worker, "datetime", Clock)
+    settings = {
+        "enabled": True,
+        "auto_submit": True,
+        "max_submissions_per_day": 2,
+        "min_minutes_between_submissions": 0,
+    }
+    monkeypatch.setattr(workflow, "config", lambda: settings)
+    assert workflow.now().endswith("+00:00")  # attempts are stamped in UTC
+
+    def attempt(app: str, when: datetime):
+        with workflow.db() as conn:
+            conn.execute(
+                "INSERT INTO live_submission_attempts"
+                "(application_id,package_hash,owner_message_id,status,created_at) "
+                "VALUES(?,?,?,?,?)",
+                (app, "a" * 64, f"auto-submit:{app}", "APPLIED", when.isoformat()),
+            )
+
+    feed = feed_job("midnight")
+    attempt("aaaaaaaaaaa1", datetime(2026, 9, 30, 0, 0, 0, tzinfo=UTC))  # the day's first instant
+    attempt("aaaaaaaaaaa2", datetime(2026, 9, 30, 23, 59, 59, 999998, tzinfo=UTC))
+    assert worker.next_queued(1) is None  # the last instant of the 30th: its cap is spent
+    clock["now"] = datetime(2026, 10, 1, 0, 0, 0, tzinfo=UTC)
+    assert worker.next_queued(1) == feed  # midnight UTC: yesterday's sends no longer count
+    attempt("aaaaaaaaaaa3", datetime(2026, 10, 1, 0, 0, 0, tzinfo=UTC))  # midnight is today
+    clock["now"] = datetime(2026, 10, 1, 0, 0, 1, tzinfo=UTC)
+    assert worker.next_queued(1) == feed  # one of two
+    attempt("aaaaaaaaaaa4", datetime(2026, 10, 1, 0, 0, 1, tzinfo=UTC))
+    assert worker.next_queued(1) is None  # two sent on the 1st
+    clock["now"] = datetime(2026, 10, 1, 23, 59, 59, tzinfo=UTC)
+    assert worker.next_queued(1) is None
+    clock["now"] = datetime(2026, 10, 2, 0, 0, 0, tzinfo=UTC)
+    assert worker.next_queued(1) == feed
+
+
+def daemon(monkeypatch) -> list[str]:
+    """`browser_call` as the daemon answers it for a simple form: `prepare` freezes the
+    package and `submit` claims the attempt for real, relaying a refusal as its text."""
+    calls: list[str] = []
+
+    def browser(action, **kw):
+        calls.append(action)
+        if action == "prepare":
+            with workflow.db() as conn:
+                conn.execute(
+                    "UPDATE application_queue SET package_hash=? WHERE id=?",
+                    (PREPARED["package_hash"], kw["run_id"]),
+                )
+            return json.loads(json.dumps(PREPARED))
+        if action == "submit":
+            try:
+                submission.claim_attempt(kw["run_id"], kw["package_hash"], kw["owner_message_id"])
+            except Exception as error:  # noqa: BLE001 -- the socket carries only the text
+                raise RuntimeError(str(error)[:800]) from None
+            submission.finish_attempt(
+                kw["run_id"], "APPLIED", {"package_hash": kw["package_hash"], "status": "APPLIED"}
+            )
+            return {"status": "APPLIED"}
+        return json.loads(json.dumps(FORM))
+
+    monkeypatch.setattr(worker, "browser_call", browser)
+    monkeypatch.setattr(submission, "erga_confirm", lambda app: {"synced": False})
+    return calls
+
+
+def test_a_feed_job_on_a_new_site_waits_for_go_before_anything_is_typed(state, monkeypatch):
+    """`first_send_hold: unfamiliar` (the default): a form on a host off the board table
+    holds once per host, before any field is filled and before the thread says it is
+    sending; `jobs.example.com` is no board."""
+    discord_calls, _posted = enabled_worker(
+        monkeypatch,
+        auto_submit=True,
+        max_waiting_applications=2,
+        min_minutes_between_submissions=0,
+        min_seconds_between_submissions_per_platform=0,
+    )
+    ready_to_fill(monkeypatch)
+    calls = daemon(monkeypatch)
+    first = feed_job("first")
+    result = worker.tick()
+    assert result["status"] == "NEEDS_USER" and not result["submitted"]
+    assert calls == ["open"]  # the form was seen; nothing was typed into it
+    assert attempts() == [] and workflow.get(first)["status"] == "NEEDS_USER"
+    assert "auto_submit_queued" not in event_kinds(first)
+    assert "fields_prepared" not in event_kinds(first)
+    card = the_card(discord_calls)
+    no_ids(card)
+    assert "First time on this site" in card["description"]
+    assert "`jobs.example.com`" in card["description"]
+    assert "not one of the job boards I know" in card["description"]
+    assert "nothing was entered" in card["description"]
+    for jargon in ("Stopped:", "Error", "Submission was not attempted"):
+        assert jargon not in card["description"], jargon
+    assert reply_block(card) == workflow.command_block(["go", "park it"])
+    # Until the owner answers, nothing moves.
+    assert worker.tick() == {"idle": True} and calls == ["open"]
+    # The owner's go lets this one through: filled, sent once, no further question.
+    apply_command(thread_command("go", first), "m-go")
+    calls.clear()
+    result = worker.tick()
+    assert calls == ["open", "prepare", "submit"]
+    assert result["submissions"][0]["outcome"] == "executed"
+    assert attempts() == [(first, "APPLIED")] and workflow.get(first)["status"] == "APPLIED"
+    # The site is familiar now: the next feed job there goes out with no hold and no card.
+    before = len(posts(discord_calls))
+    calls.clear()
+    second = feed_job("second")
+    result = worker.tick()
+    assert calls == ["open", "prepare", "submit"]
+    assert result["submissions"][0]["outcome"] == "executed"
+    assert attempts() == [(first, "APPLIED"), (second, "APPLIED")]
+    assert len(posts(discord_calls)) == before
+    with workflow.db() as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM owner_notices WHERE delivery='sent'").fetchone()[0]
+            == 0
+        )
+        assert dict(conn.execute("SELECT host,basis FROM familiar_hosts")) == {
+            "jobs.example.com": "the owner's go"
+        }
+
+
+def test_a_feed_job_on_a_board_in_the_table_is_sent_without_a_first_send_hold(state, monkeypatch):
+    discord_calls, _posted = enabled_worker(
+        monkeypatch, auto_submit=True, min_minutes_between_submissions=0
+    )
+    ready_to_fill(monkeypatch)
+    calls = daemon(monkeypatch)
+    board = page(url="https://job-boards.greenhouse.io/example/jobs/123", fields=[FIELD])
+    monkeypatch.setattr(
+        worker,
+        "browser_call",
+        lambda action, **kw: worker_board(action, board, calls, kw),
+    )
+    app = workflow.enqueue(
+        "https://job-boards.greenhouse.io/example/jobs/123", source="keryx", title="Ex — Intern"
+    )["application_id"]
+    result = worker.tick()
+    assert calls == ["open", "prepare", "submit"]
+    assert result["submissions"][0]["outcome"] == "executed"
+    assert attempts() == [(app, "APPLIED")] and posts(discord_calls) == []
+
+
+def worker_board(action, board_page, calls, kw):
+    """The scripted daemon, but the form is on a board in the host table."""
+    calls.append(action)
+    if action == "prepare":
+        with workflow.db() as conn:
+            conn.execute(
+                "UPDATE application_queue SET package_hash=? WHERE id=?",
+                (PREPARED["package_hash"], kw["run_id"]),
+            )
+        return json.loads(json.dumps({**PREPARED, "url": board_page["url"]}))
+    if action == "submit":
+        submission.claim_attempt(kw["run_id"], kw["package_hash"], kw["owner_message_id"])
+        submission.finish_attempt(
+            kw["run_id"], "APPLIED", {"package_hash": kw["package_hash"], "status": "APPLIED"}
+        )
+        return {"status": "APPLIED"}
+    return json.loads(json.dumps(board_page))
+
+
+def test_an_apply_link_to_a_new_site_is_held_before_it_is_followed(state, monkeypatch):
+    posting = page(
+        url="https://jobs.example.com/posting",
+        application_links=[
+            {"ref": "0", "label": "Apply now", "url": "https://apply.contoso-hr.net/jobs/7"}
+        ],
+    )
+    calls = scripted_browser(monkeypatch, open=posting, follow=FORM, prepare=PREPARED)
+    discord_calls = owner_channels(monkeypatch)
+    ready_to_fill(monkeypatch)
+    app = feed_job("linked")
+    assert worker.process(app)["status"] == "NEEDS_USER"
+    assert calls == ["open"]  # the link was not followed
+    card = the_card(discord_calls)
+    no_ids(card)
+    assert "First time on this site" in card["description"]
+    assert "`apply.contoso-hr.net`" in card["description"]
+    assert reply_block(card) == workflow.command_block(["go", "park it"])
+    nothing_sent(app, calls)
+    # After the owner's go the link is followed and the form, on that site, is filled.
+    apply_command(thread_command("go", app), "m-go")
+    calls.clear()
+    assert worker.process(app)["status"] == "READY_FOR_REVIEW"
+    assert calls == ["open", "follow", "prepare"]
+
+
+def test_a_form_on_hosting_anyone_can_rent_is_never_filled(state, monkeypatch):
+    form = page(url="https://northwind-labs.github.io/apply/", fields=[FIELD])
+    calls = scripted_browser(monkeypatch, open=form, prepare=PREPARED)
+    discord_calls = owner_channels(monkeypatch)
+    ready_to_fill(monkeypatch)
+    app = workflow.enqueue(
+        "https://northwind-labs.github.io/apply/", source="owner_link", title="Northwind — Intern"
+    )["application_id"]
+    assert worker.process(app)["status"] == "MANUAL_TAKEOVER"
+    assert calls == ["open"]
+    card = the_card(discord_calls)
+    no_ids(card)
+    assert "This site cannot take the application" in card["description"]
+    assert "hosting that anyone can rent" in card["description"]
+    assert reply_block(card) == workflow.command_block(["applied", "park it"])
+    nothing_sent(app, calls)
+    # The owner's own link and his go change nothing here.
+    apply_command(thread_command("go", app), "m-go")
+    calls.clear()
+    assert worker.process(app)["status"] == "MANUAL_TAKEOVER" and calls == ["open"]
+
+
+def test_an_unsafe_redirect_stops_the_run_with_one_plain_card(state, monkeypatch):
+    # What the daemon answers when a posting redirects to a private or non-HTTPS address.
+    calls = scripted_browser(monkeypatch, open=RuntimeError(live_browser.UNSAFE_REDIRECT))
+    discord_calls, _posted = enabled_worker(monkeypatch)
+    app = feed_job("redirect")
+    result = worker.tick()
+    assert result["status"] == "NEEDS_USER" and calls == ["open"]
+    card = the_card(discord_calls)
+    no_ids(card)
+    assert "Preparation stopped" in card["description"]
+    assert "not a public HTTPS site" in card["description"]
+    assert (
+        "closed the tab" in card["description"]
+        and "Nothing was typed or sent" in (card["description"])
+    )
+    for jargon in ("RuntimeError", "PermissionError", "Stopped:", "open:"):
+        assert jargon not in card["description"], jargon
+    assert reply_block(card) == workflow.command_block(["go", "park it"])
+    # The technical detail stays in the private error file.
+    error = json.loads((state / "applications" / app / "error.json").read_text())
+    assert error["phase"] == "open" and error["detail"] == live_browser.UNSAFE_REDIRECT
+    nothing_sent(app, calls)
+    # The same words reach the owner when it happens on the way to a send.
+    assert worker.owner_words(live_browser.UNSAFE_REDIRECT).startswith("The page sent")
+    assert worker.owner_words("Locator.fill: Timeout 12000ms exceeded") is None

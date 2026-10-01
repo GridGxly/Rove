@@ -724,7 +724,9 @@ def test_auto_drafts_never_answer_legal_demographic_or_consent_questions(state, 
     owner_channels(monkeypatch)
     base = workflow.config()
     monkeypatch.setattr(
-        workflow, "config", lambda: {**base, "auto_submit": True, "auto_use_drafts": True}
+        workflow,
+        "config",
+        lambda: {**base, "auto_submit": True, "auto_use_drafts": True, "first_send_hold": "off"},
     )
     logged = []
     monkeypatch.setattr(workflow, "system_line", lambda app, text: logged.append(text))

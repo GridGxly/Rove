@@ -155,8 +155,13 @@ def test_generic_adapter_is_last_and_confirms_only_from_new_signals(monkeypatch)
     def confirmed(after, responses=()):
         return GenericV1.confirmed(form_url, after, list(responses), before=before)
 
-    # Each signal alone confirms once the form has left.
-    assert confirmed(generic_page(form_url + "/thanks", "All set"))["confirmed"]
+    # A confirmation-looking URL is evidence; it never confirms without the page saying so.
+    address_only = confirmed(generic_page(form_url + "/thanks", "All set"))
+    assert address_only["confirmation_url"] and address_only["form_gone"]
+    assert address_only["url_changed"] and not address_only["confirmed"]
+    assert "did not" in GenericV1.reason(address_only, {})
+    assert confirmed(generic_page(form_url + "/thanks", "Thank you for applying."))["confirmed"]
+    # A sentence or a success region alone confirms once the form has left.
     inline = generic_page(form_url, "Thank you for your interest. Application submitted.")
     assert confirmed(inline)["confirmed"] and not confirmed(inline)["url_changed"]
     region = generic_page(form_url, "Thank you for your interest.", status="Application received")
@@ -186,8 +191,241 @@ def test_generic_adapter_is_last_and_confirms_only_from_new_signals(monkeypatch)
     assert not GreenhouseV1.rejected({"confirmed": False, "post_rejected": True})
     # The same note that was already there is not a new rejection.
     before["ats_markers"]["form_error"] = "* Required fields"
-    stale = generic_page(form_url + "/thanks", "Done", errors="* Required fields")
+    stale = generic_page(
+        form_url + "/thanks", "Done. Application received.", errors="* Required fields"
+    )
     assert confirmed(stale)["no_form_error"] and confirmed(stale)["confirmed"]
+
+
+def test_generic_adapter_ignores_negated_url_tokens():
+    """T7: a failure address, a negated word and a look-alike word confirm nothing."""
+    form_url = "https://careers.example.com/jobs/42/apply"
+    before = generic_page(form_url, "Apply here", fields=[field("a", "Email", "x")])
+
+    def confirmed(after_url, text="", status=""):
+        after = generic_page(after_url, text, status=status)
+        return GenericV1.confirmed(form_url, after, [], before=before)
+
+    base = "https://careers.example.com"
+    for failing in (
+        base + "/login?redirect=/application/incomplete",
+        base + "/error/unsuccessful",
+        form_url + "?msg=not+received",
+        form_url + "?msg=not%20received",
+        base + "/jobs/42/submission-failed",
+    ):
+        checks = confirmed(failing)
+        assert not checks["confirmation_url"] and not checks["confirmed"], failing
+        assert checks["url_changed"] and checks["form_gone"]  # neither is a confirmation
+    # Whole words only: these contain a token's letters without being the word.
+    for look_alike in ("/incomplete", "/unsuccessful", "/thankless", "/receivedx"):
+        assert not submission.url_tokens(base + look_alike), look_alike
+    assert submission.url_tokens(base + "/jobs/42/thank-you") == {"thank"}
+    assert submission.url_tokens(base + "/apply/application_submitted") == {"submitted"}
+    assert submission.url_tokens(base + "/apply?status=success") == {"success"}
+    assert submission.url_tokens(base + "/apply?status=not_success") == set()
+    # A real confirmation address still needs the page's own words, and gets them here.
+    assert not confirmed(base + "/jobs/42/thanks")["confirmed"]
+    assert confirmed(base + "/jobs/42/thanks", "Thank you for applying.")["confirmed"]
+    assert confirmed(base + "/jobs/42/thanks", status="Application received")["confirmed"]
+    # A failure address outranks a thank-you sentence: the evidence conflicts, so unknown.
+    conflict = confirmed(base + "/error/unsuccessful", "Thank you for applying.")
+    assert (
+        conflict["confirmation_text"]
+        and not conflict["no_failure_url"]
+        and not conflict["confirmed"]
+    )
+    assert not GenericV1.rejected(conflict)
+    # Sentences that deny their own success wording, and failure sentences, confirm nothing.
+    for text in (
+        "Your application was not received.",
+        "We could not submit your application. Thank you for your interest.",
+        "Thank you for applying, but there was an error saving your answers.",
+        "Application incomplete",
+        "Thank you for applying. Something went wrong, please try again.",
+        "Thank you for your interest; unfortunately this role is no longer open.",
+        "Application has not been submitted",
+    ):
+        checks = confirmed(base + "/jobs/42/done", text)
+        assert not checks["confirmed"], text
+    assert not confirmed(base + "/jobs/42/done", "Unsuccessfully submitted")["confirmation_text"]
+    said = confirmed(base + "/jobs/42/done", "Something went wrong. Please try again.")
+    assert not said["no_failure_text"] and "did not go through" in GenericV1.reason(said, {})
+    # "Not" about something else does not take a thank-you back.
+    for text in (
+        "Thank you for applying, we will not share your data.",
+        "Application submitted! You will not be able to edit it.",
+        "Thank you for applying. If you do not hear from us in two weeks, the role was filled.",
+    ):
+        assert confirmed(base + "/jobs/42/done", text)["confirmed"], text
+    # A posting that reads as closed, or "you already applied", is not this send's receipt.
+    thanks = generic_page(base + "/jobs/42/done", "Thank you for your interest.")
+    assert GenericV1.confirmed(form_url, thanks, [], before=before)["confirmed"]
+    closed = {**thanks, "closed": True}
+    assert not GenericV1.confirmed(form_url, closed, [], before=before)["confirmed"]
+    already = {**thanks, "ats_markers": {**thanks["ats_markers"], "already_applied": True}}
+    assert not GenericV1.confirmed(form_url, already, [], before=before)["confirmed"]
+
+
+def test_accepted_post_is_never_reported_as_rejected():
+    """T8a: a form error next to an accepted or unanswered POST is unknown, not "not sent"."""
+    form_url = "https://careers.example.com/jobs/42/apply"
+    before = generic_page(form_url, fields=[field("a", "Email", "x")])
+    kept = generic_page(
+        form_url, fields=[field("a", "Email", "x")], errors="An error occurred. Try again."
+    )
+
+    def checks(*statuses, unanswered=0):
+        responses = [
+            {"host": "careers.example.com", "path": "/apply", "status": s} for s in statuses
+        ]
+        result = GenericV1.confirmed(form_url, kept, responses, before=before)
+        result["posts_answered"] = not unanswered
+        return result
+
+    # No request at all, or only a refused one: the form said no and nothing was stored.
+    assert GenericV1.rejected(checks()) and GenericV1.rejected(checks(422))
+    # The site accepted a POST (or redirected after one): the alert may be about anything.
+    for accepted in ((200,), (201,), (302,), (303,), (422, 200)):
+        result = checks(*accepted)
+        assert result["post_accepted"] and not result["confirmed"]
+        assert not GenericV1.rejected(result), accepted
+    # A POST still in the air may have been stored too.
+    assert not GenericV1.rejected(checks(unanswered=1))
+    assert not GenericV1.rejected(checks(422, unanswered=1))
+    # A POST to another host is not this site's answer.
+    foreign = GenericV1.confirmed(
+        form_url,
+        kept,
+        [{"host": "tracker.example.net", "path": "/b", "status": 200}],
+        before=before,
+    )
+    assert not foreign["post_accepted"] and GenericV1.rejected(foreign)
+
+
+def test_url_variants_of_one_job_cannot_both_submit(state):
+    """T8b: one job is one application and one send, however its link is spelled."""
+    first = workflow.enqueue(URL)
+    for variant in (
+        "https://job-boards.greenhouse.io:443/example/jobs/123",
+        URL + "/",
+        URL + "?gh_src=feed&utm_source=x",
+        URL + "?extra=1",
+        "https://boards.greenhouse.io/example/jobs/123",
+        "https://boards.greenhouse.io/embed/job_app?for=example&token=123",
+        "https://JOB-BOARDS.greenhouse.io/Example/jobs/123#app",
+    ):
+        again = workflow.enqueue(variant, source="keryx")
+        assert again["already_exists"], variant
+        assert again["application_id"] == first["application_id"], variant
+        assert again["url"] == URL
+    other_job = workflow.enqueue("https://job-boards.greenhouse.io/example/jobs/124")
+    other_board = workflow.enqueue("https://job-boards.greenhouse.io/other/jobs/123")
+    assert (
+        len({first["application_id"], other_job["application_id"], other_board["application_id"]})
+        == 3
+    )
+    # Where only a path names the job, the query may be what tells two jobs apart.
+    one = workflow.enqueue("https://careers.example.com/job?jobId=1")
+    two = workflow.enqueue("https://careers.example.com/job?jobId=2")
+    assert one["application_id"] != two["application_id"]
+    assert (
+        workflow.enqueue("https://careers.example.com:443/job/?jobId=1&utm_medium=x")[
+            "application_id"
+        ]
+        == one["application_id"]
+    )
+    with workflow.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM application_queue").fetchone()[0] == 5
+        assert (
+            conn.execute("SELECT COUNT(*) FROM application_jobs WHERE canonical=1").fetchone()[0]
+            == 5
+        )
+
+
+def duplicate_row(state, url):
+    """A second, later queue row for a job, as rows written before job keys existed can be."""
+    application_id, package, _current = ready_application(state, url=URL)
+    twin = "b" * 12
+    with workflow.db() as conn:
+        row = dict(
+            conn.execute("SELECT * FROM application_queue WHERE id=?", (application_id,)).fetchone()
+        )
+        row.update(id=twin, url=url, source_url=url, created_at=workflow.now())
+        conn.execute(
+            "INSERT INTO application_queue VALUES(" + ",".join("?" * len(row)) + ")",
+            tuple(row.values()),
+        )
+        # Forget the index, as on the first start after the upgrade.
+        conn.execute("DELETE FROM job_index_meta")
+    return application_id, twin, package
+
+
+def test_existing_duplicate_rows_are_kept_and_only_one_of_them_can_send(state):
+    """The migration tolerates duplicates that already exist; the claim does not."""
+    first, twin, package = duplicate_row(state, "https://boards.greenhouse.io/example/jobs/123")
+    with workflow.db() as conn:  # the next connection rebuilds the index
+        rows = {
+            r["application_id"]: r["canonical"]
+            for r in conn.execute("SELECT application_id,canonical FROM application_jobs")
+        }
+        keys = {r[0] for r in conn.execute("SELECT job_key FROM application_jobs")}
+    assert rows == {first: 1, twin: 0} and len(keys) == 1  # both kept, one job
+    assert workflow.get(twin)["status"] == "READY_FOR_REVIEW"
+    for application_id, message in ((first, "msg-1"), (twin, "msg-2")):
+        worker.apply_command(
+            {
+                "kind": "submit",
+                "application_id": application_id,
+                "package_hash": package["package_hash"],
+            },
+            message,
+        )
+    submission.claim_attempt(first, package["package_hash"], "msg-1")
+    with pytest.raises(PermissionError, match="already has an application") as refused:
+        submission.claim_attempt(twin, package["package_hash"], "msg-2")
+    assert worker.owner_words(str(refused.value)).startswith("This job already has")
+    assert workflow.get(twin)["status"] == "READY_FOR_REVIEW"
+    with workflow.db() as conn:
+        attempts = [
+            tuple(r) for r in conn.execute("SELECT application_id FROM live_submission_attempts")
+        ]
+        sends = [tuple(r) for r in conn.execute("SELECT application_id FROM job_sends")]
+    assert attempts == [(first,)] and sends == [(first,)]
+    # Unknown stays a send; only a verified "nothing was sent" frees the job for the twin.
+    submission.finish_attempt(
+        first, "UNKNOWN_SUBMISSION", {"package_hash": package["package_hash"]}
+    )
+    with pytest.raises(PermissionError, match="already has an application"):
+        submission.claim_attempt(twin, package["package_hash"], "msg-2")
+    submission.reconcile(first, "not-submitted", "msg-3")
+    submission.claim_attempt(twin, package["package_hash"], "msg-2")
+    assert workflow.get(twin)["status"] == "SUBMITTING"
+    submission.finish_attempt(twin, "APPLIED", {"package_hash": package["package_hash"]})
+    # The first row can be prepared again, but it can never send this job a second time.
+    workflow.set_state(first, "READY_FOR_REVIEW", package_hash=package["package_hash"])
+    worker.apply_command(
+        {"kind": "submit", "application_id": first, "package_hash": package["package_hash"]},
+        "msg-4",
+    )
+    with pytest.raises(PermissionError, match="already has an application"):
+        submission.claim_attempt(first, package["package_hash"], "msg-4")
+
+
+def test_a_manual_application_takes_the_jobs_one_send(state):
+    """`applied` on a hand-finished application blocks a duplicate row from sending."""
+    first, twin, package = duplicate_row(state, URL + "?variant=1")
+    workflow.set_state(first, "MANUAL_TAKEOVER")
+    submission.reconcile(first, "applied", "msg-1")
+    assert workflow.get(first)["status"] == "APPLIED"
+    worker.apply_command(
+        {"kind": "submit", "application_id": twin, "package_hash": package["package_hash"]},
+        "msg-2",
+    )
+    with pytest.raises(PermissionError, match="already has an application"):
+        submission.claim_attempt(twin, package["package_hash"], "msg-2")
+    with workflow.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM live_submission_attempts").fetchone()[0] == 0
 
 
 def lever_page(url, success=False, verification=False, fields=(), errors="", challenge=False):

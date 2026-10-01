@@ -82,6 +82,7 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(live_browser, "lookup_job_link", lambda url: {"in_feed": False})
     monkeypatch.setattr(live_browser, "approved_ats", lambda url: True)
     monkeypatch.setattr(live_browser, "job_scope", lambda url: ("synthetic",))
+    monkeypatch.setattr(submission, "ineligible", lambda url: "")  # loopback is a board here
     monkeypatch.setattr(workflow, "public_link", identity)
     monkeypatch.setattr(
         workflow,

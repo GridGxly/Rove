@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import sync_playwright
@@ -37,30 +37,45 @@ from . import (
     workflow,
 )
 from .browser_app import devtools_alive
+# The board table and the job and tenant rules live in destinations.py; the names stay
+# importable from here for the code and tests that already use them.
+from .destinations import approved_ats, job_scope, nested_paths
 from .jobs import lookup_job_link, posting_gone, public_link
 from .onboarding import read_approved
 from .runtime import state_root, write_private
 
-ATS_HOSTS = (
-    "greenhouse.io",
-    "lever.co",
-    "ashbyhq.com",
-    "myworkdayjobs.com",
-    "tesla.com",
-    "oraclecloud.com",
-    "icims.com",
-    "smartrecruiters.com",
-    "eightfold.ai",
-    "workable.com",
-    "jobs.ashbyhq.com",
+# An error the browser already wrote in plain words for the owner starts with this; the
+# worker shows the rest as the card's reason instead of naming an exception.
+PLAIN_STOP = "Stopped: "
+UNSAFE_REDIRECT = (
+    PLAIN_STOP + "The page sent the recruiting browser to an address that is not a public "
+    "HTTPS site, so I closed the tab. Nothing was typed or sent there. Reply `park it` to "
+    "drop this one, or `go` to try the posting again."
 )
+BROWSER_GONE = (
+    PLAIN_STOP + "The recruiting browser was closed, so this application's page is gone. I "
+    "started the browser again; reply `go` and I open the page afresh."
+)
+BROWSER_DOWN = (
+    PLAIN_STOP + "The recruiting browser was closed and I could not start it again. Nothing "
+    "was typed or sent. Open it, or restart the browser service, then reply `go`."
+)
+RESTARTED = "The recruiting browser was closed; I restarted it"
+# Pages the browser shows on its own: a new tab, a navigation that failed.
+BROWSER_PAGES = ("about:blank", "chrome-error://")
+RUN_ID = re.compile(r"[a-f0-9]{12}")
 
 
-def approved_ats(url: str) -> bool:
-    host = (urlsplit(url).hostname or "").lower()
-    if boards.approved(url):  # Paylocity, Workable, JazzHR, BambooHR: exact host patterns
-        return True
-    return any(host == suffix or host.endswith("." + suffix) for suffix in ATS_HOSTS)
+def owner_words(detail: str) -> str | None:
+    """The plain-word reason carried by a browser error, or None for any other error."""
+    text = str(detail)
+    return text[len(PLAIN_STOP) :] if text.startswith(PLAIN_STOP) else None
+
+
+def same_job(approved: str, form: str) -> bool:
+    """The form is the job that was opened: the same job scope, or, on an employer's own
+    site, a page under the posting's own path (its apply step)."""
+    return job_scope(approved) == job_scope(form) or nested_paths(approved, form)
 
 
 def same_value(expected: str, actual: str) -> bool:
@@ -74,31 +89,13 @@ def same_value(expected: str, actual: str) -> bool:
     return len(digits_expected) >= 7 and digits_actual.endswith(digits_expected)
 
 
-def job_scope(url: str) -> tuple:
-    """Tenant AND job binding: an ATS hostname alone is never employer approval."""
-    parsed = urlsplit(url)
-    host = (parsed.hostname or "").lower()
-    parts = parsed.path.strip("/").split("/")
-    board_scope = boards.scope(url)
-    if board_scope:  # a posting, its form and its confirmation share one key per board
-        return board_scope
-    if (
-        host in {"job-boards.greenhouse.io", "boards.greenhouse.io"}
-        and len(parts) >= 3
-        and parts[1] == "jobs"
-        and parts[2].isdigit()
-    ):
-        return ("greenhouse", parts[0], parts[2])
-    if host == "jobs.lever.co" and len(parts) >= 2:
-        return (host, *parts[:2])
-    if host == "jobs.ashbyhq.com" and len(parts) >= 2:
-        return (host, *parts[:2])
-    # Employer sites: the posting and its apply page share the job number, not the path.
-    path = re.sub(
-        r"/(apply|application|apply-?now)$", "", parsed.path.rstrip("/"), flags=re.IGNORECASE
-    )
-    numbers = re.findall(r"[A-Za-z]{0,3}\d{4,}", path)
-    return (host, numbers[-1].upper()) if numbers else (host, path)
+def public_address(value: str) -> bool:
+    """A routable public address: not loopback, private, link-local, or one mapped onto them."""
+    try:
+        address = ipaddress.ip_address(str(value).split("%", 1)[0])
+    except ValueError:
+        return False
+    return (getattr(address, "ipv4_mapped", None) or address).is_global
 
 
 def validate_destination(url: str) -> str:
@@ -107,7 +104,7 @@ def validate_destination(url: str) -> str:
         raise PermissionError("Only public HTTPS job pages are supported")
     host = urlsplit(safe).hostname
     addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
+    if not addresses or any(not public_address(a[4][0]) for a in addresses):
         raise PermissionError("Private/local network destinations are forbidden")
     return safe
 
@@ -182,6 +179,33 @@ def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
 def decline_self_identification(label: str, option_labels: list[str]) -> str | None:
     """Voluntary self-identification is answered with the form's own decline option."""
     return questions.decline_self_identification(label, option_labels)
+
+
+# An account form's own terms box, as opposed to anything it would like permission for.
+TERMS_BOX = re.compile(
+    r"\b(terms|conditions|privacy (policy|notice|statement)|user agreement|terms of (use|service))\b"
+)
+TERMS_ASSENT = re.compile(r"\b(agree|accept|acknowledge|read)\b")
+MARKETING_BOX = re.compile(
+    r"market|newsletter|promot|\boffers?\b|\bupdates?\b|subscri|\balerts?\b|\bsms\b"
+    r"|text messages?|talent (community|network|pool)|future (opportunit|opening|role|position)"
+    r"|contact(ed)? (me|you)|third part|\bpartners?\b|share (my|your)|survey|keep me|notify me"
+    r"|recommend|opt in|\bnews\b"
+)
+
+
+def terms_box(field: dict) -> bool:
+    """The terms checkbox an account form requires; never a marketing or contact consent.
+
+    It must name the terms or the privacy policy and either be required or be worded as
+    the applicant's assent. A box that also asks for marketing is left for the owner.
+    """
+    if field.get("kind") != "checkbox":
+        return False
+    label = normalized(str(field.get("label") or "") + " " + str(field.get("name") or ""))
+    if MARKETING_BOX.search(label) or not TERMS_BOX.search(label):
+        return False
+    return bool(field.get("required") or TERMS_ASSENT.search(label))
 
 
 def resolve_choice(label: str, options: list[dict], profile: dict) -> tuple[str | None, str | None]:
@@ -290,6 +314,22 @@ __READING__
     .replace("__ERROR__", ERROR_SELECTOR)
     .replace("__BOARDS__", boards.MARKERS_JS)
 )
+
+# Text fields a person cannot see: fully transparent (itself or an ancestor), positioned
+# off the page, or squeezed to a pixel. Sites plant them to catch bots, and a hostile page
+# can hide instructions in their labels. Widgets that hide their own input on purpose are
+# not judged: styled radios, checkboxes and file inputs, a dropdown's search input (it
+# turns transparent once a value is chosen) and read-only inputs. Returns the
+# `data-rove-field` references.
+TRAPS_JS = r"""() => {
+ const textlike=e=>e.tagName==='TEXTAREA'||(e.tagName==='INPUT'&&['text','email','tel','url','search','number','password'].includes((e.getAttribute('type')||'text').toLowerCase()));
+ const widget=e=>e.readOnly||e.getAttribute('role')==='combobox'||e.hasAttribute('aria-autocomplete');
+ const transparent=e=>{for(let n=e;n&&n.nodeType===1;n=n.parentElement){if(parseFloat(getComputedStyle(n).opacity)===0)return true;}return false;};
+ const offpage=e=>{const r=e.getBoundingClientRect();if(r.width<=1||r.height<=1)return true;
+  const x=r.left+scrollX,y=r.top+scrollY,w=Math.max(document.documentElement.scrollWidth,innerWidth),h=Math.max(document.documentElement.scrollHeight,innerHeight);
+  return x+r.width<=0||y+r.height<=0||x>=w||y>=h;};
+ return [...document.querySelectorAll('[data-rove-field]')].filter(e=>textlike(e)&&!widget(e)&&(transparent(e)||offpage(e))).map(e=>e.getAttribute('data-rove-field'));
+}"""
 
 # Ordinary form submission is blocked in the recruiting browser unless trusted
 # submission code arms this flag for one observed click. It stops accidental
@@ -607,14 +647,17 @@ class RecruitingBrowser:
         self.browser = None
         self.cdp = None
         self.warmed = set()
+        self.hops = []
+        self.secrets = set()
+        self.lost_tabs = False
         self.launcher = ChromeLauncher()
         # Per application: the child frame its form lives in, and the tab address it was
         # chosen on. No entry means the tab's own document.
         self.frames = {}
         self.frames_waited = None
 
-    def _route(self, route):
-        url = route.request.url
+    def allowed(self, url: str) -> bool:
+        """Public HTTPS only; a host's addresses are looked up again once a minute."""
         try:
             host = urlsplit(url).hostname
             if host not in self.dns or time.monotonic() - self.dns[host] > 60:
@@ -622,14 +665,97 @@ class RecruitingBrowser:
                 self.dns[host] = time.monotonic()
             elif not public_link(url):
                 raise PermissionError("Unsupported URL")
-            route.continue_()
+            return True
         except (ValueError, PermissionError, OSError):
-            route.abort()
+            return False
+
+    def _route(self, route):
+        # A route that was already continued or aborted (the driver reports "Route is
+        # already handled") is left alone; so is one whose page went away mid-request.
+        with contextlib.suppress(PlaywrightError):
+            if self.allowed(route.request.url):
+                route.continue_()
+            else:
+                route.abort()
+
+    def require_public_page(self):
+        """Stop when the tab, or any hop that led to it, is not a public HTTPS page.
+
+        The driver continues redirected requests without asking `_route`, so a posting
+        can answer with a redirect to a loopback or private address. This runs after
+        every navigation and before anything on the page is read: the tab is closed, and
+        the error carries the owner's plain-word reason.
+        """
+        if self.page is None or self.page.is_closed():
+            return
+        hops, self.hops = self.hops, []
+        landed = self.page.url
+        if landed and not landed.startswith(BROWSER_PAGES) and not self.allowed(landed):
+            self.stop_unsafe(landed)
+        for url in hops:
+            if not self.public_hop(url):
+                self.stop_unsafe(url)
+
+    def public_hop(self, url: str) -> bool:
+        """A redirect hop may be plain HTTP on its way to HTTPS; it may never be a private,
+        loopback or link-local address, another port or another scheme."""
+        if self.allowed(url):
+            return True
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme != "http" or parsed.port not in (None, 80) or not parsed.hostname:
+                return False
+            host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        except ValueError:
+            return False
+        return self.allowed(f"https://{host}{parsed.path or '/'}")
+
+    def stop_unsafe(self, url: str):
+        run_id = self.run["id"] if self.run else None
+        with contextlib.suppress(PlaywrightError):
+            self.page.close()
+        # The closed page stays referenced so code already holding it fails cleanly.
+        self.observation = None
+        if run_id:
+            self.pages.pop(run_id, None)
+            self.runs.pop(run_id, None)
+            parsed = urlsplit(url)
+            where = f"{parsed.scheme}://{parsed.hostname or ''}"[:200]
+            with contextlib.suppress(Exception):  # the stop itself must not depend on Discord
+                workflow.record(run_id, "redirect_blocked", {"destination": where})
+                workflow.system_line(run_id, f"redirect blocked · tab closed · {where}")
+        raise PermissionError(UNSAFE_REDIRECT)
+
+    def mark_traps(self, data: dict, frame=None):
+        """Mark optional text fields nobody can see as `hidden_trap`; nothing fills or asks them.
+
+        A field the form requires is never marked, however it is styled: skipping it
+        silently could send an incomplete application, so it stays an ordinary question.
+        """
+        try:
+            refs = set((frame or self.page).evaluate(TRAPS_JS))
+        except PlaywrightError:
+            return
+        for field in data.get("fields", []):
+            if (
+                field.get("tag") in {"input", "textarea"}
+                and field.get("ref") in refs
+                and not field.get("required")
+            ):
+                field["hidden_trap"] = True
+
+    def fill_secret(self, locator, secret: str):
+        """Type a credential; a failure never carries its value into an error or a log."""
+        self.secrets.add(secret)
+        try:
+            locator.fill(secret)
+        except PlaywrightError as error:
+            raise RuntimeError(
+                "The account password could not be typed into the form: " + type(error).__name__
+            ) from None
 
     def connected(self) -> bool:
-        if self.browser is not None:
-            return self.browser.is_connected()
-        return bool(self.context and self.context.browser and self.context.browser.is_connected())
+        return self.alive()
 
     def attach_if_running(self) -> bool:
         """Reconnect to a running recruiting browser of the configured app; never launch one."""
@@ -646,11 +772,74 @@ class RecruitingBrowser:
         self.ensure()
         return True
 
-    def ensure(self):
-        if self.context and self.connected():
-            return
-        if self.playwright:
-            self.playwright.stop()
+    def alive(self) -> bool:
+        """The browser, its context and the daemon's CDP session all still answer.
+
+        A browser the owner quit by hand leaves a connected-looking object behind; the
+        DevTools port and a round trip on the session are what say it is really there.
+        """
+        if self.context is None:
+            return False
+        try:
+            if self.browser is not None:
+                if not self.browser.is_connected():
+                    return False
+                port_check = getattr(self.launcher, "running_port", None)
+                if port_check is not None and port_check() is None:
+                    return False
+                if self.cdp is not None:
+                    self.cdp.send("Browser.getVersion")
+                return True
+            return bool(self.context.browser and self.context.browser.is_connected())
+        except Exception:  # noqa: BLE001 -- any failure to answer means not alive
+            return False
+
+    def reset(self):
+        """Drop a dead or stale session; every tab it held is gone with it."""
+        for closer in (
+            lambda: self.cdp.detach(),
+            lambda: self.browser.close(),
+            lambda: self.context.close(),
+            lambda: self.playwright.stop(),
+        ):
+            with contextlib.suppress(Exception):
+                closer()
+        self.playwright = self.browser = self.context = self.cdp = None
+        self.page = self.run = self.observation = None
+        self.pages.clear()
+        self.runs.clear()
+        self.dns.clear()
+        self.warmed.clear()
+
+    def ensure(self) -> bool:
+        """A live browser to drive. Returns True when a dead one had to be started again."""
+        if self.context and self.alive():
+            return False
+        restarted = self.context is not None
+        self.reset()
+        if restarted:
+            self.lost_tabs = True  # whatever tabs the dead browser held are gone
+        try:
+            self.launch()
+        except Exception as error:
+            raise RuntimeError(BROWSER_DOWN) from error
+        if restarted:
+            with contextlib.suppress(Exception):  # a log line never blocks the recovery
+                workflow.system_line("browser", RESTARTED)
+        return restarted
+
+    def recovering(self, operation):
+        """Run one browser operation; when it fails because the browser died under it,
+        start the browser again once and run it once more."""
+        try:
+            return operation()
+        except PlaywrightError:
+            if self.alive():
+                raise
+            self.ensure()
+            return operation()
+
+    def launch(self):
         self.playwright = sync_playwright().start()
         self.browser = self.cdp = None
         if self.headless:
@@ -735,15 +924,69 @@ class RecruitingBrowser:
         A route handler runs only while the daemon is inside a browser call, so a
         context-wide route would stall every tab the owner browses by hand whenever the
         daemon sits idle. The guard is attached per operation and removed afterwards.
+
+        Redirects are continued by the driver without a route call, so every main-frame
+        navigation response and every redirect target is also noted here;
+        `require_public_page` checks them before the page is read.
+
+        Re-entrant: a page carries one handler however many guarded operations nest on
+        it, counted on the page itself, and the handler leaves on the outermost exit,
+        error or not. Two handlers on one page would each try to continue the same
+        request ("Route is already handled").
         """
-        page.route("**/*", self._route)
+        depth = getattr(page, "_rove_guard", 0)
+        if depth == 0:
+            self.hops = []
+            note = self._hop_noter(page)
+            page.route("**/*", self._route)
+            page.on("response", note)
+            page._rove_note = note
+        page._rove_guard = depth + 1
         self.operating = getattr(self, "operating", 0) + 1  # a leave-page warning is Rove's own
         try:
             yield page
         finally:
             self.operating -= 1
-            with contextlib.suppress(PlaywrightError):
-                page.unroute("**/*")
+            page._rove_guard = max(getattr(page, "_rove_guard", 1) - 1, 0)
+            if page._rove_guard == 0:
+                self.unguard(page)
+
+    def _hop_noter(self, page):
+        def note(response):
+            try:
+                request = response.request
+                if not request.is_navigation_request():
+                    return
+                try:
+                    if request.frame != page.main_frame:
+                        return
+                except PlaywrightError:
+                    pass  # no frame yet: treat it as the page's own navigation
+                if len(self.hops) < 50:
+                    self.hops.append(response.url)
+                    location = response.headers.get("location")
+                    if location and 300 <= response.status < 400:
+                        self.hops.append(urljoin(response.url, location))
+            except PlaywrightError:
+                pass
+
+        return note
+
+    @staticmethod
+    def unguard(page):
+        """Take the guard off a page whatever state it is in."""
+        note = getattr(page, "_rove_note", None)
+        page._rove_guard = 0
+        page._rove_note = None
+        if note is not None:
+            with contextlib.suppress(Exception):
+                page.remove_listener("response", note)
+        with contextlib.suppress(Exception):
+            page.unroute("**/*")
+
+    @staticmethod
+    def guard_depth(page) -> int:
+        return getattr(page, "_rove_guard", 0)
 
     def close_run(self, run_id: str) -> dict:
         page = self.pages.pop(run_id, None)
@@ -816,6 +1059,7 @@ class RecruitingBrowser:
         self.warmed.add(host)
         try:
             self.page.goto(f"https://{host}/", wait_until="domcontentloaded", timeout=30000)
+            self.require_public_page()
             self.settle(5000)
             self.page.mouse.move(random.randint(200, 900), random.randint(200, 600), steps=12)
             pace(1.0, 2.2)
@@ -828,11 +1072,7 @@ class RecruitingBrowser:
         pace(12, 30)
         with self.guarded(self.page):
             self.warm(self.run["target_url"], force=True)
-            try:
-                self.page.goto(self.run["target_url"], wait_until="domcontentloaded", timeout=45000)
-                self.settle()
-            except PlaywrightError as error:
-                self.run["navigation_error"] = type(error).__name__
+            self.navigate(self.run["target_url"])
             result = self.observe()
         workflow.record(
             run_id,
@@ -841,6 +1081,21 @@ class RecruitingBrowser:
         )
         workflow.flush_events(run_id)
         return result
+
+    def navigate(self, target: str):
+        """Load a page and settle it. Where it landed is checked before the page is touched."""
+        try:
+            self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
+        except PlaywrightError as error:
+            self.run["navigation_error"] = type(error).__name__
+            self.require_public_page()
+            return
+        self.require_public_page()
+        try:
+            self.page.locator("body").wait_for()
+            self.settle()
+        except PlaywrightError as error:
+            self.run["navigation_error"] = type(error).__name__
 
     def save(self):
         write_private(state_root() / f"applications/{self.run['id']}/run.json", self.run)
@@ -852,6 +1107,7 @@ class RecruitingBrowser:
         before the form; the banner alone reads as "rendered" text, so the wait also
         declines the banner and waits out a visible indicator.
         """
+        self.require_public_page()  # no banner is clicked on a page a redirect led off-site
         try:
             self.page.wait_for_function(RENDERED_JS, timeout=timeout)
         except PlaywrightError:
@@ -1041,6 +1297,7 @@ class RecruitingBrowser:
     def observe(self) -> dict:
         if self.page is None or self.page.is_closed():
             raise ValueError("No live job page. Open a link first.")
+        self.require_public_page()  # nothing is read from a page a redirect led off-site
         frame, data = self.read_form()
         main = self.page.main_frame
         if (
@@ -1060,6 +1317,7 @@ class RecruitingBrowser:
             data["title"] = self.page.title() or data["title"]
         # A board's honeypot must stay empty: it is never offered as a question.
         data["fields"] = boards.fillable(frame.url, data.get("fields", []))
+        self.mark_traps(data, frame)  # optional text fields nobody can see are never filled
         head = data.get("title", "") + "\n" + data.get("text", "")[:3000]
         marker = BLOCK_MARKERS.search(head)
         closed = CLOSED_MARKERS.search(head)
@@ -1215,12 +1473,7 @@ class RecruitingBrowser:
             # form, no toggled choices, no attached file the site hid its input for.
             self.page, self.run = self.pages[run_id], self.runs[run_id]
             with self.guarded(self.page):
-                try:
-                    self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
-                    self.page.locator("body").wait_for()
-                    self.settle()
-                except PlaywrightError as error:
-                    self.run["navigation_error"] = type(error).__name__
+                self.navigate(target)
                 return self.observe()
         self.run = {
             "id": run_id,
@@ -1258,12 +1511,7 @@ class RecruitingBrowser:
         self.save()
         with self.guarded(self.page):
             self.warm(target)
-            try:
-                self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
-                self.page.locator("body").wait_for()
-                self.settle()
-            except PlaywrightError as error:
-                self.run["navigation_error"] = type(error).__name__
+            self.navigate(target)
             result = self.observe()
         result["feed_lookup"] = lookup_job_link(target)
         if not existing["title"]:
@@ -1289,7 +1537,12 @@ class RecruitingBrowser:
             if urlsplit(item["url"]).hostname != urlsplit(
                 self.form.url
             ).hostname and not approved_ats(item["url"]):
-                raise PermissionError("Unexpected application destination; owner review needed")
+                # Another site: only one the owner has let a form be filled on.
+                from .submission import fill_hold_words
+
+                hold = fill_hold_words(run_id, item["url"])
+                if hold:
+                    raise PermissionError(hold)
         old_pages = list(self.context.pages)
         with self.guarded(self.page):
             self.click(locator)
@@ -1301,12 +1554,15 @@ class RecruitingBrowser:
                 )
             except PlaywrightError:
                 pass
+            self.require_public_page()
         fresh = [p for p in self.context.pages if p not in old_pages]
         if fresh:
+            # The link opened its own tab, which loaded outside the route guard.
             self.page = fresh[-1]
             self.pages[run_id] = self.page
         with self.guarded(self.page):
             self.page.wait_for_load_state("domcontentloaded", timeout=30000)
+            self.require_public_page()
             self.settle()
             result = self.observe()
             if not (
@@ -1327,6 +1583,9 @@ class RecruitingBrowser:
     def check(self, run_id: str):
         page = self.pages.get(run_id)
         if page is None or page.is_closed() or run_id not in self.runs:
+            if getattr(self, "lost_tabs", False):
+                # The browser was closed and started again: its tabs did not come back.
+                raise ValueError(BROWSER_GONE)
             # Never act on another application's tab: a missing tab is reopened, not reused.
             raise ValueError("This application's tab is not open; reopen it before continuing")
         self.page, self.run = page, self.runs[run_id]
@@ -1971,9 +2230,8 @@ class RecruitingBrowser:
             before = self.observe()
             if before.get("auth_page") != "register":
                 raise ValueError("This page is not an account-creation form")
-            if (
-                not approved_ats(before["url"])
-                and job_scope(before["url"])[0] != urlsplit(self.run["target_url"]).hostname
+            if not approved_ats(before["url"]) and (
+                urlsplit(before["url"]).hostname != urlsplit(self.run["target_url"]).hostname
             ):
                 raise PermissionError("Account creation is limited to the verified employer site")
             profile = json.loads(
@@ -1988,20 +2246,19 @@ class RecruitingBrowser:
                 if (
                     field["disabled"]
                     or field.get("readonly")
+                    or field.get("hidden_trap")
                     or field["kind"] in {"file", "hidden", *GROUP_KINDS}
                 ):
                     continue
                 locator = self.form.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 label = normalized(field["label"] + " " + field["name"])
                 if field["kind"] == "password":
-                    locator.fill(password)
+                    self.fill_secret(locator, password)
                     filled.append("password" if "confirm" not in label else "password confirmation")
-                elif field["kind"] == "email" or "email" in label:
+                elif field["kind"] == "email" or (field["kind"] == "text" and "email" in label):
                     locator.fill(email)
                     filled.append(field["label"] or "email")
-                elif field["kind"] == "checkbox" and re.search(
-                    r"terms|privacy|agree|consent", label
-                ):
+                elif terms_box(field):
                     locator.check()
                     filled.append("accepted: " + (field["label"] or "terms")[:80])
                 elif field["kind"] in {"text", "tel"} and not field.get("label_missing"):
@@ -2011,14 +2268,16 @@ class RecruitingBrowser:
                         filled.append(field["label"])
                 pace(0.2, 0.6)
             locator, control = self._auth_control(before, "register")
+            # Stored before the click: whatever the site does next, the password is not lost.
+            credentials.store(host, email, password, run_id)
             self.click(locator)
             try:
                 self.page.wait_for_load_state("domcontentloaded", timeout=30000)
             except PlaywrightError:
                 pass
+            self.require_public_page()
             self.settle()
             after = self.observe()
-            credentials.store(host, email, password, run_id)
             workflow.record(
                 run_id,
                 "account_created",
@@ -2047,12 +2306,16 @@ class RecruitingBrowser:
             if not account:
                 raise PermissionError("No stored account for this site")
             for field in before["fields"]:
-                if field["disabled"] or field["kind"] in {"file", "hidden", *GROUP_KINDS}:
+                if (
+                    field["disabled"]
+                    or field.get("hidden_trap")
+                    or field["kind"] in {"file", "hidden", *GROUP_KINDS}
+                ):
                     continue
                 locator = self.form.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 label = normalized(field["label"] + " " + field["name"])
                 if field["kind"] == "password":
-                    locator.fill(account["password"])
+                    self.fill_secret(locator, account["password"])
                 elif field["kind"] == "email" or re.search(r"email|user ?name", label):
                     locator.fill(account["username"])
             locator, control = self._auth_control(before, "login")
@@ -2061,6 +2324,7 @@ class RecruitingBrowser:
                 self.page.wait_for_load_state("domcontentloaded", timeout=30000)
             except PlaywrightError:
                 pass
+            self.require_public_page()
             self.settle()
             after = self.observe()
             workflow.record(
@@ -2134,7 +2398,7 @@ class RecruitingBrowser:
 
         grouped = {f["name"] for f in before["fields"] if f["kind"] == "radio_group"}
         for field in self.fields_to_fill(before):
-            if field["disabled"] or field["readonly"]:
+            if field["disabled"] or field["readonly"] or field.get("hidden_trap"):
                 continue
             if self.form.url != before["url"]:
                 raise PermissionError("Page changed before fill")
@@ -2443,14 +2707,21 @@ class RecruitingBrowser:
         return filled, pending
 
     def _prepare(self, run_id: str) -> dict:
+        from .submission import fill_hold_words
+
         before = self.observe()
-        if not approved_ats(before["url"]) or job_scope(before["url"]) != job_scope(
-            self.run.get("target_url", workflow.get(run_id)["url"])
+        # The host must be a board or one the owner let a form be filled on, and the page
+        # must be the job that was opened; a shared ATS hostname is neither.
+        hold = fill_hold_words(run_id, before["url"])
+        if hold or not same_job(
+            self.run.get("target_url", workflow.get(run_id)["url"]), before["url"]
         ):
             return {
                 **before,
                 "status": "NEEDS_EMPLOYER_LINK",
-                "reason": "The form must match the verified employer and job destination before entering candidate data. A shared ATS hostname is insufficient.",
+                "reason": owner_words(hold)
+                or "The form must match the verified employer and job destination before "
+                "entering candidate data. A shared ATS hostname is insufficient.",
             }
         directory = state_root() / f"applications/{run_id}"
         approved = json.loads((directory / "profile.json").read_text())
@@ -2642,38 +2913,98 @@ def status_report(browser) -> dict:
 BROWSER_ACTIONS = {"open", "observe", "follow", "prepare", "register", "login", "reopen", "submit"}
 
 
-def handle_request(browser, request: dict) -> dict:
+def checked_run_id(request: dict) -> str | None:
+    """Application ids are twelve hex characters; anything else never reaches a path."""
+    run_id = request.get("run_id")
+    if run_id is None:
+        return None
+    if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
+        raise ValueError("Malformed application id")
+    return run_id
+
+
+def handle_request(browser, request: dict):
     action = request["action"]
     if action == "status":
         browser.attach_if_running()
         return status_report(browser)
     if action == "close":
+        # Closing a tab touches no path: the id only names an entry to drop.
         browser.attach_if_running()
         return browser.close_run(request["run_id"])
     if action not in BROWSER_ACTIONS:
         raise PermissionError("Unsupported browser action")
+    run_id = checked_run_id(request)
+    # The browser starts with the first call that needs it. One the owner quit is noticed
+    # here, started again once, and the operation is run once more if it dies under it;
+    # a tab that did not survive says so plainly.
     browser.ensure()
+    return browser.recovering(lambda: perform(browser, action, run_id, request))
+
+
+def perform(browser, action: str, run_id: str | None, request: dict):
     if action == "open":
         return browser.open(request["url"])
     if action == "observe":
-        if request.get("run_id"):
-            browser.check(request["run_id"])
+        if run_id:
+            browser.check(run_id)
         return browser.observe()
+    if run_id is None:
+        raise ValueError("This browser action needs an application id")
     if action == "follow":
-        return browser.follow(request["run_id"], request["observation_id"], request["ref"])
+        return browser.follow(run_id, request["observation_id"], request["ref"])
     if action == "prepare":
-        return browser.prepare(request["run_id"])
+        return browser.prepare(run_id)
     if action == "register":
-        return browser.register(request["run_id"])
+        return browser.register(run_id)
     if action == "login":
-        return browser.login(request["run_id"])
+        return browser.login(run_id)
     if action == "reopen":
-        return browser.reopen(request["run_id"])
-    # submit: only the worker calls this, with an authenticated owner approval for one
-    # exact package; the model has no submit tool.
-    from .submission import submit
+        return browser.reopen(run_id)
+    if action == "submit":
+        # Only the worker calls this, with an authenticated owner approval
+        # for one exact package; the model has no submit tool.
+        from .submission import submit
 
-    return submit(browser, request["run_id"], request["package_hash"], request["owner_message_id"])
+        return submit(browser, run_id, request["package_hash"], request["owner_message_id"])
+    raise PermissionError("Unsupported browser action")
+
+
+def failure_screenshot(browser, run_id: str | None):
+    """Private evidence of what the tab showed when an action failed, inside the state root."""
+    if not run_id or not RUN_ID.fullmatch(run_id):
+        return
+    root = (state_root() / "applications").resolve()
+    directory = (root / run_id).resolve()
+    if directory.parent != root or not directory.is_dir():
+        return
+    page = browser.pages.get(run_id)  # this application's own tab, never another one's
+    if page is None or page.is_closed():
+        return
+    with contextlib.suppress(Exception):
+        page.screenshot(path=str(directory / "failure.png"))
+        (directory / "failure.png").chmod(0o600)
+
+
+def respond(browser, raw: bytes) -> dict:
+    """One request line in, one response out. Errors are serialized without secrets."""
+    from . import credentials
+
+    request = None
+    try:
+        if len(raw) > 32768:
+            raise ValueError("Request too large")
+        request = json.loads(raw)
+        if not isinstance(request, dict):
+            raise TypeError("Malformed request")
+        return {"result": handle_request(browser, request)}
+    except Exception as error:  # noqa: BLE001 -- serialize failures at the IPC boundary
+        # A failed fill quotes the value it was typing; the text leaves this process for
+        # error.json, the system log and cards, so credentials and typed values come out.
+        text = credentials.scrub(str(error), getattr(browser, "secrets", ()))
+        run_id = request.get("run_id") if isinstance(request, dict) else None
+        failure_screenshot(browser, run_id if isinstance(run_id, str) else None)
+        return {"error": text[:800], "error_type": type(error).__name__}
 
 
 def serve():
@@ -2703,22 +3034,7 @@ def serve():
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
-            request = {}
-            try:
-                raw = self.rfile.readline(32769)
-                if len(raw) > 32768:
-                    raise ValueError("Request too large")
-                request = json.loads(raw)
-                response = {"result": handle_request(browser, request)}
-            except Exception as error:  # noqa: BLE001 -- serialize failures at the IPC boundary
-                response = {"error": str(error)[:800], "error_type": type(error).__name__}
-                run_id = request.get("run_id") if isinstance(request, dict) else None
-                if run_id and browser.page and not browser.page.is_closed():
-                    with contextlib.suppress(Exception):
-                        # Private evidence: what the tab showed when the action failed.
-                        browser.page.screenshot(
-                            path=str(state_root() / f"applications/{run_id}/failure.png")
-                        )
+            response = respond(browser, self.rfile.readline(32769))
             self.wfile.write((json.dumps(response) + "\n").encode())
 
     with socketserver.UnixStreamServer(str(socket_path()), Handler) as server:

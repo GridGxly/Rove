@@ -105,6 +105,8 @@ def show(chromium, tmp_path, monkeypatch):
     """Load a fixture at its board address and return Rove's own observation of it."""
     monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(live_browser.workflow, "config", lambda: {"human_pacing": False})
+    # The board addresses are served by the route below; nothing is looked up in DNS.
+    monkeypatch.setattr(live_browser, "validate_destination", lambda url: url)
     context = chromium.new_context()
     page = context.new_page()
     runtime = RecruitingBrowser(headless=True)

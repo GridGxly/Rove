@@ -1093,7 +1093,9 @@ def test_auto_policy_uses_qwen_drafts_and_queues_exactly_one_submission(state, m
     monkeypatch.setattr(submission, "enabled_adapter", lambda url: object())
     owner_channels(monkeypatch)
     base = workflow.config()
-    monkeypatch.setattr(workflow, "config", lambda: {**base, "auto_submit": True})
+    monkeypatch.setattr(
+        workflow, "config", lambda: {**base, "auto_submit": True, "first_send_hold": "off"}
+    )
     app = workflow.enqueue(
         "https://jobs.example.com/auto", source="keryx", title="Example — Intern"
     )["application_id"]

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 import httpx
 
+from . import job_index
 from .discord_feed import discord
 from .jobs import database, public_link
 from .onboarding import read_approved
@@ -56,6 +57,7 @@ def db():
         data TEXT NOT NULL, created_at TEXT NOT NULL,
         delivery TEXT NOT NULL DEFAULT 'pending', message_id TEXT);
     """)
+    job_index.ensure(conn)  # one application and one send per job, not per URL spelling
     return conn
 
 
@@ -334,6 +336,35 @@ def raise_source(row: dict, source: str, title: str = "") -> dict:
     return get(row["id"])
 
 
+def cleaner_link(row: dict, target: str, safe: str, source: str) -> dict:
+    """The same job queued again under a link without the query string the stored one
+    carries: a source at least as well vouched for replaces the link, since the job is
+    pinned by its key and the query was the one thing an intake hold could be about. Only
+    while nothing has been opened; a wait that existed only because of the query ends."""
+    from urllib.parse import urlsplit
+
+    held_at_intake = (
+        row["status"] == "NEEDS_USER"
+        and (latest_hold(row["id"]) or {}).get("headline") == INTAKE_HEADLINE
+    )
+    if (
+        row["url"] == target
+        or urlsplit(target).query
+        or not urlsplit(row["url"]).query
+        or source_policy(source)["rank"] < source_policy(row["source"])["rank"]
+        or not (row["status"] == "QUEUED" or held_at_intake)
+    ):
+        return row
+    with db() as conn:
+        conn.execute(
+            "UPDATE application_queue SET url=?,source_url=?,updated_at=? WHERE id=?",
+            (target, safe, now(), row["id"]),
+        )
+    if held_at_intake:
+        set_state(row["id"], "QUEUED")
+    return get(row["id"])
+
+
 def enqueue(url: str, *, source: str = "owner_link", title: str = "") -> dict:
     # Callers in src/ always name the source; the default serves tests that play the owner.
     if source not in SOURCES and source not in SOURCE_ALIASES:
@@ -345,26 +376,35 @@ def enqueue(url: str, *, source: str = "owner_link", title: str = "") -> dict:
     profile = read_approved()
     application_id = uuid.uuid4().hex[:12]
     with db() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO application_queue "
-            "(id,url,source_url,source,title,status,profile_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                application_id,
-                target,
-                safe,
-                source,
-                title[:300],
-                "QUEUED",
-                profile["profile_hash"],
-                now(),
-                now(),
-            ),
-        )
+        # One transaction: the job-key lookup and the insert cannot interleave with
+        # another enqueue of the same job under a different spelling of its link.
+        conn.execute("BEGIN IMMEDIATE")
+        existing = job_index.existing_application(conn, target)
+        if existing is None:
+            conn.execute(
+                "INSERT INTO application_queue "
+                "(id,url,source_url,source,title,status,profile_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    application_id,
+                    target,
+                    safe,
+                    source,
+                    title[:300],
+                    "QUEUED",
+                    profile["profile_hash"],
+                    now(),
+                    now(),
+                ),
+            )
+            job_index.register(conn, application_id, target)
         row = dict(
-            conn.execute("SELECT * FROM application_queue WHERE url=?", (target,)).fetchone()
+            conn.execute(
+                "SELECT * FROM application_queue WHERE id=?", (existing or application_id,)
+            ).fetchone()
         )
     already_exists = row["id"] != application_id
     if already_exists:
+        row = cleaner_link(row, target, safe, source)
         row = raise_source(row, source, title)
     waits = row["status"] == "QUEUED" and intake_hold(row) is not None
     return {
@@ -1169,15 +1209,7 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         checks = data.get("checks", {})
         fields = []
         if checks:
-            fields.append(
-                (
-                    "Checks",
-                    "\n".join(
-                        f"{'✅' if v else '❌'} {k}" for k, v in checks.items() if k != "confirmed"
-                    ),
-                    False,
-                )
-            )
+            fields.append(("What the page showed", check_lines(checks), False))
         fields.append(("Reply", command_block(["applied", "not sent"]), False))
         return [
             embed(
@@ -1286,6 +1318,16 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         return ["→ Left blank · optional: " + clip(", ".join(data.get("labels", [])), 300)]
     if kind == "posting_closed":
         return [f"→ {data.get('source', 'The feed')} reports the posting closed"]
+    if kind == "redirect_blocked":
+        where = clip(data.get("destination", "an address off the public web"), 120)
+        return [
+            embed(
+                "Redirect blocked · tab closed",
+                f"The page sent the recruiting browser to {where}, which is not a public "
+                "HTTPS site. The tab was closed and nothing on it was read, typed or sent.",
+                color="problem",
+            )
+        ]
     if kind == "browser_access_blocked":
         return [
             embed(
@@ -1339,6 +1381,40 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         if not looks_like_identifier(k, v)
     ]
     return [embed(kind.replace("_", " ").capitalize(), "", color="info", fields=fields)]
+
+
+# The adapters' confirmation checks, in the owner's words.
+CHECK_WORDS = {
+    "post_accepted": "the site accepted a request",
+    "post_rejected": "the site refused a request",
+    "posts_answered": "every request was answered",
+    "post_status": "the form's own request was answered",
+    "url_changed": "the page address changed",
+    "confirmation_url": "the address looks like a confirmation",
+    "no_failure_url": "the address carries no failure word",
+    "confirmation_text": "the page says the application was received",
+    "confirmation_region": "a status message says it was received",
+    "confirmation_content": "the board's confirmation is shown",
+    "form_gone": "the form is gone",
+    "no_form_error": "no new validation message",
+    "no_failure_text": "no failure message",
+    "captcha_rejected": "the human check refused the send",
+    "rejected_form": "the form was refused",
+}
+
+
+def check_lines(checks: dict) -> str:
+    """One line per check: a tick or a cross and a plain phrase, never a key."""
+    lines = []
+    for key, value in checks.items():
+        if key == "confirmed" or isinstance(value, str) or value is None:
+            continue  # the verdict and any excerpt are already in the card's text
+        words = CHECK_WORDS.get(key, str(key).replace("_", " "))
+        if isinstance(value, bool):
+            lines.append(f"{'✅' if value else '❌'} {words}")
+        else:
+            lines.append(f"· {words}: {clip(value, 40)}")
+    return "\n".join(lines) or "—"
 
 
 def looks_like_identifier(key, value) -> bool:

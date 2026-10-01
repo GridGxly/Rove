@@ -675,6 +675,7 @@ def run_fixture(root: Path) -> str:
         (live_browser, "public_link", local_link),
         (live_browser, "lookup_job_link", lambda url: {"in_feed": False}),
         (live_browser, "approved_ats", lambda url: bool(local_link(url))),
+        (submission, "ineligible", lambda url: "" if local_link(url) else "it is off the board"),
         (workflow, "public_link", local_link),
         (workflow, "config", lambda: dict(settings)),
         (workflow, "discord", refuse),
