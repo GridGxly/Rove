@@ -6,8 +6,14 @@ are read-only here: this module never writes the profile. Every owner message ge
 short reply in words, without ids, keys or hashes. Parsing is keyword and number
 matching in code; no model reads this channel and nothing typed here reaches one.
 
+The list opens with what the approved profile holds, unnumbered, then the remembered
+answers, numbered because only they can be changed here.
+
 Replies and the "Saved: ..." lines for answers learned in application threads go
 through a small outbox, so a Discord outage neither loses a line nor posts it twice.
+
+`backfill_from_applications` is a one-time helper, never called by the tick: it saves
+the answers the owner typed for applications prepared before answers were remembered.
 """
 
 import hashlib
@@ -18,7 +24,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from . import workflow
+from . import form_reading, workflow
 from .discord_feed import discord
 from .live_browser import normalized, resolve_known
 from .onboarding import read_approved
@@ -28,6 +34,8 @@ HELP_LINE = (
     "Ask `what do you know`, name a question (`relocation`), or say `forget 3`, "
     "`change 3 to No`, or `remember: question = answer`."
 )
+EMPTY_ANSWERS = "No answers saved yet. I save each answer you give in an application thread."
+PRIVATE_HINT = "The ones marked saved are private; name one to see it."
 PAGE_ITEMS = 12
 PAGE_CHARS = 1700
 MATCH_LIMIT = 6
@@ -95,6 +103,9 @@ LIST_WORDS = re.compile(
     r"|show(?: me)?(?: all| everything| the list)?"
     r"|what (?:do|did) you (?:know|remember|have)(?: about me| so far)?"
     r"|what have you (?:saved|learned|got)(?: so far)?"
+)
+ABOUT = re.compile(
+    r"what (?:do|did) you (?:know|remember|have)(?: saved)? about (.+)", re.IGNORECASE
 )
 
 
@@ -223,6 +234,30 @@ def sponsorship(profile: dict) -> str | None:
     return f"now: {yes_no(now) or 'not set'}, in the future: {yes_no(future) or 'not set'}"
 
 
+def location(profile: dict) -> str | None:
+    identity = profile["identity"]
+    place = ", ".join(p for p in (identity["city"], identity["state_region"]) if p)
+    return place or identity["country"] or None
+
+
+def link_words(url) -> str:
+    """A link as words Discord will not unfurl: no scheme, no `www.`, no trailing slash."""
+    text = re.sub(r"^https?://(?:www\.)?", "", str(url or "").strip(), flags=re.IGNORECASE)
+    return text.rstrip("/")
+
+
+def link_fact(key: str):
+    return lambda profile: link_words(profile["identity"][key]) or None
+
+
+def work_authorization(profile: dict) -> str | None:
+    return yes_no(profile["eligibility"]["us_work_authorized"])
+
+
+def citizenship(profile: dict) -> str | None:
+    return yes_no(profile["eligibility"]["us_citizen"])
+
+
 # (name the owner reads, what in a message names it, how to read it)
 PROFILE_FACTS = (
     ("Name", r"\bname\b", profile_name),
@@ -232,13 +267,23 @@ PROFILE_FACTS = (
     ("Major", r"\bmajor\b|field of study", school_fact("major")),
     ("Degree", r"\bdegree\b", school_fact("degree")),
     ("Graduation", r"\bgraduat", school_fact("graduation_month")),
+    ("Location", r"\blocation\b|\bcity\b|where (?:do )?i live|where i am based", location),
+    ("LinkedIn", r"linked ?in", link_fact("linkedin")),
+    ("GitHub", r"git ?hub", link_fact("github")),
+    ("Portfolio", r"portfolio|\bwebsite\b", link_fact("portfolio")),
     (
         "Work authorization",
         r"authori[sz]|(?:eligible|allowed|permitted|right) to work",
-        lambda p: yes_no(p["eligibility"]["us_work_authorized"]),
+        work_authorization,
     ),
     ("Visa sponsorship", r"sponsor|\bvisa\b", sponsorship),
-    ("Citizenship", r"citizen", lambda p: yes_no(p["eligibility"]["us_citizen"])),
+    ("Citizenship", r"citizen", citizenship),
+)
+# Shown as "saved" in the list; spelled out only when the owner names one.
+PRIVATE_PROFILE_FACTS = (
+    ("work authorization", work_authorization),
+    ("visa sponsorship", sponsorship),
+    ("citizenship", citizenship),
 )
 
 
@@ -286,6 +331,45 @@ def read_only(fact: dict) -> str:
         f"{fact['name']} comes from your approved profile, so I do not change it here. "
         "Changing it goes through the profile flow."
     )
+
+
+def school_line(school: dict) -> str:
+    study = " in ".join(shown(x, 50) for x in (school.get("degree"), school.get("major")) if x)
+    parts = [shown(school.get("school"), 60), study]
+    month = school.get("graduation_month")
+    if month:
+        when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
+        today = datetime.now(UTC)
+        ahead = (when.year, when.month) >= (today.year, today.month)
+        parts.append(f"{'graduating' if ahead else 'graduated'} {when:%B %Y}")
+    return "School: " + " · ".join(part for part in parts if part)
+
+
+def profile_section() -> tuple[list[str], bool]:
+    """The top of the list: what the approved profile holds, one short line per kind.
+
+    Read-only and unnumbered. Eligibility facts are named and shown as "saved"; the
+    second value says whether any were, so the list can explain how to see them.
+    """
+    profile = approved_profile()
+    if not profile:
+        return ["**From your profile**", "I could not read your approved profile just now."], False
+    identity = profile["identity"]
+    lines = ["**From your profile** (read-only here)"]
+    if profile_name(profile):
+        lines.append(f"Name: {shown(profile_name(profile), 80)}")
+    lines += [school_line(school) for school in profile["education"]["schools"][:2]]
+    if location(profile):
+        lines.append(f"Location: {shown(location(profile), 80)}")
+    links = [link_words(identity[key]) for key in ("linkedin", "github", "portfolio")]
+    if any(links):
+        lines.append("Links: " + " · ".join(shown(link, 50) for link in links if link))
+    private = [name for name, read in PRIVATE_PROFILE_FACTS if read(profile) is not None]
+    if private:
+        lines.append(f"{', '.join(private).capitalize()}: saved")
+    if len(lines) == 1:
+        lines.append("Nothing is approved there yet.")
+    return lines, bool(private)
 
 
 # ---------------------------------------------------------------------------
@@ -429,15 +513,18 @@ def ordered(rows: list[dict]) -> list[dict]:
     return result
 
 
-def page(order: list[str], start: int, rows: list[dict]) -> str:
-    """One message of the list, numbered by place in the whole list, from `start` on."""
+def page(order: list[str], start: int, rows: list[dict], lead=(), private: bool = False) -> str:
+    """One message of the answers, numbered by place in the whole list, from `start` on.
+
+    `lead` is the profile section above the first message; only the answers carry
+    numbers, because only they can be changed here.
+    """
     by_question = {row["question"]: row for row in rows}
-    lines: list[str] = []
+    lines: list[str] = list(lead)
     if start == 0:
-        count = len(order)
-        lines.append(f"I remember {count} answer{'s' if count != 1 else ''}, most used first:")
+        lines.append(f"**Answers you gave** ({len(order)}, most used first)")
     taken: list[tuple[str, dict]] = []
-    size, index = len(lines[0]) + 1 if lines else 0, start
+    size, index = sum(len(x) + 1 for x in lines), start
     while index < len(order) and len(taken) < PAGE_ITEMS:
         row = by_question.get(order[index])
         if row is not None:  # one forgotten since the list was shown keeps its number retired
@@ -451,26 +538,26 @@ def page(order: list[str], start: int, rows: list[dict]) -> str:
     current = None
     for (entry, _), name in zip(taken, names, strict=True):
         if len(set(names)) > 1 and name != current:
-            lines.append(f"**{name}**")
+            lines.append(f"_{name}_")
         lines.append(entry)
         current = name
     left = sum(1 for question in order[index:] if question in by_question)
     save_listing(order, index if left else len(order))
-    if any(row["sensitive"] for _, row in taken):
-        lines.append("The ones marked saved are private; name one to see it.")
+    if private or any(row["sensitive"] for _, row in taken):
+        lines.append(PRIVATE_HINT)
     if left:
         lines.append(f"Say `more` for the other {left}.")
     return "\n".join(lines)
 
 
 def list_all() -> str:
+    """What Rove knows, in one message: the profile's facts, then the answers given."""
+    lead, private = profile_section()
     rows = ordered(stored())
     if not rows:
-        return (
-            "Nothing saved yet. I keep each answer you give in an application thread; "
-            "to add one here, say `remember: question = answer`."
-        )
-    return page([row["question"] for row in rows], 0, rows)
+        save_listing([], 0)
+        return "\n".join([*lead, EMPTY_ANSWERS, *([PRIVATE_HINT] if private else [])])
+    return page([row["question"] for row in rows], 0, rows, lead, private)
 
 
 def more() -> str:
@@ -485,6 +572,8 @@ def more() -> str:
 
 
 def by_number(number: int, rows: list[dict]) -> dict:
+    if not rows:
+        raise Reply("No answers are saved, so there is nothing to change.")
     order, _ = load_listing()
     if not order:
         raise Reply("I have not shown you a list yet. Say `list` first.")
@@ -525,14 +614,15 @@ def pick(text: str, rows: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def ask(text: str) -> str:
+def ask(text: str) -> str | None:
+    """What is saved about the words of a message, or None when nothing is."""
     rows = stored()
     # A private answer is spelled out only when every word of the message names it.
     named = bool(find(text, rows, strict=True))
     matches = find(text, rows)
     facts = profile_facts(text)
     if not matches and not facts:
-        return HELP_LINE
+        return None
     lines: list[str] = []
     if len(matches) == 1:
         lines.append(line(None, matches[0], reveal=named, origin=True))
@@ -549,6 +639,14 @@ def ask(text: str) -> str:
             "(it changes through the profile flow, not here)"
         )
     return "\n".join(lines)
+
+
+def about(topic: str) -> str:
+    """`what do you know about <topic>`: the plain topic query, with its own empty line."""
+    return ask(topic) or (
+        f"I have nothing about “{shown(topic, 60)}” yet, in your profile or in the "
+        "answers you gave."
+    )
 
 
 def forget(target: str) -> str:
@@ -641,6 +739,9 @@ def respond(text: str, message_id: str) -> str:
         return list_all()
     if low in {"more", "next", "show more"}:
         return more()
+    match = ABOUT.fullmatch(raw.rstrip(".!?").strip())
+    if match:
+        return about(match[1])
     match = re.fullmatch(r"remember\b(?: that)?\s*[:,]?\s*(.+?)\s*=\s*(.*)", raw, re.IGNORECASE)
     if match:
         return remember(match[1], match[2], message_id)
@@ -655,7 +756,136 @@ def respond(text: str, message_id: str) -> str:
     match = re.fullmatch(r"(.+?)\s*[:=]\s*(.+)", raw)
     if match and not raw.endswith("?"):
         return change(match[1], match[2], message_id)
-    return ask(raw)
+    return ask(raw) or HELP_LINE
+
+
+# ---------------------------------------------------------------------------
+# One-time backfill: answers the owner typed for applications prepared before answers
+# were remembered. Never part of the tick; someone runs it once, by hand.
+# ---------------------------------------------------------------------------
+
+# Longer than this is writing for one employer, not a fact to reuse on another form.
+BACKFILL_VALUE_CHARS = 200
+# A label that is itself an answer is an option's text, not a question.
+ANSWER_WORDS = frozenset(
+    {"yes", "no", "true", "false", "n a", "na", "none", "other", "select", "on", "off"}
+    | {"agree", "i agree", "disagree", "decline", "ok", "maybe", "not sure"}
+)
+
+
+def past_question(application_id: str, field_key: str) -> dict | None:
+    """The question a past answer was given to: from the application's last form
+    observation, else from the thread's own record of the answer."""
+    path = state_root() / f"applications/{application_id}/observation.json"
+    try:
+        fields = json.loads(path.read_text()).get("fields", [])
+    except (OSError, ValueError, AttributeError):
+        fields = []
+    for field in fields if isinstance(fields, list) else []:
+        if isinstance(field, dict) and field.get("key") == field_key:
+            return {
+                "label": str(field.get("label") or ""),
+                "options": [
+                    str(o.get("label", "")) if isinstance(o, dict) else str(o)
+                    for o in field.get("options") or []
+                ],
+                "kind": field.get("kind"),
+                "label_missing": bool(field.get("label_missing")),
+            }
+    with workflow.db() as conn:
+        events = conn.execute(
+            "SELECT data FROM application_events WHERE application_id=? "
+            "AND kind='owner_answer' ORDER BY id DESC",
+            (application_id,),
+        ).fetchall()
+    for event in events:
+        data = json.loads(event["data"])
+        if data.get("field_key") == field_key and data.get("label"):
+            return {"label": str(data["label"]), "options": [], "kind": None}
+    return None
+
+
+def backfill_problem(question: dict | None, value: str) -> str | None:
+    """Why a past answer is not kept, in a few words; None when it should be."""
+    if not value or value.lower() == "skip":
+        return "blank or skipped"
+    if question is None or form_reading.unreadable(question):
+        return "question could not be read"
+    label = question["label"]
+    name = normalized(label)
+    choices = {normalized(option) for option in question["options"]}
+    if (
+        name in ANSWER_WORDS
+        or name == normalized(value)
+        or name in choices
+        or len(re.findall(r"[a-z]", name)) < 3
+    ):
+        return "label is an answer, not a question"
+    if (
+        question.get("kind") in {"password", "file", "hidden"}
+        or SENSITIVE.search(label)
+        or MANUAL_ONLY.search(label)
+    ):
+        return "private or manual"
+    if len(value) > BACKFILL_VALUE_CHARS:
+        return "long written answer"
+    if profile_answers(label):
+        return "answered by your profile"
+    return None
+
+
+def backfill_from_applications(include_setup_replies: bool = False) -> dict:
+    """Save the answers the owner typed for past applications as remembered answers.
+
+    Only a value the owner typed himself counts: a row whose message is recorded as his
+    `answer` reply. An approved or auto-used Qwen draft, and a blank left on an optional
+    field, are never taken. Rows entered as setup replies have no such record and are
+    left out unless asked for. Private questions, questions that could not be read,
+    long written answers and anything the profile already answers are skipped; an answer
+    already remembered is never overwritten; the latest answer to a question wins.
+
+    Saving goes through `workflow.remember_answer`, so the vault mirror follows. Nothing
+    is posted to `#memory`: the answers show up in the list. Returns the count, the
+    questions saved in plain words, and how many rows were skipped for each reason.
+    """
+    with workflow.db() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT a.application_id,a.field_key,a.value,a.owner_message_id "
+                "FROM application_answers a JOIN owner_commands c "
+                "ON c.message_id=a.owner_message_id AND c.application_id=a.application_id "
+                "WHERE c.kind='answer' ORDER BY c.created_at,c.message_id"
+            )
+        ]
+        if include_setup_replies:
+            setup = conn.execute(
+                "SELECT application_id,field_key,value,owner_message_id "
+                "FROM application_answers WHERE owner_message_id LIKE 'codex-owner-reply:%'"
+            )
+            rows = [*(dict(row) for row in setup), *rows]
+    skipped: Counter = Counter()
+    latest: dict[str, tuple[dict, str, str]] = {}
+    for row in rows:
+        question = past_question(row["application_id"], row["field_key"])
+        value = str(row["value"]).strip()
+        problem = backfill_problem(question, value)
+        if problem:
+            skipped[problem] += 1
+            continue
+        fingerprint = workflow.question_fingerprint(question["label"])
+        if fingerprint in latest:
+            skipped["replaced by a later answer"] += 1
+        latest[fingerprint] = (question, value, row["owner_message_id"])
+    labels = []
+    for fingerprint, (question, value, message_id) in latest.items():
+        if workflow.recall_answer(question["label"]) is not None:
+            skipped["already saved"] += 1
+            continue
+        workflow.remember_answer(question["label"], question["options"], value, message_id)
+        mark_announced(fingerprint, value)  # old answers are not news for the channel
+        labels.append(words(question["label"]))
+    return {"saved": len(labels), "labels": labels, "skipped": dict(skipped)}
 
 
 # ---------------------------------------------------------------------------

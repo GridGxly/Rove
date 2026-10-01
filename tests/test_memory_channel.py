@@ -59,16 +59,24 @@ def state(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
-    propose(
-        "identity",
-        {"legal_first_name": "Alex", "legal_last_name": "Example", "email": "alex@example.com"},
-        digest(draft()),
-    )
-    propose(
-        "education",
-        {"schools": [{"school": "Example University", "graduation_month": "2027-12"}]},
-        digest(draft()),
-    )
+    identity = {
+        "legal_first_name": "Alex",
+        "legal_last_name": "Example",
+        "email": "alex@example.com",
+        "city": "Springfield",
+        "state_region": "IL",
+        "linkedin": "https://www.linkedin.com/in/alex-example",
+        "github": "https://github.com/alex-example",
+        "portfolio": "https://alex.example/",
+    }
+    school = {
+        "school": "Example University",
+        "degree": "B.S.",
+        "major": "Computer Science",
+        "graduation_month": "2027-12",
+    }
+    propose("identity", identity, digest(draft()))
+    propose("education", {"schools": [school]}, digest(draft()))
     propose(
         "eligibility",
         {"us_work_authorized": True, "sponsorship_now": False, "sponsorship_future": False},
@@ -130,6 +138,20 @@ def no_ids(lines):
     assert not re.search(r"[a-f0-9]{12}", text), text
 
 
+def profile_lines() -> list[str]:
+    """The read-only section the list opens with, for the profile the fixture approves."""
+    today = datetime.now(UTC)
+    graduation = "graduating" if (today.year, today.month) <= (2027, 12) else "graduated"
+    return [
+        "**From your profile** (read-only here)",
+        "Name: Alex Example",
+        f"School: Example University · B.S. in Computer Science · {graduation} December 2027",
+        "Location: Springfield, IL",
+        "Links: linkedin.com/in/alex-example · github.com/alex-example · alex.example",
+        "Work authorization, visa sponsorship: saved",
+    ]
+
+
 def noon(month: int, day: int, year: int | None = None) -> str:
     """Local noon on a day of this year (or the given one), as the store writes times."""
     year = year or datetime.now(UTC).astimezone().year
@@ -137,7 +159,13 @@ def noon(month: int, day: int, year: int | None = None) -> str:
 
 
 def test_list_groups_answers_most_used_first_and_pages_with_more(state, chat):
-    assert chat.say("list")[0].startswith("Nothing saved yet.")
+    # Nothing remembered yet: the profile still shows what Rove knows.
+    (empty,) = chat.say("what do you know")
+    assert empty.split("\n") == [
+        *profile_lines(),
+        "No answers saved yet. I save each answer you give in an application thread.",
+        "The ones marked saved are private; name one to see it.",
+    ]
     commute = "Can you commute to our office in Springfield?"
     seed(RELOCATE, ["Yes", "No"], "Yes")
     seed(commute, [], "Yes")
@@ -149,20 +177,24 @@ def test_list_groups_answers_most_used_first_and_pages_with_more(state, chat):
     used(state, RELOCATE, 1)
     (reply,) = chat.say("what do you know")
     lines = reply.split("\n")
-    assert lines[0] == "I remember 15 answers, most used first:"
-    assert lines[1:5] == [
-        "**Other**",
+    assert lines[:6] == profile_lines()
+    assert lines[6] == "**Answers you gave** (15, most used first)"
+    assert lines[7:11] == [
+        "_Other_",
         "1. How did you hear about us? → A friend",
         "2. Synthetic question number 11 about widgets? → answer 11",
         "3. Synthetic question number 10 about widgets? → answer 10",
     ]
     # The used answers are on the first message, together under what they are about.
-    assert lines[-4:] == [
-        "**Location**",
+    assert lines[-5:] == [
+        "_Location_",
         "11. Can you commute to our office in Springfield? → Yes",
         "12. Are you willing to relocate? → Yes",
+        "The ones marked saved are private; name one to see it.",
         "Say `more` for the other 3.",
     ]
+    # Only the answers carry numbers: they are what `forget 3` and `change 3 to No` name.
+    assert not any(re.match(r"\d+\. ", x) for x in lines[:7])
     assert len([x for x in lines if re.match(r"\d+\. ", x)]) == memory_channel.PAGE_ITEMS
     assert len(reply) < 2000
     (rest,) = chat.say("more")
@@ -186,7 +218,10 @@ def test_sensitive_answers_are_hidden_in_lists_and_shown_when_named(state, chat)
     assert "not a protected veteran" not in reply and "→ No" not in reply
     assert f"{memory_channel.words(MONTHS)} → 5 months" in reply
     assert "The ones marked saved are private; name one to see it." in reply
-    assert "**" not in reply  # three answers about three things: a flat list, no headings
+    # Eligibility facts from the profile are named, never spelled out in the list.
+    assert "Work authorization, visa sponsorship: saved" in reply and "→ Yes" not in reply
+    # Three answers about three things: a flat list, no topic headings.
+    assert not any(x.startswith("_") for x in reply.split("\n"))
     assert chat.say("clearance") == [
         "Do you have an active security clearance? → No · you told me on Sep 30"
     ]
@@ -266,7 +301,7 @@ def test_forget_by_word_or_number_removes_the_answer_and_updates_the_vault(state
     assert chat.say("forget 7") == ["There is no 7 in the last list; it goes up to 1."]
     assert chat.say("forget 1")[0].startswith(f"Forgot “{memory_channel.words(MONTHS)}”")
     assert workflow.remembered_answers() == [] and "5 months" not in answers_note()
-    assert chat.say("forget 1") == ["Number 1 is no longer saved. Say `list` for the current list."]
+    assert chat.say("forget 1") == ["No answers are saved, so there is nothing to change."]
     assert chat.say("forget parking") == [
         "I have nothing saved about that. Say `list` to see what I remember."
     ]
@@ -344,14 +379,14 @@ def test_form_text_is_shown_as_plain_words(state, chat):
 def test_small_variations_in_wording_still_work(state, chat):
     seed(RELOCATE, [], "Yes")
     seed(MONTHS, [], "5 months")
-    assert chat.say("<@1234567890> List all.")[0].startswith("I remember 2 answers")
+    assert "**Answers you gave** (2, most used first)" in chat.say("<@1234567890> List all.")[0]
     # A colon followed by a question asks; it never overwrites the answer.
     assert chat.say("relocation: what do you answer?")[0].startswith(
         "Are you willing to relocate? → Yes"
     )
     assert workflow.recall_answer(RELOCATE) == "Yes"
     assert chat.say("Forget #2.")[0].startswith("Forgot")
-    assert chat.say("what do you remember?")[0].startswith("I remember 1 answer, most used")
+    assert "**Answers you gave** (1, most used first)" in chat.say("what do you remember?")[0]
 
 
 def test_only_the_owner_is_heard(state, chat):
@@ -490,7 +525,8 @@ def test_the_worker_polls_memory_without_treating_it_as_a_command_channel(state,
         )
     fake.inbox.append({"id": str(cursor + 1), "author": {"id": "owner"}, "content": "list"})
     worker.poll_commands()
-    assert [payload["content"][:18] for payload in fake.posted] == ["Nothing saved yet."]
+    (reply,) = [payload["content"] for payload in fake.posted]
+    assert reply.startswith("**From your profile**") and memory_channel.EMPTY_ANSWERS in reply
 
 
 def test_memory_channel_is_looked_up_by_name_and_kept_in_config(state, monkeypatch):
@@ -516,3 +552,185 @@ def test_no_memory_channel_means_no_pass_and_no_error(state, monkeypatch):
     memory_channel.poll("owner")
     monkeypatch.setattr(workflow, "config", lambda: {"memory_channel_id": "mem"})
     memory_channel.poll("owner")
+
+
+def test_what_do_you_know_about_a_topic_answers_like_the_topic(state, chat):
+    seed(RELOCATE, ["Yes", "No"], "Yes", noon(9, 30))
+    plain = chat.say("relocation")
+    assert plain == ["Are you willing to relocate? → Yes · you told me on Sep 30"]
+    assert chat.say("what do you know about relocation?") == plain
+    assert chat.say("What do you remember about relocating") == plain
+    (school,) = chat.say("what do you know about my school")
+    assert school.startswith("School → Example University · from your approved profile")
+    assert chat.say("what do you know about parking?") == [
+        "I have nothing about “parking” yet, in your profile or in the answers you gave."
+    ]
+    # About himself: the whole list.
+    assert chat.say("what do you know about me?")[0].startswith("**From your profile**")
+
+
+def test_location_and_links_are_answered_from_the_profile_by_name(state, chat):
+    (place,) = chat.say("location")
+    assert place.startswith("Location → Springfield, IL · from your approved profile")
+    (github,) = chat.say("what's my github")
+    assert github.startswith("GitHub → github.com/alex-example · from your approved profile")
+    # No scheme in a reply: Discord would unfurl the link into a preview card.
+    assert "http" not in github
+    (refused,) = chat.say("forget linkedin")
+    assert refused == (
+        "LinkedIn comes from your approved profile, so I do not change it here. "
+        "Changing it goes through the profile flow."
+    )
+
+
+def test_the_list_says_so_when_the_profile_cannot_be_read(state, chat, monkeypatch):
+    def changed():
+        raise ValueError("Obsidian profile changed after approval; review it before use")
+
+    seed(RELOCATE, [], "Yes")
+    monkeypatch.setattr(memory_channel, "read_approved", changed)
+    (reply,) = chat.say("list")
+    assert reply.split("\n") == [
+        "**From your profile**",
+        "I could not read your approved profile just now.",
+        "**Answers you gave** (1, most used first)",
+        "1. Are you willing to relocate? → Yes",
+    ]
+
+
+def test_a_long_profile_and_many_answers_still_fit_one_message(state, chat):
+    for n in range(30):
+        seed(f"Synthetic question number {n} " + "about a long widget topic " * 3, [], "x" * 150)
+    (reply,) = chat.say("list")
+    assert len(reply) <= 1900 and reply.startswith("**From your profile**")
+    assert re.search(r"Say `more` for the other \d+\.$", reply)
+    seen = len(re.findall(r"^\d+\. ", reply, re.MULTILINE))
+    while "Say `more`" in reply:
+        (reply,) = chat.say("more")
+        assert len(reply) <= 1900
+        seen += len(re.findall(r"^\d+\. ", reply, re.MULTILINE))
+    assert seen == 30
+
+
+def observed(state: Path, application_id: str, fields: list[dict]):
+    """The last form observation of a past application, as the browser wrote it."""
+    directory = state / "applications" / application_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "observation.json").write_text(json.dumps({"fields": fields}))
+
+
+def field(key: str, label: str, options=(), kind: str = "text", **extra) -> dict:
+    choices = [{"label": option} for option in options]
+    return {"key": key, "label": label, "options": choices, "kind": kind, **extra}
+
+
+def answered(application_id, key, value, message_id, kind="answer", when="2026-09-01T12:00:00"):
+    """A stored application answer; `kind` is the owner command it came from, if any."""
+    with workflow.db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO application_answers VALUES(?,?,?,?)",
+            (application_id, key, value, message_id),
+        )
+        if kind:
+            payload = json.dumps({"kind": kind, "field_key": key, "value": value})
+            conn.execute(
+                "INSERT INTO owner_commands VALUES(?,?,?,?,?,?)",
+                (message_id, application_id, kind, payload, "applied", when + "+00:00"),
+            )
+
+
+def test_backfill_saves_only_what_the_owner_typed_for_past_applications(state, chat):
+    essay = "I want to work at Acme because " + "the warehouse robots are great. " * 8
+    veteran = "Are you a protected veteran?"
+    observed(
+        state,
+        "app-one",
+        [
+            field("k-relocate", RELOCATE, ["- Select -", "Yes", "No"], "choice"),
+            field("k-months", MONTHS, ["3 months", "5 months"], "choice"),
+            field("k-hear", "How did you hear about us?"),
+            field("k-veteran", veteran, ["Yes", "No"], "choice"),
+            field("k-yes", "Yes", [], "radio"),
+            field("k-cards", "cards[a1b2c3][field0]"),
+            field("k-lost", "Team", label_missing=True),
+            field("k-why", "Why do you want to work at Acme?", [], "textarea"),
+            field("k-email", "Email"),
+            field("k-draft", "What is your favorite tool?"),
+            field("k-approved", "Describe a project you are proud of"),
+            field("k-optional", "Middle name"),
+            field("k-setup", "Preferred start month"),
+        ],
+    )
+    answered("app-one", "k-relocate", "Yes", "1001")
+    answered("app-one", "k-months", "3 months", "1002")
+    answered("app-one", "k-hear", "Keryx jobs feed", "1003")
+    answered("app-one", "k-veteran", "No", "1004")
+    answered("app-one", "k-yes", "Yes", "1005")
+    answered("app-one", "k-cards", "Sometimes", "1006")
+    answered("app-one", "k-lost", "Platform", "1007")
+    answered("app-one", "k-why", essay, "1008")
+    answered("app-one", "k-email", "other@example.net", "1009")
+    # Not typed by the owner: a draft used by policy, a draft he approved, a blank left on
+    # an optional field, and a setup reply with no owner message behind it.
+    answered("app-one", "k-draft", "A drafted answer", "auto-draft:0123456789ab", kind=None)
+    answered("app-one", "k-approved", "A draft the owner approved", "1010", kind="use")
+    answered("app-one", "k-optional", "skip", "auto-skip:k-optional", kind=None)
+    answered("app-one", "k-setup", "June", "codex-owner-reply:call 7", kind=None)
+    # A later application asked the months question again; its form has moved on, so the
+    # question's words come from the thread's record of the answer.
+    answered("app-two", "k-months-two", "5 months", "2001", when="2026-09-20T12:00:00")
+    workflow.record(
+        "app-two",
+        "owner_answer",
+        {"kind": "answer", "field_key": "k-months-two", "value": "5 months", "label": MONTHS},
+    )
+    # Already remembered, and changed since: never overwritten.
+    seed(RELOCATE, [], "No")
+
+    result = memory_channel.backfill_from_applications()
+    assert result["saved"] == 2
+    assert result["labels"] == [memory_channel.words(MONTHS), "How did you hear about us?"]
+    assert result["skipped"] == {
+        "already saved": 1,
+        "replaced by a later answer": 1,
+        "private or manual": 1,
+        "label is an answer, not a question": 1,
+        "question could not be read": 2,
+        "long written answer": 1,
+        "answered by your profile": 1,
+    }
+    no_ids(result)
+    assert workflow.recall_answer(MONTHS, ["3 months", "5 months"]) == "5 months"
+    assert workflow.recall_answer("How did you hear about us? (required)") == "Keryx jobs feed"
+    assert workflow.recall_answer(RELOCATE) == "No"
+    for label in (
+        veteran,
+        "Yes",
+        "Team",
+        "Email",
+        "Why do you want to work at Acme?",
+        "What is your favorite tool?",
+        "Describe a project you are proud of",
+        "Middle name",
+        "Preferred start month",
+    ):
+        assert workflow.recall_answer(label) is None, label
+    with workflow.db() as conn:
+        sources = {r[0] for r in conn.execute("SELECT owner_message_id FROM answer_memory")}
+    assert sources == {"m-seed", "2001", "1003"}
+    assert "Keryx jobs feed" in answers_note() and "robots" not in answers_note()
+    # Old answers are not announced one by one; they are simply in the list.
+    assert chat.tick() == []
+    assert "How did you hear about us? → Keryx jobs feed" in chat.say("list")[0]
+    # Running it again changes nothing.
+    again = memory_channel.backfill_from_applications()
+    assert again["saved"] == 0 and again["labels"] == []
+    assert again["skipped"]["already saved"] == 3
+    # Setup replies are taken only when asked for.
+    setup = memory_channel.backfill_from_applications(include_setup_replies=True)
+    assert setup["labels"] == ["Preferred start month"]
+    assert workflow.recall_answer("Preferred start month") == "June"
+
+
+def test_backfill_with_no_past_answers_saves_nothing(state):
+    assert memory_channel.backfill_from_applications() == {"saved": 0, "labels": [], "skipped": {}}
