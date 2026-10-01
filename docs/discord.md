@@ -17,7 +17,7 @@ applications            forum, one post per application
 AGENT
 # agent-control         talk to the Hermes agent, paste job links
 # action-needed         everything else that waits on the owner
-# memory                reserved, no handler yet
+# memory                review and correct remembered answers
 
 RECRUITING
 # recruiting            one line per classified recruiting mail
@@ -26,7 +26,7 @@ SYSTEM
 # system-log            identifiers and technical events
 ```
 
-The names are logical. Private configuration maps each one to a channel ID, and no ID belongs in the repository. Two channels can also be found by name: when `system_channel_id` or `recruiting_channel_id` is missing, Rove looks for a channel named `system-log` or `recruiting` once and writes the ID into the private config. Without such a channel those lines stay off.
+The names are logical. Private configuration maps each one to a channel ID, and no ID belongs in the repository. Three channels can also be found by name: when `system_channel_id`, `recruiting_channel_id` or `memory_channel_id` is missing, Rove looks for a channel named `system-log`, `recruiting` or `memory` once and writes the ID into the private config. Without such a channel that feature stays off.
 
 The feed posts internships only, so a new-grad source channel would stay empty.
 
@@ -34,13 +34,13 @@ The feed posts internships only, so a new-grad source channel would stay empty.
 
 Rove acts only on messages whose author is the configured numeric owner ID and is not a bot. Display names and usernames are never checked.
 
-The worker reads new messages every tick in `agent-control`, `action-needed`, `shortlist`, `recruiting`, `system-log` and the thread of every application that is not in the applied or submitting state. The first read of a channel only records a position, so old messages are never replayed. Each message is applied once.
+The worker reads new messages every tick in `agent-control`, `action-needed`, `shortlist`, `recruiting`, `system-log` and the thread of every application that is not in the applied or submitting state. It reads `memory` separately, as described under [Memory channel](#memory-channel). The first read of a channel only records a position, so old messages are never replayed. Each message is applied once.
 
 ## The application thread
 
 The forum post is created before preparation starts. Its first message is a live status card that Rove edits in place: the headline, one line of context, the posting link and up to four replies. The forum list therefore previews the current state of every application.
 
-The messages below it are the chronological record. Routine steps are one line each: the page opened, the Apply control clicked, the resume ready, a form step taken, optional fields left blank, the owner's replies, state changes with their trigger, and the send. Cards are used where there is something to read:
+The messages below it are the chronological record. Routine steps are one line each: the page opened, the Apply control clicked, the resume ready, a form step taken, the company lookup before drafting, optional fields left blank, the owner's replies, state changes with their trigger, and the send. Cards are used where there is something to read:
 
 - the job-fit result, with conflicts and eligibility that could not be checked
 - the filled form, one field per entry with its value and where it came from
@@ -132,6 +132,33 @@ A hash may be shortened to its first 8 or more hex characters. It is rejected wh
 ## Agent control
 
 The Hermes gateway listens in `agent-control` and runs Qwen with the narrow tool list in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection). A job link pasted there is queued through `start_job_application`. Nothing the agent can call fills a form, approves a fact or submits.
+
+## Memory channel
+
+`memory` is where the owner reviews and corrects the answers Rove remembers. The store is the `answer_memory` table in SQLite, and the channel is a way to read and change it. No model reads the channel: messages are matched by keywords and numbers in code. Only the configured owner is heard, and every message gets one plain reply.
+
+```text
+what do you know · list                         numbered list, most used first, 12 per message
+more                                            the rest of the list
+relocation · what do you answer for relocation? the answers whose question carries those words
+forget relocation · forget 3                    remove one answer
+change 3 to No · relocation: No                 change one answer
+remember: question = answer                     add an answer
+```
+
+Numbers refer to the last list shown. "Most used" is counted from the packages of prepared applications. A new value for a question that has options must be one of them.
+
+An answer added with `remember:` has no form behind it, so it is used only on forms that word the question the same way.
+
+Answers about work authorization, sponsorship, citizenship, clearance, criminal history, demographics, age and similar topics appear in a list as "saved". Rove spells one out only when the message names that question.
+
+Approved profile facts can be read here and not changed. Asking about the name, email, phone, school, major, degree, graduation, work authorization, sponsorship or citizenship shows the approved value and says that it changes through the profile flow. A `remember:` line for a question the profile already answers is refused the same way.
+
+Rove does not keep an answer to an identity or credential question, such as a social security number, passport, bank account, verification code or password.
+
+When Rove learns or changes an answer in an application thread, it posts one line here: "Saved: when a form asks ..., I answer ...". For a private answer the line leaves the value out.
+
+The channel has no effect on applications. A reply such as `go` typed here is read as a question about memory. Replies are written to an outbox first, so a Discord outage delays a reply without losing it.
 
 ## Feed channel
 

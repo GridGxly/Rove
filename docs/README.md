@@ -6,7 +6,7 @@ Rove is a personal, local-first recruiting system. It is not a hosted service.
 
 - [How it works](how-it-works.md): the components, the path of one application, and who decides what
 - [Application workflow](application-workflow.md): intake, job fit, resume, answers, stops, sending, unattended sending, recruiting mail, limits, and work in progress
-- [Discord](discord.md): channels, cards, the replies Rove accepts, the system log and forum tags
+- [Discord](discord.md): channels, cards, the replies Rove accepts, the memory channel, the system log and forum tags
 - [Browser automation](browser-automation.md): the recruiting Chrome, observation, field matching, pickers, multi-page forms and debugging evidence
 - [Memory and storage](memory-and-storage.md): the vault, QMD, SQLite, private files, Erga and credentials
 - [Product requirements](prd.md): what "done" means, with the status of each requirement

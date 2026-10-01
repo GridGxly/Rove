@@ -60,9 +60,9 @@ When company research finds text, a copy goes to `Research/<employer site>.md` w
 
 ### Remembered answers
 
-The exact store of remembered answers is the `answer_memory` table in SQLite. `Answers.md` is a readable table of the question, the answer and the date, rewritten whenever an answer is remembered. Rove does not read it back, so editing the note does not change what Rove fills. Correcting a remembered answer from Discord depends on the `#memory` channel, which is in progress.
+The exact store of remembered answers is the `answer_memory` table in SQLite. `Answers.md` is a readable table of the question, the answer and the date, rewritten whenever an answer is remembered, changed or removed. Rove does not read it back, so editing the note does not change what Rove fills. To change or remove an answer, use the `memory` channel described in [Discord](discord.md#memory-channel).
 
-The copy is written only when `OBSIDIAN_VAULT_PATH` is set in the environment of the process that records the answer. With the vault configured only through `config/recruiting.json`, the answer is still remembered in SQLite and the note is skipped.
+The copy is written only when `OBSIDIAN_VAULT_PATH` is set in the environment of the process that records the change. With the vault configured only through `config/recruiting.json`, the answer is still stored in SQLite and the note is skipped.
 
 ### What the vault never holds
 
@@ -88,12 +88,13 @@ Rove uses one database, `recruiting.sqlite3` in the state root, readable only by
 | Application queue and timeline | `application_queue`, `application_events`, `job_link_aliases` |
 | Owner replies and cards | `owner_commands`, `workflow_checkpoints`, `owner_notices` |
 | Answers | `application_answers` for one application, `answer_memory` across applications |
+| Memory channel | `memory_outbox` for replies and "Saved" lines, `memory_listing` for the last numbered list shown, `memory_announced` for a hash of the last announced value of each answer |
 | Submission | `live_submission_attempts` |
 | Recruiting mail | `mail_checkpoints`, `mail_messages` |
 
 It answers questions such as whether a job was already queued, whether a Discord message was already applied, whether a submission was already attempted, which thread belongs to an application, and whether a mail was already handled.
 
-Readable long-term knowledge does not go here. Remembered answers are the one place SQLite holds facts the owner gave, because filling a form needs an exact lookup by question.
+Readable long-term knowledge does not go here. Remembered answers are the one place SQLite holds facts the owner gave, because filling a form needs an exact lookup by question. The text of a memory-channel reply is blanked in `memory_outbox` once Discord has it.
 
 ## Private files
 

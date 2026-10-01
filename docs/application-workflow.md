@@ -90,7 +90,7 @@ An optional field with no fact and no draft is left blank and listed in one line
 
 An answer the owner types in Discord, such as `3: 5 months`, is stored in the `answer_memory` table under a fingerprint of the question's wording (without "(Optional)", "(Required)" and asterisks) and, when the question has options, its options. Any later form that asks the same question is filled from it, with the source shown as "your earlier answer". When the new form offers options, the remembered value is used only if it is one of them. `skip` is never remembered, and an approved Qwen draft is not remembered either.
 
-A readable copy is kept in `Answers.md` in the vault. See [Memory and storage](memory-and-storage.md#remembered-answers).
+The owner can list, change, remove and add remembered answers in the `memory` channel, described in [Discord](discord.md#memory-channel). A readable copy is kept in `Answers.md` in the vault. See [Memory and storage](memory-and-storage.md#remembered-answers).
 
 ### Drafts from Qwen
 
@@ -128,6 +128,8 @@ The reads are plain HTTPS with a desktop browser agent string, a ten-second time
 The pages are reduced to the sentences that say what the company does, how big or old it is, what it sells and what it values, about 1,800 characters in total. Any line that reads as an instruction to a model is dropped first, which also drops a few true sentences. Qwen is told to use the text only to say true things about the company, never to claim the applicant did anything with the company, and never as instructions.
 
 The result is cached in the application's folder and copied to a note in the vault marked untrusted. A site that does not answer is tried once more on a later preparation. Research never stops a run.
+
+The thread gets one line with the outcome, for example "Looked up the company before drafting · read 3 pages on acme.example (home, about us, careers)" or "Could not reach the company site · drafting from the posting only". The line names the site and the pages. It never carries links or page text, and a preparation that reuses the cached research adds no second line.
 
 ## When Rove stops for the owner
 
@@ -314,7 +316,7 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 ## Limits
 
 - Forms are filled only on the hosts in the code's applicant-tracking list, and only for the same job as the queued link. `generic_v1` therefore reaches only those hosts.
-- `lever_v1`'s handling of a CAPTCHA-rejected send follows Lever's reported wording and has not been observed in a live run. Lever's inline field messages use a class the shared error read does not cover, so a Lever form kept open by a field error without the verification sentence is unclear, not "not submitted".
+- `lever_v1`'s handling of a CAPTCHA-rejected send follows Lever's reported wording and has not been observed in a live run. Lever's inline field messages use a class the shared error read does not cover, so a Lever form kept open by a field error without the verification sentence is recorded as unclear.
 - Multi-page support advances only on Next, Continue, "Save and continue" and "Next step" controls, after a complete page, for at most four pages.
 - Account creation covers email, password, a terms checkbox and text fields the profile resolves. Anything else on a registration page is a stop.
 - Code does not yet stop a Qwen draft on a legal or sensitive question from becoming the answer under `auto_use_drafts`. The prompt tells Qwen to leave unknown personal facts to the owner, and a code gate is in progress.
@@ -328,7 +330,6 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 These are being built now and are not described above. Each will be documented here when it lands.
 
 - Question handling and a gate for sensitive answers
-- The `#memory` channel
 - Timing measurements and `rove bench`
 - Adapters for Paylocity, Workable, JazzHR and BambooHR
 - Scored intake with a daily digest

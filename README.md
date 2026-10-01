@@ -127,7 +127,7 @@ Rove runs my own search on one Mac. The pieces above are implemented and covered
 - Forms are filled only on a fixed list of applicant-tracking hosts, and only when the form belongs to the same job as the queued link.
 - Three submission adapters exist: public Greenhouse boards, public Lever postings, and a generic adapter that confirms from the page alone. Where no enabled adapter matches, Rove fills the form and I press Submit.
 - Rove does not solve CAPTCHAs, automate MFA, or use proxies.
-- The `Accepted` and `Withdrawn` states are not set by code, and the `#memory` channel has no handler yet.
+- The `Accepted` and `Withdrawn` states are not set by code, and there are no reminders.
 
 [Application workflow](docs/application-workflow.md#limits) has the full list and the work in progress. The definition of done is in the [product requirements](docs/prd.md).
 

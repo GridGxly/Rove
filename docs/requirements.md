@@ -101,6 +101,7 @@ Configuration is a handful of private JSON files and one env file under `config/
 | `shortlist_channel_id` | none | `shortlist`. |
 | `system_channel_id` | looked up | `system-log`. Found by name once and saved when missing. |
 | `recruiting_channel_id` | looked up | `recruiting`. Found by name once and saved when missing. |
+| `memory_channel_id` | looked up | `memory`. Found by name once and saved when missing. |
 | `tags` | `{}` | Forum tag IDs by name: `Preparing`, `Applied`, `OA`, `Interview`, `Offer`, `Rejected`, `Needs Action`. |
 | `hermes_python` | none | Path to the Python inside the Hermes install. Qwen calls run with it. |
 | `submission_enabled` | `false` | Allows the Submit click at all. |
@@ -200,7 +201,7 @@ Every install uses its own bot. The repository ships code only, and the maintain
    | Attach Files | the resume PDF and screenshots |
    | Manage Threads | change the tags on its forum posts |
 
-   The bot edits and deletes only its own messages, so it does not need Manage Messages. It never creates a channel, so it does not need Manage Channels. It looks up `system-log` and `recruiting` by name through the server's channel list, which needs no extra permission. Tag updates are best effort: without Manage Threads the only effect is a tag that may not change.
+   The bot edits and deletes only its own messages, so it does not need Manage Messages. It never creates a channel, so it does not need Manage Channels. It looks up `system-log`, `recruiting` and `memory` by name through the server's channel list, which needs no extra permission. Tag updates are best effort: without Manage Threads the only effect is a tag that may not change.
 6. Create the channels and the forum from the layout in [Discord](discord.md#channels), and add the forum tags listed there. Make them visible only to you and the bot.
 7. Turn on Developer Mode in your Discord client and copy the IDs of the server, each channel, each forum tag and your own user. Put the server, channel and tag IDs in `config/workflow.json`, the jobs channel in `config/feed.json`, and your user ID in the env file as `DISCORD_OWNER_USER_ID`.
 
