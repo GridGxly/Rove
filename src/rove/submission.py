@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
 
-from . import workflow
+from . import boards, workflow
 from .live_browser import ERROR_SELECTOR, MESSAGES_JS, STATUS_SELECTOR
 from .onboarding import digest, read_approved
 from .runtime import state_root, write_private
@@ -431,7 +431,9 @@ def enabled_adapter(url: str):
         raise PermissionError("Final submission is disabled in the local workflow configuration")
     # The first listed adapter that matches wins, so the catch-all belongs at the end.
     for name in settings.get("submit_adapters", []):
-        adapter = ADAPTERS.get(name)
+        # Board adapters (paylocity_v1, workable_v1, jazzhr_v1, bamboohr_v1) are used only
+        # when listed here; none is on by default.
+        adapter = ADAPTERS.get(name) or boards.ADAPTERS.get(name)
         if adapter and adapter.matches(url):
             return adapter
     raise PermissionError("No enabled submission adapter supports this application page")

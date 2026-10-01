@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import sync_playwright
 
-from . import form_reading, workflow
+from . import boards, form_reading, workflow
 from .jobs import lookup_job_link, public_link
 from .onboarding import read_approved
 from .runtime import state_root, write_private
@@ -47,6 +47,8 @@ ATS_HOSTS = (
 
 def approved_ats(url: str) -> bool:
     host = (urlsplit(url).hostname or "").lower()
+    if boards.approved(url):  # Paylocity, Workable, JazzHR, BambooHR: exact host patterns
+        return True
     return any(host == suffix or host.endswith("." + suffix) for suffix in ATS_HOSTS)
 
 
@@ -66,6 +68,9 @@ def job_scope(url: str) -> tuple:
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower()
     parts = parsed.path.strip("/").split("/")
+    board_scope = boards.scope(url)
+    if board_scope:  # a posting, its form and its confirmation share one key per board
+        return board_scope
     if (
         host in {"job-boards.greenhouse.io", "boards.greenhouse.io"}
         and len(parts) >= 3
@@ -401,11 +406,13 @@ __READING__
  greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content'),
  lever_submit_success:!!document.querySelector('h3[data-qa="msg-submit-success"]'),
  lever_verification_error:/there was an error verifying your application/i.test(document.body.innerText),
+ __BOARDS__
   status_region:messages('__STATUS__'),form_error:messages('__ERROR__')}};
 }""".replace("__MESSAGES__", MESSAGES_JS)
     .replace("__READING__", form_reading.READING_JS)
     .replace("__STATUS__", STATUS_SELECTOR)
     .replace("__ERROR__", ERROR_SELECTOR)
+    .replace("__BOARDS__", boards.MARKERS_JS)
 )
 
 # Ordinary form submission is blocked in the recruiting browser unless trusted
