@@ -632,10 +632,12 @@ def decide(
                     status = "sibling"
                 else:
                     if best is not None:
-                        # The better-placed opening is queued; its waiting twin steps aside.
+                        # The better listing of the role is queued; the one waiting for an
+                        # answer steps aside, and leaves the live digest if it is on it.
+                        retire_lines(conn, family)
                         conn.execute(
                             "UPDATE intake_decisions SET status='sibling',updated_at=? "
-                            "WHERE family=? AND status='digest'",
+                            "WHERE family=? AND status IN ('digest','offered')",
                             (stamp, family),
                         )
                     payload["also"] = []
@@ -672,6 +674,33 @@ def decide(
         ],
         "counts": dict(counts),
     }
+
+
+def retire_lines(conn, family: str):
+    """Close the open digest lines of a role that has just been queued from another listing."""
+    offered = {
+        row["identity"]
+        for row in conn.execute(
+            "SELECT identity FROM intake_decisions WHERE family=? AND status='offered'", (family,)
+        )
+    }
+    if not offered:
+        return
+    live = conn.execute(
+        "SELECT day,data FROM intake_digests WHERE delivery IN ('pending','sent')"
+    ).fetchall()
+    for row in live:
+        data = json.loads(row["data"])
+        moved = [
+            line for line in data["lines"] if line["identity"] in offered and not line.get("answer")
+        ]
+        for line in moved:
+            line["answer"] = "moved"
+        if moved:
+            conn.execute(
+                "UPDATE intake_digests SET data=?,shown=0 WHERE day=?",
+                (json.dumps(data), row["day"]),
+            )
 
 
 def unseen_best(conn, profile: dict, known_ids=(), limit: int = 25) -> list[dict]:
@@ -924,7 +953,9 @@ def line_text(line: dict, linked: bool = True) -> str:
     company = workflow.clip(line.get("company") or "Company", 40)
     role = workflow.clip(line.get("title") or "Role", 70)
     if line.get("answer"):
-        outcome = "queued" if line["answer"] == "yes" else "skipped"
+        outcome = {"yes": "queued", "moved": "queued from another listing"}.get(
+            line["answer"], "skipped"
+        )
         return f"~~{line['number']}. {company} · {role}~~ {outcome}"
     if linked and line.get("url"):
         role = f"[{role.replace('[', '(').replace(']', ')')}]({line['url']})"
@@ -1074,6 +1105,11 @@ def run_digest(settings: dict, now: datetime | None = None) -> dict:
                         workflow.now(),
                     ),
                 )
+    with db() as conn:
+        live = conn.execute("SELECT * FROM intake_digests WHERE delivery='sent'").fetchall()
+    for row in live:
+        if all(line.get("answer") for line in json.loads(row["data"])["lines"]):
+            withdraw_digest(row, channel)  # nothing left on it to answer
     flush_digests()
     return {"digest_day": today}
 

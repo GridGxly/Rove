@@ -612,6 +612,30 @@ def test_yes_to_a_link_that_is_already_an_application_adds_nothing(state, monkey
     )
 
 
+def test_a_better_listing_of_an_offered_role_is_queued_and_its_digest_line_closes(
+    state, monkeypatch, tmp_path
+):
+    channels(monkeypatch)
+    sent = feed(state, monkeypatch)
+    path = tmp_path / "keryx.json"
+    board = job("board", "Backend Developer Intern", url="https://jobright.ai/jobs/info/synthetic")
+    jobs.ingest(snapshot(path, board, BORDERLINE[1]), "a" * 40)
+    assert discord_feed.tick()["digest"] == 2 and queue() == []
+    # The feed later finds the employer's own link for the same role.
+    direct = {**board, "url": "https://jobs.example.com/backend", "link_status": "ats-verified"}
+    assert jobs.ingest(snapshot(path, direct, BORDERLINE[1]), "b" * 40)["changed"] == 1
+    result = discord_feed.tick()
+    assert (result["queued"], result["sent"]) == (1, 1)
+    assert queue() == [("Example Labs — Backend Developer Intern", "keryx", "QUEUED")]
+    edited = [p for m, path_, p in sent if m == "PATCH" and path_ == "/channels/short/messages/m1"]
+    lines = edited[-1]["embeds"][0]["description"].split("\n")
+    assert lines[0] == "~~1. Example Labs · Backend Developer Intern~~ queued from another listing"
+    # Saying yes to the closed line queues nothing twice; the other line still answers.
+    assert intake.digest_reply(owner("1 yes, 2 no"), "owner", "short") is True
+    assert len(queue()) == 1 and decisions()["job_it"] == "declined"
+    assert ("DELETE", "/channels/short/messages/m1", None) in sent
+
+
 def test_an_expired_digest_is_withdrawn_and_its_open_lines_return_with_new_numbers(
     state, monkeypatch, tmp_path
 ):
