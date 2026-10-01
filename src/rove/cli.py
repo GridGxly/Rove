@@ -38,6 +38,11 @@ def main():
     model.add_argument("action", choices=["start", "stop", "restart", "status", "logs"])
     bench = sub.add_parser("benchmark")
     bench.add_argument("prompts", nargs="+", type=Path)
+    stages = sub.add_parser("bench", help="per-stage application timings")
+    stages.add_argument("action", choices=["report", "fixture"])
+    stages.add_argument(
+        "--last", type=int, metavar="N", help="report only the N most recent applications"
+    )
     sub.add_parser("mcp")
     smoke_parser = sub.add_parser("smoke")
     smoke_parser.add_argument("--hold-seconds", type=int, default=0)
@@ -164,6 +169,16 @@ def main():
         from .benchmark import run_suite
 
         print(run_suite(args.prompts))
+    elif args.command == "bench":
+        from . import benchmark
+
+        if args.action == "fixture":
+            # Offline: a loopback board, a synthetic profile, a throwaway state root.
+            print(benchmark.fixture())
+        else:
+            if args.last is not None and args.last < 1:
+                parser.error("--last needs a positive number of applications")
+            print(benchmark.stage_report(args.last))
     elif args.command == "mcp":
         from .server import run
 
