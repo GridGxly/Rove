@@ -347,6 +347,11 @@ def ensure_recruiting_channel() -> str | None:
     return ensure_named_channel("recruiting_channel_id", "recruiting")
 
 
+def ensure_memory_channel() -> str | None:
+    """Look up the memory channel by name once and keep its id in the private config."""
+    return ensure_named_channel("memory_channel_id", "memory")
+
+
 def ensure_named_channel(key: str, name: str) -> str | None:
     settings = config()
     if settings.get(key):
@@ -861,6 +866,8 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         return ["→ Preparing the resume from your approved evidence"]
     if kind == "browser_retry":
         return ["→ Retried once through the site's front door"]
+    if kind == "company_research":
+        return [research_line(data)]
     if kind == "qwen_failure":
         return [
             embed(
@@ -972,6 +979,91 @@ def looks_like_identifier(key, value) -> bool:
     if name in {"key", "field_key", "sha256"} or name.endswith(("_id", "_hash", "_key")):
         return True
     return bool(re.fullmatch(r"[a-f0-9]{12,64}", str(value)))
+
+
+# ---------------------------------------------------------------------------
+# Company research the owner can see: one quiet thread line per outcome, saying which
+# pages were read. The page text and the links stay in the private research record.
+# ---------------------------------------------------------------------------
+RESEARCH_PAGES = 5
+
+
+def research_page_name(url: str) -> str:
+    """A page as a word or two from its path: `/about-us` is "about us", `/` is "home"."""
+    from urllib.parse import urlsplit
+
+    try:
+        path = urlsplit(str(url)).path
+    except ValueError:
+        return "page"
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+        return "home"
+    name = re.sub(r"\.[a-z0-9]{2,5}$", "", segments[-1].lower())
+    return clip(" ".join(re.findall(r"[a-z0-9]+", name)), 30) or "page"
+
+
+def research_outcome(found: dict) -> dict:
+    """What a research record amounts to, without its text or its links."""
+    site = clip("".join(re.findall(r"[a-z0-9.-]+", str(found.get("site") or "").lower())), 80)
+    urls = [u for u in found.get("urls") or [] if isinstance(u, str)][:RESEARCH_PAGES]
+    pages = list(dict.fromkeys(research_page_name(url) for url in urls))
+    if found.get("text"):
+        outcome = "read"
+    elif str(found.get("note") or "").startswith("fetch failed"):
+        outcome = "unreachable"
+    elif not site:
+        outcome = "no_site"
+    else:
+        outcome = "nothing_useful"
+    return {"outcome": outcome, "site": site, "pages": pages if outcome == "read" else []}
+
+
+def research_line(data: dict) -> str:
+    site = clip(data.get("site") or "", 80)
+    pages = [clip(page, 30) for page in data.get("pages") or []][:RESEARCH_PAGES]
+    outcome = data.get("outcome")
+    if outcome == "read" and pages:
+        count = len(pages)
+        where = f" on {site}" if site else ""
+        return (
+            f"→ Looked up the company before drafting · read {count} "
+            f"page{'s' if count != 1 else ''}{where} ({', '.join(pages)})"
+        )
+    if outcome == "no_site":
+        return "→ No company site to look up from this posting · drafting from the posting only"
+    if outcome == "nothing_useful":
+        return (
+            f"→ Looked at {site or 'the company site'} and found nothing to use · "
+            "drafting from the posting only"
+        )
+    return "→ Could not reach the company site · drafting from the posting only"
+
+
+def record_research(application_id: str):
+    """Leave the thread line for the research done before drafting, once per outcome.
+
+    Reads the private record `research.company_context` wrote for the application. A
+    preparation that reuses the cached research, or fails the same way again, adds
+    nothing. The technical detail is already in the system log.
+    """
+    path = state_root() / f"applications/{application_id}/research.json"
+    try:
+        found = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(found, dict):
+        return
+    data = research_outcome(found)
+    with db() as conn:
+        last = conn.execute(
+            "SELECT data FROM application_events WHERE application_id=? "
+            "AND kind='company_research' ORDER BY id DESC LIMIT 1",
+            (application_id,),
+        ).fetchone()
+    if last and json.loads(last["data"]) == data:
+        return
+    record(application_id, "company_research", data)
 
 
 def draft_number(application_id: str, key: str, proposal_hash: str = "") -> int | None:

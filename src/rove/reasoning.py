@@ -689,6 +689,7 @@ def review_application(application_id: str, page: dict) -> dict:
         # prompt must not copy or cite, never a source of facts.
         context["owner_voice"] = voice
     research = company_context(application_id, posting_text_for(directory, page), item["url"])
+    workflow.record_research(application_id)  # one quiet thread line: pages read, no text
     if research:
         # Public text from the employer's own site, bounded and stripped of anything that
         # reads as an instruction. It steers a "why this company" draft; it is never a
