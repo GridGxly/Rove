@@ -109,7 +109,7 @@ Every install needs its own bot in a private server. The maintainer's bot is not
 
 The token and all server, channel and user IDs stay in local configuration and are never committed. Rove acts only on messages from the configured owner.
 
-Then configure the Hermes gateway for the same bot, owner and `agent-control` channel, as in [Local runtime](local-runtime.md#hermes-integration-and-compatibility-patch).
+Then configure the Hermes gateway for the same bot, owner and `agent-control` channel, as in [Local runtime](local-runtime.md#discord-gateway).
 
 ## 11. Write the configuration
 

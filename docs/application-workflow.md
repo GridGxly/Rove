@@ -146,7 +146,7 @@ Every stop is one card in the thread and one in an owner channel, with the repli
 | CAPTCHA needs you | A CAPTCHA challenge is visible. | `go` after solving it |
 | Blocked by the employer's site | The site showed a block page twice. | `applied`, `park it` |
 | The site says you already applied | The page says an application already exists. | `applied`, `park it` |
-| Resume needs review | No validated tailored PDF and no approved base PDF. | `go`, `park it` |
+| Resume needs review | Erga's PDF failed Rove's validation, or there is no approved base PDF to fall back on. | `go`, `park it` |
 | Apply control not found | No Apply control on the page. | `go` after reaching the form |
 | Navigation stopped | Six page steps passed without reaching a form. | `go`, `park it` |
 | Final step not reached | The last step with its Submit control was never reached, or the site rejected a value on a step. | `go` |
@@ -166,7 +166,7 @@ Rove never solves a CAPTCHA, never completes MFA, and never types a password it 
 
 ### Accounts
 
-When a board needs an account, the card offers `create account`. After that reply the browser daemon fills the application email and a generated password, ticks the terms checkbox, fills text fields it can resolve from the profile such as the name, clicks the create control, and stores the credential encrypted on the Mac. Later sign-in pages on that host are completed with the stored account. Email verification, CAPTCHA, MFA and identity checks stay with the owner in the recruiting browser.
+When a board needs an account, the card offers `create account`. After that reply the browser daemon fills the email from the profile and a generated password, ticks the terms checkbox, fills text fields it can resolve from the profile such as the name, clicks the create control, and stores the credential encrypted on the Mac. Later sign-in pages on that host are completed with the stored account. Email verification, CAPTCHA, MFA and identity checks stay with the owner in the recruiting browser.
 
 ## Sending
 
@@ -247,7 +247,7 @@ Mail tracking is optional. `rove mail tick` runs every 15 minutes and does nothi
 
 ### What is read
 
-Each tick refreshes a Zoho access token, finds the Inbox folder, lists messages newer than the checkpoint, and reads each new message's body as plain text. The first tick looks back `lookback_days` (default 3). A tick reads at most 500 message headers. The integration only reads. It never sends, moves or deletes mail.
+Each tick refreshes a Zoho access token, finds the Inbox folder and lists messages newer than the checkpoint. While at least one sent application exists, it reads each new message's body as plain text. The first tick looks back `lookback_days` (default 3). A tick reads at most 500 message headers. The integration only reads. It never sends, moves or deletes mail.
 
 A message is handled once, and the checkpoint advances past each handled message.
 

@@ -4,11 +4,11 @@ Rove is being developed on a 14-inch MacBook Pro with an M5 Pro, 48GB of unified
 
 If your hardware is different, it is worth checking the whole stack before downloading a large model or changing a bunch of settings. A capable model or coding agent can read this repo, compare it with your machine, and suggest a reasonable starting point.
 
-The full reference stack includes the local Qwen model, Hermes, Erga, Playwright/browser automation, Discord, Obsidian, QMD local retrieval, SQLite transactional state, and optional Zoho integration. A machine that can technically load the model may still be cramped once the rest is running.
+The full stack is the local Qwen model, Hermes, Erga, a dedicated Chrome for applications, Discord, Obsidian, QMD retrieval, SQLite, and optional Zoho mail tracking. A machine that can load the model may still be cramped once the rest is running.
 
 You can use the prompt below with ChatGPT, Claude, Gemini, Grok, or another agent that can read a public GitHub repository. A coding agent with local computer access can usually do a better job because it can inspect the hardware directly.
 
-If your model cannot open GitHub links, give it the current `AGENTS.md`, `README.md`, `docs/requirements.md`, `docs/memory-and-storage.md`, `docs/getting-started.md`, `docs/how-it-works.md`, this file, and any runtime or config files it asks for.
+If your model cannot open GitHub links, give it the current `AGENTS.md`, `README.md`, `docs/requirements.md`, `docs/memory-and-storage.md`, `docs/getting-started.md`, `docs/how-it-works.md`, `docs/local-runtime.md`, `docs/runtime-benchmarks.md`, this file, and any runtime or config files it asks for.
 
 ## Copy this prompt
 
@@ -27,6 +27,8 @@ Before recommending anything, read the current repository. At minimum, inspect:
 - docs/memory-and-storage.md
 - docs/getting-started.md
 - docs/how-it-works.md
+- docs/local-runtime.md
+- docs/runtime-benchmarks.md
 - docs/hardware-check.md
 - the current model/runtime/config files if they exist
 
@@ -45,7 +47,7 @@ My machine:
 
 If you have local computer or terminal access, inspect missing hardware details yourself with safe read-only system commands. Do not read or upload personal files, credentials, browser data, SSH keys, environment secrets, application data, Obsidian vault contents, or recruiting data just to identify the hardware.
 
-The current Rove design runs a local model alongside Hermes Agent, Erga, Playwright/browser automation, Discord, a private Obsidian vault, QMD local retrieval, SQLite transactional state, and optional Zoho integration. Account for the whole running stack, not just whether the model weights technically fit in memory.
+The current Rove design runs a local model alongside Hermes Agent, Erga, a dedicated Chrome driven by a background daemon, Discord, a private Obsidian vault, QMD local retrieval, SQLite transactional state, and optional Zoho mail tracking. Account for the whole running stack as well as whether the model weights fit in memory.
 
 Rate my machine as one of these:
 1. comfortable as documented
@@ -82,7 +84,7 @@ If the default setup is too heavy, keep the project architecture where practical
 - use a smaller compatible local model
 - change the local inference runtime only when the platform requires it
 
-Do not casually replace Hermes, Erga, Obsidian, SQLite transactional state, the fast Playwright/Chromium browser runtime, Discord, or the local-first design just because my hardware differs. Qwen3.8-27B remains the reference model unless measured hardware limits require a smaller local fallback.
+Do not casually replace Hermes, Erga, Obsidian, SQLite transactional state, the recruiting browser daemon, Discord, or the local-first design just because my hardware differs. Qwen3.8-27B remains the reference model unless measured hardware limits require a smaller local fallback.
 
 Give me:
 

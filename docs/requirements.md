@@ -203,13 +203,13 @@ Every install uses its own bot. The repository ships code only, and the maintain
 
    The bot edits and deletes only its own messages, so it does not need Manage Messages. It never creates a channel, so it does not need Manage Channels. It looks up `system-log`, `recruiting` and `memory` by name through the server's channel list, which needs no extra permission. Tag updates are best effort: without Manage Threads the only effect is a tag that may not change.
 6. Create the channels and the forum from the layout in [Discord](discord.md#channels), and add the forum tags listed there. Make them visible only to you and the bot.
-7. Turn on Developer Mode in your Discord client and copy the IDs of the server, each channel, each forum tag and your own user. Put the server, channel and tag IDs in `config/workflow.json`, the jobs channel in `config/feed.json`, and your user ID in the env file as `DISCORD_OWNER_USER_ID`.
+7. Turn on Developer Mode in your Discord client and copy the IDs of the server, each channel and your own user. The forum's tag IDs are in the `available_tags` list that Discord's API returns for the forum channel. Put the server, channel and tag IDs in `config/workflow.json`, the jobs channel in `config/feed.json`, and your user ID in the env file as `DISCORD_OWNER_USER_ID`.
 
 Rove acts only on messages written by that configured user ID. Messages from anyone else, and from any bot, are ignored.
 
 A third-party bot that posts jobs into a source channel should see only that channel. It should not be able to read the application forum, the owner channels or the system log.
 
-The Hermes gateway has its own Discord settings: the same owner ID and the `agent-control` channel. They are described in [Local runtime](local-runtime.md#hermes-integration-and-compatibility-patch). Discord's portal changes over time, so check its current documentation if a label here has moved.
+The Hermes gateway has its own Discord settings: the same owner ID and the `agent-control` channel. They are described in [Local runtime](local-runtime.md#discord-gateway). Discord's portal changes over time, so check its current documentation if a label here has moved.
 
 ## Zoho Mail
 
