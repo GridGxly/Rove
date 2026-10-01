@@ -24,15 +24,16 @@ def contains(text: str, phrase: str) -> bool:
 
 
 def excluded_by_rules(title: str, company: str = "", prefs: dict | None = None) -> str:
-    """The approved exclusion a job trips, or an empty string. Rules can change after intake."""
+    """The approved exclusion a job trips, or an empty string. Rules can change after intake.
+
+    An excluded keyword counts when it names the role itself; a title that only lists it
+    among other options is a question for the owner, not an exclusion.
+    """
+    from .intake import score_job
+
     prefs = prefs or read_approved()["profile"]["preferences"]
-    for word in prefs.get("excluded_title_keywords", []):
-        if contains(title, word):
-            return f"title matches your excluded keyword '{word}'"
-    for name in prefs.get("excluded_companies", []):
-        if company and contains(company, name):
-            return f"company matches your exclusion '{name}'"
-    return ""
+    result = score_job({"title": title, "company": company}, {"preferences": prefs})
+    return result["reason"] if result["skip"] in {"excluded_role", "excluded_company"} else ""
 
 
 def review_matches(limit: int = 10, *, preview_draft: bool = False) -> dict:
@@ -47,24 +48,22 @@ def review_matches(limit: int = 10, *, preview_draft: bool = False) -> dict:
     prefs = profile["preferences"]
     if not prefs["programs"] or not prefs["title_keywords"]:
         raise ValueError("Choose job programs and title keywords in onboarding first")
+    from .intake import score_job
+
     db = database()
     ranked, excluded = [], Counter()
     try:
         for row in db.execute("SELECT metadata,revision FROM jobs WHERE active=1"):
             job = json.loads(row["metadata"])
-            if job["program"] not in prefs["programs"]:
-                excluded["program"] += 1
-                continue
-            if any(contains(job["title"], word) for word in prefs["excluded_title_keywords"]):
-                excluded["excluded_role"] += 1
+            # The same deterministic score the feed uses; anything below the digest bar
+            # is left out and counted by the reason it fell.
+            result = score_job(job, profile)
+            if result["tier"] == 3:
+                excluded[
+                    result["skip"] or ("low_score" if result["family"] else "no_title_match")
+                ] += 1
                 continue
             keywords = [word for word in prefs["title_keywords"] if contains(job["title"], word)]
-            if not keywords:
-                excluded["no_title_match"] += 1
-                continue
-            if any(contains(job["company"], c) for c in prefs["excluded_companies"]):
-                excluded["excluded_company"] += 1
-                continue
             holds = ["Verify the current employer posting and all requirements before preparing."]
             if not prefs["any_cycle"] and prefs["cycles"] and job["cycle"] not in prefs["cycles"]:
                 holds.append("Recruiting term is outside the selected terms or not stated.")
@@ -96,11 +95,6 @@ def review_matches(limit: int = 10, *, preview_draft: bool = False) -> dict:
             fallback = bool(url and urlsplit(url).hostname in ("jobright.ai", "www.jobright.ai"))
             if not url or fallback:
                 holds.append("Direct employer application URL still needs resolution.")
-            score = 10 + (4 if contains(job["title"], "software") else 0)
-            score += 3 if url and not fallback else 0
-            score += 2 if job["link_status"] == "ats-verified" else 0
-            if any(contains(job["company"], c) for c in prefs["priority_companies"]):
-                score += 5
             ranked.append(
                 {
                     "id": job["id"],
@@ -110,7 +104,10 @@ def review_matches(limit: int = 10, *, preview_draft: bool = False) -> dict:
                     "cycle": job["cycle"],
                     "url": url,
                     "posted_at": job["posted_at"],
-                    "score": score,
+                    "program": job["program"],
+                    "score": result["score"],
+                    "tier": result["tier"],
+                    "reason": result["reason"],
                     "matched_keywords": keywords,
                     "review_needed": holds,
                     "academic_summary": str(academic.get("summary", "Not available"))[:600],

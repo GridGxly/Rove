@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 import pytest
 from pydantic import ValidationError
@@ -39,7 +40,8 @@ def job(identifier="one", status="open"):
         "program": "internship",
         "status": status,
         "url": "https://jobs.example.com/one",
-        "cycle": "summer-2027",
+        # Matching scores the term, so it stays ahead of the day the suite runs.
+        "cycle": f"summer-{date.today().year + 1}",
     }
 
 

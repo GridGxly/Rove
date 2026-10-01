@@ -1,14 +1,12 @@
 """Deterministic Keryx notifications; never run Qwen or authorize an application."""
 
-import hashlib
 import json
 import time
 from datetime import UTC, datetime
 
 import httpx
 
-from .jobs import database, sync_keryx
-from .matching import contains, review_matches
+from .jobs import database, identity_key, sync_keryx
 from .onboarding import read_approved
 from .runtime import state_root, write_private
 
@@ -72,6 +70,8 @@ def discord(method: str, path: str, payload: dict | None = None):
 
 
 def feed_db():
+    from . import intake
+
     db = database()
     db.executescript("""
         CREATE TABLE IF NOT EXISTS feed_cursor(id INTEGER PRIMARY KEY CHECK(id=1), event_id INTEGER NOT NULL);
@@ -79,40 +79,76 @@ def feed_db():
           key TEXT PRIMARY KEY, job_id TEXT NOT NULL, payload TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'pending', message_id TEXT);
     """)
+    if "score" not in {row[1] for row in db.execute("PRAGMA table_info(feed_outbox)")}:
+        db.execute("ALTER TABLE feed_outbox ADD COLUMN score INTEGER NOT NULL DEFAULT 0")
+    intake.ensure_tables(db)
     return db
 
 
-def candidate_match(job: dict, prefs: dict) -> bool:
-    return (
-        job["program"] == "internship"
-        and any(contains(job["title"], x) for x in prefs["title_keywords"])
-        and not any(contains(job["title"], x) for x in prefs["excluded_title_keywords"])
-        and not any(contains(job["company"], x) for x in prefs["excluded_companies"])
-    )
-
-
 def queue_jobs(db, records):
+    """One outbox row per posting, keyed by its stable identity, carrying its score.
+
+    A posting already in the outbox stays as it is, except one the backlog cap left out:
+    queueing that again makes it pending again.
+    """
     for job in records:
-        key = hashlib.sha256(
-            (
-                job["id"] + job.get("source_revision", "") + job["title"] + str(job.get("url"))
-            ).encode()
-        ).hexdigest()
         db.execute(
-            "INSERT OR IGNORE INTO feed_outbox(key,job_id,payload) VALUES(?,?,?)",
-            (key, job["id"], json.dumps(job)),
+            "INSERT INTO feed_outbox(key,job_id,payload,score) VALUES(?,?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET status='pending',payload=excluded.payload,"
+            "score=excluded.score WHERE feed_outbox.status='expired'",
+            (
+                job.get("identity") or identity_key(job),
+                job["id"],
+                json.dumps(job),
+                int(job.get("score") or 0),
+            ),
         )
 
 
 def cap_backlog(db, keep: int) -> int:
-    """A backlog beyond the newest `keep` jobs is old news: expire it instead of flooding."""
+    """A backlog beyond `keep` jobs keeps the best-scoring ones (the newest among equals)
+    and expires the rest instead of flooding the channel."""
     with db:
         cursor = db.execute(
             """UPDATE feed_outbox SET status='expired' WHERE status='pending' AND rowid NOT IN
-            (SELECT rowid FROM feed_outbox WHERE status='pending' ORDER BY rowid DESC LIMIT ?)""",
+            (SELECT rowid FROM feed_outbox WHERE status='pending'
+             ORDER BY score DESC,rowid DESC LIMIT ?)""",
             (max(keep, 1),),
         )
+        db.execute(
+            """UPDATE intake_decisions SET status='capped' WHERE status='queued' AND identity IN
+            (SELECT key FROM feed_outbox WHERE status='expired')"""
+        )
     return cursor.rowcount
+
+
+def job_card(job: dict, queued: dict | None) -> dict:
+    """One glanceable card per job: the role, the company and place, why it matched."""
+    from .workflow import clip, embed
+
+    place = clip(job.get("location") or "Location not listed", 120)
+    if job.get("also"):
+        place += f" · also in {len(job['also'])} other place{'s' if len(job['also']) != 1 else ''}"
+    description = f"**{clip(job['company'], 100)}** · {place}"
+    if job.get("reason"):
+        description += "\n" + clip(job["reason"], 160)
+    return embed(
+        clip(job["title"].replace("\n", " "), 200),
+        description,
+        color="preparing",
+        url=job.get("url"),
+        fields=[
+            ("Cycle", job.get("cycle") or "Not listed", True),
+            ("Track", str(job.get("program", "")).replace("-", " ").title() or "—", True),
+        ],
+        footer=(
+            "Already tracked"
+            if queued and queued.get("already_exists")
+            else "Queued"
+            if queued
+            else "Not queued · the posting has no employer link"
+        ),
+    )
 
 
 def close_withdrawn_postings(revision: str) -> int:
@@ -149,28 +185,32 @@ def close_withdrawn_postings(revision: str) -> int:
 
 
 def tick(seed: bool = False) -> dict:
+    from . import intake
+
     config = json.loads((state_root() / "config/feed.json").read_text())
     if not config.get("enabled"):
         return {"enabled": False}
     result = sync_keryx()
     if result.get("changed_source") and result.get("revision"):
         close_withdrawn_postings(result["revision"])
-    prefs = read_approved()["profile"]["preferences"]
+    approved = read_approved()
+    profile = approved["profile"]
     db = feed_db()
     sent = 0
-    initial = review_matches(25)["jobs"] if seed else []
+    counts: dict = {}
     try:
         with db:
             row = db.execute("SELECT event_id FROM feed_cursor WHERE id=1").fetchone()
             maximum = db.execute("SELECT COALESCE(MAX(id),0) FROM job_events").fetchone()[0]
-            # A job is announced once. Keryx rewrites metadata for thousands of
-            # listings per revision; those changes must not re-post known jobs.
+            # A job is announced once. A posting the feed rewrote or renumbered keeps its
+            # identity, and an id announced before identities existed stays announced.
             announced = {
                 r[0]
                 for r in db.execute(
-                    "SELECT DISTINCT job_id FROM feed_outbox WHERE status IN ('sent','sending','pending','expired')"
+                    "SELECT DISTINCT job_id FROM feed_outbox WHERE status IN ('sent','sending','pending')"
                 )
             }
+            jobs = []
             if row:
                 events = db.execute(
                     """SELECT j.metadata,j.revision FROM job_events e JOIN jobs j
@@ -178,30 +218,37 @@ def tick(seed: bool = False) -> dict:
                     AND e.event IN ('new','changed') ORDER BY e.id""",
                     (row[0],),
                 ).fetchall()
-                jobs = []
                 for event in events:
                     job = json.loads(event["metadata"])
-                    if job["id"] in announced or not candidate_match(job, prefs):
-                        continue
                     job["source_revision"] = event["revision"]
                     jobs.append(job)
-                    announced.add(job["id"])
-                queue_jobs(db, jobs)
+            # Every new job is scored once, in code: the best are queued and announced, the
+            # borderline wait for the daily digest, the rest are dropped and only counted.
+            decided = intake.decide(db, jobs, profile, known_ids=announced)
+            counts = decided["counts"]
+            queue_jobs(db, decided["queue"])
             if seed:
-                queue_jobs(db, [job for job in initial if job["id"] not in announced])
+                # A manual seed pulls in the best open jobs that were never announced.
+                best = intake.unseen_best(db, profile, announced)
+                seeded = intake.decide(db, best, profile, known_ids=announced, revive=intake.UNSEEN)
+                queue_jobs(db, seeded["queue"])
+                for key, value in seeded["counts"].items():
+                    counts[key] = counts.get(key, 0) + value
             db.execute("INSERT OR REPLACE INTO feed_cursor VALUES(1,?)", (maximum,))
             db.execute(
                 """UPDATE feed_outbox SET status='superseded' WHERE status='pending'
                 AND job_id IN (SELECT job_id FROM feed_outbox WHERE status='sent')"""
             )
-        expired = cap_backlog(db, int(config.get("max_pending", 40)))
+        expired = cap_backlog(db, intake.number(config, "max_pending", 40))
+        intake.log_counts(counts, expired)
         pending = db.execute(
             """SELECT o.* FROM feed_outbox o JOIN jobs j ON j.id=o.job_id
-            WHERE o.status='pending' AND j.active=1 ORDER BY o.rowid DESC LIMIT ?""",
-            (int(config.get("batch_size", 10)),),
+            WHERE o.status='pending' AND j.active=1 ORDER BY o.score DESC,o.rowid DESC LIMIT ?""",
+            (intake.number(config, "batch_size", 10),),
         ).fetchall()
-        from .workflow import clip, embed, enqueue
+        from .workflow import enqueue
 
+        stamp = intake.basis(approved.get("profile_hash", ""))
         for row in pending:
             job = json.loads(row["payload"])
             queued = (
@@ -209,24 +256,21 @@ def tick(seed: bool = False) -> dict:
                 if job.get("url")
                 else None
             )
-            card = embed(
-                clip(job["title"].replace("\n", " "), 200),
-                f"**{clip(job['company'], 100)}** · {clip(job.get('location') or 'Location not listed', 120)}",
-                color="preparing",
-                url=job.get("url"),
-                fields=[
-                    ("Cycle", job.get("cycle") or "Not listed", True),
-                    ("Track", str(job.get("program", "")).replace("-", " ").title() or "—", True),
-                ],
-                footer=(
-                    "Already tracked"
-                    if queued and queued.get("already_exists")
-                    else "Queued"
-                    if queued
-                    else "Not queued · the posting has no employer link"
-                ),
-            )
+            card = job_card(job, queued)
             with db:
+                if queued and not queued.get("already_exists") and "score" in job:
+                    intake.record_queue_score(
+                        db,
+                        queued["application_id"],
+                        job["score"],
+                        job.get("reason", ""),
+                        stamp,
+                        intake.family_key(job),
+                    )
+                    db.execute(
+                        "UPDATE intake_decisions SET application_id=? WHERE identity=?",
+                        (queued["application_id"], row["key"]),
+                    )
                 db.execute("UPDATE feed_outbox SET status='sending' WHERE key=?", (row["key"],))
             message = discord(
                 "POST",
@@ -250,9 +294,11 @@ def tick(seed: bool = False) -> dict:
             pending=db.execute(
                 "SELECT COUNT(*) FROM feed_outbox WHERE status='pending'"
             ).fetchone()[0],
+            **{key: counts.get(key, 0) for key in ("queued", "digest", "dropped")},
         )
     finally:
         db.close()
+    result.update(intake.run_digest(config))
     result["finished_at"] = datetime.now(UTC).isoformat()
     write_private(state_root() / "jobs/feed-service.json", result)
     return result
