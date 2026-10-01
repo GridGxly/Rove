@@ -539,6 +539,7 @@ def test_a_reply_that_cannot_apply_gets_one_plain_line_and_changes_nothing(state
             "/channels/t1/messages",
             "Only an unknown submission or a blocked application can be reconciled",
         ),
+        ("/channels/t1/messages", worker.HELP_LINE),
     ]
     for _, line in posted:
         no_ids(line)

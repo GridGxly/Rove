@@ -1613,9 +1613,11 @@ def test_a_thread_reply_that_cannot_apply_gets_one_plain_line(state, monkeypatch
 
     monkeypatch.setattr(worker, "discord", fake)
     worker.poll_commands()
-    assert [p for p, _ in posted] == ["/channels/t1/messages"]
+    assert [p for p, _ in posted] == ["/channels/t1/messages", "/channels/t1/messages"]
     assert posted[0][1]["content"] == "Nothing is ready to send here yet."
     no_ids(posted[0][1]["content"])
+    # Chatter that is not a reply gets the one pointer line, nothing else.
+    assert posted[1][1]["content"] == worker.HELP_LINE
     assert workflow.get(app)["status"] == "DEFERRED"
     with workflow.db() as conn:
         kinds = [r[0] for r in conn.execute("SELECT kind FROM owner_commands")]
@@ -1639,3 +1641,66 @@ def test_an_answer_given_once_is_remembered_for_the_same_question_on_any_form(st
     assert workflow.recall_answer("Favorite color", []) is None
     notes = list(Path(os.environ["OBSIDIAN_VAULT_PATH"]).rglob("Answers.md"))
     assert notes and "5 months" in notes[0].read_text()
+
+
+def test_a_reply_on_a_card_in_action_needed_names_its_application(state, monkeypatch):
+    from erga_autopilot import worker
+
+    owner_channels(monkeypatch)
+    app = workflow.enqueue(
+        "https://jobs.example.com/card", source="keryx", title="Example — Intern"
+    )["application_id"]
+    workflow.set_state(app, "NEEDS_USER")
+    workflow.action_needed(app, "Needs you", commands=["go", "park it"], headline="Answers needed")
+    with workflow.db() as conn:
+        card = conn.execute(
+            "SELECT message_id FROM owner_notices WHERE application_id=? AND delivery='sent'",
+            (app,),
+        ).fetchone()[0]
+    reply = {"author": {"id": "owner"}, "content": "go", "message_reference": {"message_id": card}}
+    command = worker.parse_command(reply, "owner", "action", {"action"}, {})
+    assert command["application_id"] == app and command["kind"] == "resume"
+    bare = {"author": {"id": "owner"}, "content": "park it"}
+    assert worker.parse_command(bare, "owner", "action", {"action"}, {})["kind"] == "defer"
+    other = workflow.enqueue(
+        "https://jobs.example.com/card2", source="keryx", title="Other — Intern"
+    )["application_id"]
+    workflow.set_state(other, "NEEDS_USER")
+    workflow.action_needed(other, "Needs you", commands=["go"], headline="Answers needed")
+    with pytest.raises(ValueError, match="Which one"):
+        worker.parse_command(
+            {"author": {"id": "owner"}, "content": "go"}, "owner", "action", {"action"}, {}
+        )
+    chatter = {"author": {"id": "owner"}, "content": "what is this"}
+    assert worker.parse_command(chatter, "owner", "action", {"action"}, {}) is None
+
+
+def test_a_plain_reply_answers_the_only_open_question(state, monkeypatch):
+    from erga_autopilot import worker
+
+    owner_channels(monkeypatch)
+    app = workflow.enqueue(
+        "https://jobs.example.com/one", source="keryx", title="Example — Intern"
+    )["application_id"]
+    workflow.set_state(app, "NEEDS_USER")
+    question = {
+        "key": "k1",
+        "label": "How many months are you available?",
+        "options": ["- Select -", "3 months", "5 months"],
+        "required": True,
+        "state": "open",
+    }
+    workflow.action_needed(
+        app, "1 question", questions=[question], commands=["1: ", "go"], headline="Answers needed"
+    )
+    assert worker.thread_command("5 months", app) == {
+        "kind": "answer",
+        "application_id": app,
+        "field_key": "k1",
+        "value": "5 months",
+        "number": 1,
+    }
+    with pytest.raises(ValueError, match="not one of the options"):
+        worker.thread_command("six months", app)
+    assert worker.thread_command("https://example.com/not-an-answer", app) is None
+    assert worker.thread_command("go", app)["kind"] == "resume"

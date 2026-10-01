@@ -615,6 +615,38 @@ def draft_by_number(application_id: str, number: int) -> dict:
     }
 
 
+def single_question_answer(raw: str, application_id: str) -> dict | None:
+    """When one question is open, the owner's plain reply is its answer. With options,
+    the reply must name one of them; a link or a long message is never taken as one."""
+    hold = workflow.latest_hold(application_id) or {}
+    open_questions = [q for q in hold.get("questions") or [] if q.get("state", "open") == "open"]
+    if len(open_questions) != 1 or len(raw) > 200 or re.search(r"https?://", raw):
+        return None
+    if workflow.get(application_id)["status"] != "NEEDS_USER":
+        return None
+    question = open_questions[0]
+    value = raw.strip()
+    options = [str(o) for o in question.get("options") or []]
+    if options:
+        wanted = " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+        match = next(
+            (o for o in options if " ".join(re.findall(r"[a-z0-9]+", o.lower())) == wanted), None
+        )
+        if match is None:
+            raise ValueError(
+                "That is not one of the options for the open question: "
+                + " / ".join(o for o in options[:8] if not o.strip().startswith("-"))
+            )
+        value = match
+    return {
+        "kind": "answer",
+        "application_id": application_id,
+        "field_key": question["key"],
+        "value": value,
+        "number": 1,
+    }
+
+
 def question_by_number(application_id: str, number: int) -> dict:
     """The Nth question of the latest hold's numbered list, by its exact stored key."""
     questions = (workflow.latest_hold(application_id) or {}).get("questions") or []
@@ -661,7 +693,7 @@ def thread_command(text: str, application_id: str) -> dict | None:
         }
     kind = WORDS.get(word)
     if kind is None:
-        return None
+        return single_question_answer(raw, application_id)
     if kind == "resume":
         kind = "proceed" if held_on_fit(application_id) else "resume"
     elif kind == "submit":
@@ -703,10 +735,51 @@ def parse_command(
     command = explicit_command(text)
     if command:
         return command
-    application_id = (threads or {}).get(channel)
+    application_id = (threads or {}).get(channel) or card_application(message, channel)
     if not application_id:
         return None
     return thread_command(text, application_id)
+
+
+HELP_LINE = (
+    "I read replies in each application's thread, or as a Discord reply to its card here: "
+    "`go`, `park it`, `send it`, `use draft 2`, `2: your answer`, `applied`, `not sent`."
+)
+
+
+def card_application(message: dict, channel: str) -> str | None:
+    """In action-needed or shortlist, a Discord reply to a card names its application; a
+    bare reply does too when exactly one card is live there."""
+    settings = workflow.config()
+    names = {settings.get(key): name for name, key in workflow.NOTICE_CHANNELS.items()}
+    if channel not in names:
+        return None
+    referenced = (message.get("message_reference") or {}).get("message_id")
+    with workflow.db() as conn:
+        if referenced:
+            row = conn.execute(
+                "SELECT application_id FROM owner_notices WHERE message_id=? AND delivery='sent'",
+                (referenced,),
+            ).fetchone()
+            if row:
+                return row["application_id"]
+        live = [
+            r["application_id"]
+            for r in conn.execute(
+                "SELECT application_id FROM owner_notices WHERE channel=? AND delivery='sent'",
+                (names[channel],),
+            )
+        ]
+    if len(live) == 1:
+        return live[0]
+    word = " ".join(message.get("content", "").strip().strip("`").rstrip(".!?").split()).lower()
+    if (
+        word in WORDS
+        or re.fullmatch(r"(?:use draft|draft|use) \d{1,2}", word)
+        or re.match(r"(?:answer\s+)?\d{1,2}\s*[:=]", word)
+    ):
+        raise ValueError("Which one? Use Discord's reply on its card, or answer in its thread.")
+    return None
 
 
 def explicit_command(text: str) -> dict | None:
@@ -885,9 +958,15 @@ def poll_commands():
                 "AND status NOT IN ('APPLIED','SUBMITTING')"
             )
         }
-    channels = {settings.get("control_channel_id"), settings.get("action_channel_id"), *threads} - {
-        None
-    }
+    channels = {
+        settings.get("control_channel_id"),
+        settings.get("action_channel_id"),
+        settings.get("shortlist_channel_id"),
+        settings.get("recruiting_channel_id"),
+        settings.get("system_channel_id"),
+        *threads,
+    } - {None}
+    quiet = {settings.get("control_channel_id")}
     for channel in channels:
         with workflow.db() as conn:
             checkpoint = conn.execute(
@@ -904,6 +983,18 @@ def poll_commands():
             try:
                 command = parse_command(message, owner, channel, channels, threads)
                 if not command:
+                    if (
+                        channel not in quiet
+                        and message.get("author", {}).get("id") == owner
+                        and not message.get("author", {}).get("bot")
+                        and message.get("content", "").strip()
+                    ):
+                        # The owner typed where nothing applies: say once how replies work.
+                        discord(
+                            "POST",
+                            f"/channels/{channel}/messages",
+                            {"content": HELP_LINE, "allowed_mentions": {"parse": []}},
+                        )
                     continue
                 if channel in threads and threads[channel] != command["application_id"]:
                     raise PermissionError("This reply belongs to another application's thread")
