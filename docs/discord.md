@@ -33,7 +33,9 @@ Real guild, channel, role, and user IDs stay in local configuration and must not
 
 That post is the readable history for one application. It should answer what Autopilot did, what it submitted, what changed later, and why.
 
-The post's first message is a live status card that Autopilot edits in place (headline, one line, the reply commands), so the forum list previews the current state. The entries below it are the chronological record: routine steps (opened, clicked Apply, resume ready, your replies, lifecycle changes, the submit click) are one-line messages, and cards are used for decisions, drafts, job fit, the filled form, submission results, and failures. Sources are shown in words ("your profile", "your reply", "your evidence"), never as internal keys.
+The post's first message is a live status card that Autopilot edits in place (headline, one line, the replies it accepts), so the forum list previews the current state. The entries below it are the chronological record: routine steps (opened, clicked Apply, resume ready, your replies, lifecycle changes, the submit click) are one-line messages, and cards are used for decisions, drafts, job fit, the filled form, submission results, and failures. Sources are shown in words ("your profile", "your reply", "your evidence"), never as internal keys, and nothing the owner reads carries an application id, field key, or package hash; those go to `system-log`.
+
+The thread is also where you answer. The bot knows which application a thread belongs to, so a reply is a word (`go`, `park it`, `send it`, `applied`, `not sent`, `create account`), a draft number (`use draft 2`), or a question number with your answer (`2: Yes`). The [application workflow](application-workflow.md#replying-in-the-thread) lists the full grammar.
 
 The post can keep:
 
@@ -60,7 +62,7 @@ This is useful for borderline roles, unusual opportunities, startups, local comp
 
 A shortlist item should preserve enough context to make the decision without redoing discovery, including the job, company, source, official URL, and the reason it was held for review.
 
-The implemented workflow posts a job-fit hold here, and only here: a feed job whose posting states an eligibility requirement (program, graduation window, work authorization, sponsorship, location, degree) that conflicts with an approved fact. The card links to the thread and carries the conflicting requirement (and any eligibility that could not be checked) as its reasons, plus the `proceed` and `defer` commands. Eligibility that could not be checked, skills, dates, and other items never hold a job on their own, and a link you pasted is never held on fit. The channel is a to-do list: an application has at most one live card here, and it is withdrawn when the application stops waiting on you.
+The implemented workflow posts a job-fit hold here, and only here: a feed job whose posting states an eligibility requirement (program, graduation window, work authorization, sponsorship, location, degree) that conflicts with an approved fact. The card links to the thread and carries the conflicting requirement (and any eligibility that could not be checked) as its reasons, plus the replies to make in the thread: `go` or `park it`. Eligibility that could not be checked, skills, dates, and other items never hold a job on their own, and a link you pasted is never held on fit. The channel is a to-do list: an application has at most one live card here, and it is withdrawn when the application stops waiting on you.
 
 ## Agent
 
@@ -68,7 +70,7 @@ The implemented workflow posts a job-fit hold here, and only here: a feed job wh
 
 `agent-control` is the main command surface for interacting with Autopilot.
 
-Commands and approvals sent here are still subject to normal authorization and policy checks. A Discord message does not override code-level submission, memory, browser, or credential rules.
+Commands and approvals sent here are still subject to normal authorization and policy checks. A Discord message does not override code-level submission, memory, browser, or credential rules. This channel has no implied application, so only the explicit forms with an application id work here (see the [application workflow](application-workflow.md#replying-in-the-thread)); the word replies belong in the application's thread.
 
 #### `action-needed`
 
@@ -87,7 +89,7 @@ This channel should stay quiet unless the user actually needs to do something.
 
 With the `auto_submit` policy on, a complete application is sent without a card here; the thread's live status card and its timeline are where the owner reviews it afterwards.
 
-The implemented workflow posts here for answers it cannot draft, sign-in and account steps, blocked sites and manual steps in the browser, stopped preparation, ready-to-submit review, and submission problems. Job fit never lands here; that goes to `shortlist`. The channel is a to-do list: an application has at most one live card, a new card replaces the previous one, and the card is withdrawn when the application stops waiting on you.
+The implemented workflow posts here for answers it cannot draft, sign-in and account steps, blocked sites and manual steps in the browser, stopped preparation, ready-to-submit review, and submission problems. Each card links to the thread and shows the same word replies the thread accepts; reply in the thread. Job fit never lands here; that goes to `shortlist`. The channel is a to-do list: an application has at most one live card, a new card replaces the previous one, and the card is withdrawn when the application stops waiting on you.
 
 #### `memory`
 
@@ -121,9 +123,13 @@ When an event maps to an existing application, the application forum post should
 
 #### `system-log`
 
-`system-log` is for operational and technical activity that is useful for debugging without cluttering the user-facing application history.
+`system-log` is for operational and technical activity that is useful for debugging without cluttering the user-facing application history. It is where the identifiers live: the owner-facing cards and lines never show an application id, field key, or package hash, and this channel always does.
 
-It can include safe information such as:
+The implemented workflow posts one plain line per event, each starting with the application id: the thread opened (posting URL and thread link), the job-fit decision, a package approved or queued for sending (package hash), each submit attempt (adapter and package hash), the outcome (applied with the confirmation URL, unknown or rejected with the site's reason), lifecycle transitions with their trigger, holds with their headline, stopped preparation with the phase and error type, Qwen or model failures, blocked sites, and Discord deliveries the API refused. Lines are best effort: a failed line is written to the private delivery-failures log and never retried, and nothing else in the workflow waits on it.
+
+The channel id is `system_channel_id` in private `config/workflow.json`. When the key is missing the worker looks a channel named `system-log` up once through the guild's channel list and writes the id into the file; with no such channel the log stays off.
+
+It can also include safe information such as:
 
 - timestamps
 - application or job IDs
@@ -133,11 +139,10 @@ It can include safe information such as:
 - browser URLs
 - retries
 - recoverable errors
-- lifecycle transitions
 - queue or reconciliation activity
 - model and runtime metadata
 
-It must not include secrets, OAuth tokens, passwords, browser cookies, MFA codes, encryption keys, or private note bodies.
+It must not include secrets, OAuth tokens, passwords, browser cookies, MFA codes, encryption keys, applicant answers, or private note bodies.
 
 ## How an application is logged
 
@@ -256,15 +261,16 @@ See [Security](../SECURITY.md), [How it works](how-it-works.md), and [Memory and
 The [application workflow](application-workflow.md) maps an existing source channel
 (such as `jobs`) through private configuration, publishes matching Keryx updates, and
 queues preparation. Every post is an embed card: a title, one line of context, values in
-fields, and the exact reply commands in a code block. The jobs channel gets one card per
-Keryx job, newest first, at most `batch_size` (default 10) per feed tick; pending
-announcements beyond the newest `max_pending` (default 40) expire unposted. In the
+fields, and the replies to make in a code block. The jobs channel gets one card per
+Keryx job (title, company, location, cycle, track), newest first, at most `batch_size`
+(default 10) per feed tick; pending announcements beyond the newest `max_pending`
+(default 40) expire unposted. In the
 forum, routine steps (opening, clicking Apply, resume ready, your replies, lifecycle
 transitions with their trigger, the submit click) are one-line messages; cards cover
 job-fit review, the filled form (one field per entry with its source in words), each
-Qwen draft with its approve command, questions only you can answer, holds, and
-submission results. Owner-only `answer`, `use`, `resume`, `defer`, `proceed`, `account`,
-`submit`, and `reconcile` commands are handled by deterministic code, independently of
+Qwen draft with its `use draft N` reply, questions only you can answer, holds, and
+submission results. Owner replies, whether the word forms in a thread or the explicit
+id forms in the control channel, are handled by deterministic code, independently of
 model wording. A job-fit hold on a feed job is posted to `shortlist` only, with the
 conflicting eligibility requirement (and any unchecked ones) as its reasons; a pasted
 link is never held on fit. Action-needed and shortlist cards are recorded before they

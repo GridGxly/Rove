@@ -268,6 +268,30 @@ def test_owner_commands_for_submission_lifecycle_parse_strictly():
     assert parse("reconcile abcdef012345 applied")["outcome"] == "applied"
     assert parse("reconcile abcdef012345 maybe") is None
     assert parse("please submit abcdef012345 " + "a" * 64) is None
+    # A word reply means nothing outside an application's own thread.
+    assert parse("send it") is None and parse("go") is None
+
+
+def test_send_it_in_the_thread_binds_the_current_package_once(state):
+    application_id, package, _current = ready_application(state)
+    workflow.set_state(application_id, "READY_FOR_REVIEW", thread_id="t1")
+    threads = {"t1": application_id}
+    parse = lambda text: worker.parse_command(
+        {"author": {"id": "owner"}, "content": text}, "owner", "t1", {"t1"}, threads
+    )
+    command = parse("send it")
+    assert command["package_hash"] == package["package_hash"]
+    worker.apply_command(command, "msg-1")
+    submission.claim_attempt(application_id, package["package_hash"], "msg-1")
+    with pytest.raises(ValueError, match="already in flight"):
+        parse("send it")
+    with workflow.db() as conn:
+        payload = json.loads(
+            conn.execute("SELECT payload FROM owner_commands WHERE message_id='msg-1'").fetchone()[
+                0
+            ]
+        )
+    assert payload["package_hash"] == package["package_hash"] and payload["word"] == "send it"
 
 
 def test_tick_executes_one_approved_submission_and_recovers_crashed_runs(state, monkeypatch):

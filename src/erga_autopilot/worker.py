@@ -53,7 +53,7 @@ def fit_hold(application_id: str, fit: dict) -> dict:
     return {
         "summary": summary + ".",
         "items": items,
-        "commands": [f"proceed {application_id}", f"defer {application_id}"],
+        "commands": ["go", "park it"],
     }
 
 
@@ -71,13 +71,15 @@ def held(
     }
 
 
-def use_drafts(application_id: str, proposals: dict, pending: list) -> int:
+def use_drafts(application_id: str, proposals: dict, asked: list) -> list[str]:
     """Owner policy auto_use_drafts: Qwen's drafts become answers without a per-draft reply.
 
-    The draft cards stay in the thread for review after the fact; a later `answer`
+    The draft cards stay in the thread for review after the fact; a later numbered
     reply before submission still overrides. Facts only the owner knows stay questions.
+    `asked` is the owner's numbered question list, so the thread line can cite the number.
     """
-    labels = {q["key"]: q.get("label", "") for q in pending}
+    labels = {q["key"]: q.get("label", "") for q in asked}
+    numbers = {q["key"]: number for number, q in enumerate(asked, start=1)}
     used = []
     with workflow.db() as conn:
         for answer in proposals.get("answers", []):
@@ -99,10 +101,51 @@ def use_drafts(application_id: str, proposals: dict, pending: list) -> int:
             )
             used.append(answer["key"])
     for key in used:
-        workflow.record(application_id, "auto_draft_used", {"key": key, "label": labels[key]})
+        workflow.record(
+            application_id,
+            "auto_draft_used",
+            {"key": key, "label": labels[key], "number": numbers[key]},
+        )
     if used:
         workflow.flush_events(application_id)
-    return len(used)
+    return used
+
+
+def question_list(asked: list, pending: list, proposals: dict, used: set) -> list[dict]:
+    """The owner's numbered questions, in form order, each with how it stands.
+
+    A question is `open` (only the owner can answer it), `drafted` (Qwen's draft waits
+    in its card), or `used` (the draft became the answer under the owner's policy).
+    Numbers are positions in this list; the thread's cards and the `N: value` reply
+    both count the same way.
+    """
+    drafts: dict = {}
+    for answer in proposals.get("answers", []):
+        if answer.get("kind") == "proposal" and answer.get("key"):
+            drafts.setdefault(answer["key"], len(drafts) + 1)
+    seen = {q["key"] for q in asked if q.get("key")}
+    ordered = [*asked, *[q for q in pending if q.get("key") and q["key"] not in seen]]
+    questions = []
+    for question in ordered:
+        key = question.get("key")
+        if not key:
+            continue
+        entry = {
+            "key": key,
+            "label": question.get("label", ""),
+            "options": list(question.get("options") or []),
+            "required": question.get("required", True),
+        }
+        if key in used:
+            entry["state"] = "used"
+        elif key in drafts:
+            entry["state"] = "drafted"
+        else:
+            entry["state"] = "open"
+        if key in drafts:
+            entry["draft"] = drafts[key]
+        questions.append(entry)
+    return questions
 
 
 def queue_auto_submit(application_id: str, package_hash: str) -> str:
@@ -159,7 +202,7 @@ def process(application_id: str) -> dict:
     questions: list = []
     items: list = []
     channel = "action"
-    commands: list = [f"resume {application_id}", f"defer {application_id}"]
+    commands: list = ["go", "park it"]
     headline = "Browser needs a look"
     try:
         page = browser_call("open", url=item["url"])
@@ -182,16 +225,16 @@ def process(application_id: str) -> dict:
                         "The employer's site blocked the recruiting browser twice. Nothing was "
                         "submitted. If you want this one, apply in your own browser and tell me.",
                         "Blocked by the employer's site",
-                        commands=[f"reconcile {application_id} applied", f"defer {application_id}"],
+                        commands=["applied", "park it"],
                     )
             if page.get("ats_markers", {}).get("captcha_challenge"):
                 return held(
                     application_id,
                     "MANUAL_TAKEOVER",
-                    "The site shows a CAPTCHA. Solve it in the recruiting browser, then resume; "
-                    "nothing was sent.",
+                    "The site shows a CAPTCHA. Solve it in the recruiting browser, then reply "
+                    "`go`; nothing was sent.",
                     "CAPTCHA needs you",
-                    commands=[f"resume {application_id}", f"defer {application_id}"],
+                    commands=["go", "park it"],
                 )
             if page.get("ats_markers", {}).get("already_applied"):
                 return held(
@@ -201,7 +244,7 @@ def process(application_id: str) -> dict:
                     "Nothing was sent. If that is right, mark it applied; otherwise apply in "
                     "your own browser.",
                     "The site says you already applied",
-                    commands=[f"reconcile {application_id} applied", f"defer {application_id}"],
+                    commands=["applied", "park it"],
                 )
             if page.get("closed"):
                 workflow.transition(
@@ -218,13 +261,16 @@ def process(application_id: str) -> dict:
                     phase = "sign_in"
                     page = browser_call("login", run_id=application_id)
                     if page.get("auth_page") == "login":
-                        reason = "Signing in with the stored account did not work. Finish the sign-in in the recruiting browser, then resume."
+                        reason = (
+                            "Signing in with the stored account did not work. Finish the "
+                            "sign-in in the recruiting browser, then reply `go`."
+                        )
                         headline = "Sign-in needs you"
                         break
                     continue
                 reason = (
                     "This board wants an existing account and I have none stored for it. "
-                    "Sign in yourself in the recruiting browser, then resume."
+                    "Sign in yourself in the recruiting browser, then reply `go`."
                 )
                 headline = "Sign-in needs you"
                 break
@@ -240,7 +286,7 @@ def process(application_id: str) -> dict:
                         reason = (
                             "The account was created with your application email; the site "
                             "wants the email verified. Open the link it sent in the recruiting "
-                            "browser, then resume."
+                            "browser, then reply `go`."
                         )
                         headline = "Verify the account email"
                         break
@@ -250,13 +296,13 @@ def process(application_id: str) -> dict:
                     "with your application email and a generated password stored encrypted "
                     "on this Mac. Your policy asks first."
                 )
-                commands = [f"account {application_id} create", f"defer {application_id}"]
+                commands = ["create account", "park it"]
                 headline = "Account needed"
                 break
             if page.get("manual_takeover_required"):
                 reason = (
                     "An identity or verification step needs you in the recruiting browser. "
-                    "Finish it there, then resume."
+                    "Finish it there, then reply `go`."
                 )
                 headline = "Manual step in the browser"
                 break
@@ -270,6 +316,7 @@ def process(application_id: str) -> dict:
 
                 phase = "job_fit_review"
                 fit = review_job(application_id, page, posting_text)
+                workflow.system_line(application_id, f"fit · {fit['decision']}")
                 # A link the owner pasted is a decision already made: never ask again.
                 if (
                     fit["decision"] != "fit"
@@ -313,6 +360,8 @@ def process(application_id: str) -> dict:
                 page = browser_call("prepare", run_id=application_id)
                 pending = page.get("pending", [])
                 proposals: dict = {"answers": []}
+                asked: list = []
+                used: set = set()
                 if pending:
                     phase = "answer_drafting"
                     proposals = review_application(application_id, page)
@@ -325,45 +374,44 @@ def process(application_id: str) -> dict:
                         for q in pending
                         if not q.get("required", True) and q["key"] not in drafted_keys
                     ]
-                    auto_used = 0
+                    # The owner's numbered list: what the form asked beyond approved facts,
+                    # in form order, without the optional fields that are left blank.
+                    asked = [q for q in pending if q not in optional]
                     if settings.get("auto_use_drafts", settings.get("auto_submit")):
-                        auto_used = use_drafts(application_id, proposals, pending)
+                        used = set(use_drafts(application_id, proposals, asked))
                     if optional:
                         # An optional field nobody can fill from approved facts stays blank.
                         skip_optional(application_id, optional)
-                    if optional or auto_used:
+                    if optional or used:
                         phase = "prepare"
                         page = browser_call("prepare", run_id=application_id)
                         page["qwen_review"] = proposals
                         pending = page.get("pending", [])
+                questions = question_list(asked, pending, proposals, used)
                 if pending:
-                    drafted_keys = {
-                        a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"
-                    }
-                    open_questions = [q for q in pending if q["key"] not in drafted_keys]
-                    drafted = len([q for q in pending if q["key"] in drafted_keys])
+                    open_numbers = [
+                        n for n, q in enumerate(questions, start=1) if q["state"] == "open"
+                    ]
+                    drafted = len([q for q in questions if q["state"] == "drafted"])
                     parts = []
                     if drafted:
                         parts.append(
                             f"{drafted} draft{'s' if drafted != 1 else ''} to approve in the "
-                            "thread (each card has its `use` command)"
+                            "thread (each card says which `use draft` reply approves it)"
                         )
-                    if open_questions:
-                        count = len(open_questions)
+                    if open_numbers:
+                        count = len(open_numbers)
                         parts.append(
                             f"{count} question{'s' if count != 1 else ''} only you can answer"
                         )
-                    reason = " · ".join(parts) + f". Then reply `resume {application_id}`."
-                    questions = open_questions[:6]
-                    commands = [
-                        f"answer {application_id} {q['key']} = " for q in open_questions[:4]
-                    ] + [f"resume {application_id}", f"defer {application_id}"]
+                    reason = " · ".join(parts) + ". Then reply `go`."
+                    commands = [f"{n}: " for n in open_numbers[:4]] + ["go", "park it"]
                     headline = "Answers needed"
                 elif page.get("package_hash") and len(page.get("final_controls", [])) != 1:
                     reason = page.get(
                         "reason",
                         "The form's last step with its Submit control was not reached. Check "
-                        "the recruiting browser, then resume.",
+                        "the recruiting browser, then reply `go`.",
                     )
                     headline = "Final step not reached"
                 elif page.get("package_hash"):
@@ -392,10 +440,7 @@ def process(application_id: str) -> dict:
                             "the form in the recruiting browser, press its Submit button "
                             "yourself, then reply." + caveat
                         )
-                        commands = [
-                            f"reconcile {application_id} applied",
-                            f"defer {application_id}",
-                        ]
+                        commands = ["applied", "park it"]
                         headline = "Ready · send it yourself"
                     else:
                         final_state = "READY_FOR_REVIEW"
@@ -415,12 +460,9 @@ def process(application_id: str) -> dict:
                             return result
                         reason = (
                             "Every field is filled from approved facts. Check the form and "
-                            "the resume in the recruiting browser, then send it once." + caveat
+                            "the resume in the recruiting browser, then reply `send it`." + caveat
                         )
-                        commands = [
-                            f"submit {application_id} {workflow.short_hash(page['package_hash'])}",
-                            f"resume {application_id}",
-                        ]
+                        commands = ["send it", "go"]
                         headline = "Ready to submit"
                 else:
                     reason = page.get("reason", page.get("status", "Browser requires review"))
@@ -429,7 +471,7 @@ def process(application_id: str) -> dict:
             if not links:
                 reason = (
                     "No Apply control was found on this page. Open the recruiting browser, "
-                    "reach the form yourself, then resume."
+                    "reach the form yourself, then reply `go`."
                 )
                 headline = "Apply control not found"
                 break
@@ -441,7 +483,10 @@ def process(application_id: str) -> dict:
                 ref=links[0]["ref"],
             )
         else:
-            reason = "Navigation hit its step limit before reaching a form. Inspect the recruiting browser before resuming."
+            reason = (
+                "Navigation hit its step limit before reaching a form. Inspect the recruiting "
+                "browser, then reply `go`."
+            )
             headline = "Navigation stopped"
     except Exception as error:
         raise PhaseError(phase, error) from error
@@ -459,7 +504,128 @@ def process(application_id: str) -> dict:
     )
 
 
-def parse_command(message: dict, owner: str, channel: str, allowed: set[str]) -> dict | None:
+# Word replies inside an application's own thread, where the application is implied.
+WORDS = {
+    "go": "resume",
+    "proceed": "resume",
+    "continue": "resume",
+    "resume": "resume",
+    "park": "defer",
+    "park it": "defer",
+    "defer": "defer",
+    "later": "defer",
+    "skip": "defer",
+    "send": "submit",
+    "send it": "submit",
+    "submit": "submit",
+    "apply": "submit",
+    "apply now": "submit",
+    "applied": "applied",
+    "i applied": "applied",
+    "done": "applied",
+    "sent it myself": "applied",
+    "not sent": "not-submitted",
+    "not submitted": "not-submitted",
+    "nothing sent": "not-submitted",
+    "create account": "account",
+    "make an account": "account",
+    "account": "account",
+}
+
+
+def draft_by_number(application_id: str, number: int) -> dict:
+    """The Nth Qwen draft in the proposals file, bound to its exact stored hash."""
+    path = state_root() / f"applications/{application_id}/answer-proposals.json"
+    answers = json.loads(path.read_text()).get("answers", []) if path.exists() else []
+    drafts = [a for a in answers if a.get("kind") == "proposal"]
+    if not drafts:
+        raise ValueError("There are no drafts here to use.")
+    if not 1 <= number <= len(drafts):
+        raise ValueError(f"There is no draft {number} here; the drafts go up to {len(drafts)}.")
+    return {
+        "field_key": drafts[number - 1]["key"],
+        "proposal_hash": drafts[number - 1]["proposal_hash"],
+    }
+
+
+def question_by_number(application_id: str, number: int) -> dict:
+    """The Nth question of the latest hold's numbered list, by its exact stored key."""
+    questions = (workflow.latest_hold(application_id) or {}).get("questions") or []
+    if not questions:
+        raise ValueError("Nothing here is waiting for an answer.")
+    if not 1 <= number <= len(questions):
+        raise ValueError(
+            f"There is no question {number} here; the list goes up to {len(questions)}."
+        )
+    return {"field_key": questions[number - 1]["key"]}
+
+
+def held_on_fit(application_id: str) -> bool:
+    return (
+        workflow.get(application_id)["status"] == "NEEDS_USER"
+        and (workflow.latest_hold(application_id) or {}).get("headline") == "Your call on fit"
+    )
+
+
+def thread_command(text: str, application_id: str) -> dict | None:
+    """A reply in the application's own thread; unknown text is ignored, a reply that
+    cannot apply raises a one-line plain-language reason."""
+    raw = text.strip().strip("`").strip()
+    match = re.fullmatch(
+        r"(?:answer\s+)?(\d{1,2})\s*[:=]\s*(.{1,6000})", raw, re.IGNORECASE | re.DOTALL
+    )
+    if match:
+        number = int(match[1])
+        return {
+            "kind": "answer",
+            "application_id": application_id,
+            **question_by_number(application_id, number),
+            "value": match[2].strip(),
+            "number": number,
+        }
+    word = " ".join(raw.rstrip(".!?").split()).lower()
+    match = re.fullmatch(r"(?:use draft|draft|use) (\d{1,2})", word)
+    if match:
+        return {
+            "kind": "use",
+            "application_id": application_id,
+            **draft_by_number(application_id, int(match[1])),
+            "word": word,
+        }
+    kind = WORDS.get(word)
+    if kind is None:
+        return None
+    if kind == "resume":
+        kind = "proceed" if held_on_fit(application_id) else "resume"
+    elif kind == "submit":
+        item = workflow.get(application_id)
+        if item["status"] == "APPLIED":
+            raise ValueError("This one was already sent.")
+        if item["status"] in {"SUBMITTING", "UNKNOWN_SUBMISSION"}:
+            raise ValueError("A send is already in flight; nothing is sent twice.")
+        if item["status"] != "READY_FOR_REVIEW" or not item["package_hash"]:
+            raise ValueError("Nothing is ready to send here yet.")
+        return {
+            "kind": "submit",
+            "application_id": application_id,
+            "package_hash": item["package_hash"],
+            "word": word,
+        }
+    elif kind in {"applied", "not-submitted"}:
+        return {
+            "kind": "reconcile",
+            "application_id": application_id,
+            "outcome": kind,
+            "word": word,
+        }
+    return {"kind": kind, "application_id": application_id, "word": word}
+
+
+def parse_command(
+    message: dict, owner: str, channel: str, allowed: set[str], threads: dict | None = None
+) -> dict | None:
+    """Owner replies only. Explicit id forms work in any allowed channel; word replies
+    resolve only inside a thread listed in `threads` (thread id → application id)."""
     if (
         channel not in allowed
         or message.get("author", {}).get("id") != owner
@@ -467,6 +633,16 @@ def parse_command(message: dict, owner: str, channel: str, allowed: set[str]) ->
     ):
         return None
     text = message.get("content", "").strip()
+    command = explicit_command(text)
+    if command:
+        return command
+    application_id = (threads or {}).get(channel)
+    if not application_id:
+        return None
+    return thread_command(text, application_id)
+
+
+def explicit_command(text: str) -> dict | None:
     match = re.fullmatch(r"(resume|defer|proceed) ([a-f0-9]{12})", text, re.IGNORECASE)
     if match:
         return {"kind": match[1].lower(), "application_id": match[2].lower()}
@@ -511,6 +687,7 @@ def parse_command(message: dict, owner: str, channel: str, allowed: set[str]) ->
 def apply_command(command: dict, message_id: str):
     application_id = command["application_id"]
     item = workflow.get(application_id)
+    label = None
     with workflow.db() as conn:
         if conn.execute(
             "SELECT 1 FROM owner_commands WHERE message_id=?", (message_id,)
@@ -579,6 +756,7 @@ def apply_command(command: dict, message_id: str):
                 raise PermissionError("Unknown or manual-only question")
             if command["value"].lower() == "skip" and field["required"]:
                 raise ValueError("Required questions cannot be skipped")
+            label = field["label"]
             conn.execute(
                 "INSERT OR REPLACE INTO application_answers VALUES(?,?,?,?)",
                 (application_id, field["key"], command["value"], message_id),
@@ -594,10 +772,13 @@ def apply_command(command: dict, message_id: str):
                 workflow.now(),
             ),
         )
+    data = {k: v for k, v in command.items() if k != "application_id"}
+    if label is not None:
+        data["label"] = label
     workflow.record(
         application_id,
         "owner_answer" if command["kind"] in {"answer", "use"} else command["kind"] + "_requested",
-        {k: v for k, v in command.items() if k != "application_id"},
+        data,
     )
     workflow.flush_events(application_id)
     if command["kind"] in {"resume", "proceed", "account"}:
@@ -622,9 +803,10 @@ def poll_commands():
         raise ValueError("Owner numeric Discord ID is not configured")
     with workflow.db() as conn:
         threads = {
-            r[0]
+            r["thread_id"]: r["id"]
             for r in conn.execute(
-                "SELECT thread_id FROM application_queue WHERE thread_id IS NOT NULL AND status NOT IN ('APPLIED','SUBMITTING')"
+                "SELECT id,thread_id FROM application_queue WHERE thread_id IS NOT NULL "
+                "AND status NOT IN ('APPLIED','SUBMITTING')"
             )
         }
     channels = {settings.get("control_channel_id"), settings.get("action_channel_id"), *threads} - {
@@ -641,24 +823,22 @@ def poll_commands():
             route += "&after=" + checkpoint[0]
         messages = discord("GET", route)
         for message in sorted(messages, key=lambda m: int(m["id"])):
-            if checkpoint:
-                command = parse_command(message, owner, channel, channels)
-                if command:
-                    try:
-                        if (
-                            channel in threads
-                            and workflow.get(command["application_id"])["thread_id"] != channel
-                        ):
-                            raise PermissionError(
-                                "This command belongs to another application's forum"
-                            )
-                        apply_command(command, message["id"])
-                    except (ValueError, PermissionError) as error:
-                        discord(
-                            "POST",
-                            f"/channels/{channel}/messages",
-                            {"content": str(error), "allowed_mentions": {"parse": []}},
-                        )
+            if not checkpoint:
+                continue
+            try:
+                command = parse_command(message, owner, channel, channels, threads)
+                if not command:
+                    continue
+                if channel in threads and threads[channel] != command["application_id"]:
+                    raise PermissionError("This reply belongs to another application's thread")
+                apply_command(command, message["id"])
+            except (ValueError, PermissionError) as error:
+                # One plain line in the same channel says why the reply did not apply.
+                discord(
+                    "POST",
+                    f"/channels/{channel}/messages",
+                    {"content": str(error), "allowed_mentions": {"parse": []}},
+                )
         if messages or not checkpoint:
             # An empty channel also needs a cursor, otherwise its first command
             # would be discarded on the next poll as bootstrap history.
@@ -682,7 +862,9 @@ def recover_interrupted():
         workflow.action_needed(
             row[0],
             "Preparation was interrupted before it finished. Nothing was submitted. Inspect the "
-            f"visible browser, then reply `resume {row[0]}` to prepare again.",
+            "recruiting browser, then reply `go` to prepare again.",
+            commands=["go", "park it"],
+            headline="Preparation interrupted",
         )
 
 
@@ -709,12 +891,16 @@ def run_approved_submissions() -> list[dict]:
         except Exception as error:  # noqa: BLE001 -- persist the failure before yielding
             result = {"application_id": application_id, "error": str(error)[:800]}
             outcome = "failed"
+            workflow.system_line(
+                application_id,
+                f"submission not attempted · package {package_hash} · {str(error)[:300]}",
+            )
             if workflow.get(application_id)["status"] == "READY_FOR_REVIEW":
                 workflow.action_needed(
                     application_id,
                     "Submission was not attempted: " + str(error)[:600] + ". Nothing was sent. "
-                    "Reply resume to prepare it again.",
-                    commands=[f"resume {application_id}"],
+                    "Reply `go` to prepare it again.",
+                    commands=["go"],
                     headline="Submission not attempted",
                 )
         with workflow.db() as conn:
@@ -806,6 +992,7 @@ def tick() -> dict:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"already_running": True}
+        workflow.ensure_system_channel()
         poll_commands()
         workflow.flush_pending()
         prune_excluded()
@@ -849,12 +1036,15 @@ def tick() -> dict:
                     "detail": str(failure.error)[:1500],
                 },
             )
+            workflow.system_line(
+                queued, f"preparation stopped · {failure.phase} · {type(failure.error).__name__}"
+            )
             detail = str(failure.error)
             if detail.startswith("Field verification failed"):
                 label = detail.partition(":")[2].strip() or "a field"
                 reason = (
                     f"The site changed the value I typed for “{label}”. Check it in the "
-                    "recruiting browser, then resume."
+                    "recruiting browser, then reply `go`."
                 )
             else:
                 reason = (
@@ -865,7 +1055,7 @@ def tick() -> dict:
             workflow.action_needed(
                 queued,
                 reason,
-                commands=[f"resume {queued}", f"defer {queued}"],
+                commands=["go", "park it"],
                 headline="Preparation stopped",
             )
             result = {

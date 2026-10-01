@@ -33,7 +33,7 @@ The worker opens the newest in the background recruiting Chrome; Qwen lists the 
 
 A link he pastes in `#agent-control` goes to the front of the queue and is never held on fit.
 
-Evening. One thread reads "Submission unclear · do not click again". He checks his inbox and replies `reconcile 9a71c04e2b8d applied`.
+Evening. One thread reads "Submission unclear · do not click again". He checks his inbox and replies `applied` in that thread.
 
 ## Functional requirements
 
@@ -53,7 +53,7 @@ Evening. One thread reads "Submission unclear · do not click again". He checks 
 |---|---|---|---|
 |FR-4|Code decides fit: a code-verified conflict on program, graduation window, work authorization, sponsorship, location or degree is `not_fit`; a conflict only Qwen claims is `needs_review`; skills never change it.|Done|`reasoning.decide`; `test_only_conflicts_on_eligibility_requirements_change_the_decision`|
 |FR-5|Eligibility the posting states but code cannot check is listed on the job-fit and ready cards, never asked.|Done|`test_evaluate_review_lists_unverified_eligibility_instead_of_holding`|
-|FR-6|A non-fit feed job gets one card in the thread and one in `#shortlist` with `proceed`/`defer`; a pasted link is never held on fit.|Done|`test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist`|
+|FR-6|A non-fit feed job gets one card in the thread and one in `#shortlist` with `go`/`park it`; a pasted link is never held on fit.|Done|`test_owner_links_skip_the_fit_hold_that_sends_feed_jobs_to_the_shortlist`|
 
 ### Resume
 
@@ -122,7 +122,7 @@ Evening. One thread reads "Submission unclear · do not click again". He checks 
 
 |ID|Requirement|Status|Proof|
 |---|---|---|---|
-|FR-35|Commands (`answer`, `use`, `resume`, `defer`, `proceed`, `account … create`, `submit`, `reconcile`) are accepted only from the configured numeric owner in the owner channels, parsed by strict patterns.|Done|`test_owner_command_cannot_be_forged_by_bot_or_other_author`, `test_submit_and_use_commands_accept_hash_prefixes_of_eight_to_sixty_four_hex`|
+|FR-35|Replies (word and numbered forms inside an application's thread; explicit id forms in the control channel) are accepted only from the configured numeric owner, parsed by strict patterns, and never show the owner an id.|Done|`test_owner_command_cannot_be_forged_by_bot_or_other_author`, `test_word_replies_resolve_only_inside_the_applications_thread`, `test_numbered_replies_bind_the_exact_question_and_draft`|
 |FR-36|The worker takes resumed applications first, then pasted links, then the newest feed job; holds while one application waits; hands back a stale `PREPARING` run; waits when the model is down.|Partial|`test_queue_holds_for_waiting_applications_unless_owner_resumes`, `test_tick_executes_one_approved_submission_and_recovers_crashed_runs`; model outage untested|
 
 ## UX requirements

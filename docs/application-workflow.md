@@ -12,7 +12,7 @@ redownload the snapshot. New matching internships enter a deduplicated notificat
 outbox and application queue; each job is announced once, and later Keryx metadata
 changes to a known job do not re-post it. Each tick publishes the newest pending
 matches first, at most `batch_size` (default 10) of them, one card per job (title,
-company, location, cycle, track, application id). Before posting, pending announcements
+company, location, cycle, track, and a "Queued" footer). Before posting, pending announcements
 beyond the newest `max_pending` (default 40) are expired unposted, so a long gap
 between ticks does not flood the channel. A posting that closes in Keryx parks its queued
 application and leaves a note on any application already in progress. Tracking
@@ -37,7 +37,7 @@ library, no automation flag is ever set and `navigator.webdriver` stays false.
 - Every application gets a background tab. Tabs never take focus. The window sits behind
   the owner's work and opens from the Dock (the recruiting Chrome shows its own icon).
 - Finished tabs close on applied or deferred, and the window is capped at
-  `max_open_tabs` (default 5); a closed tab reopens on `resume`.
+  `max_open_tabs` (default 5); a closed tab reopens on `go`.
 - The browser outlives the daemon: a daemon restart reconnects and re-associates the open
   tabs with their applications. Only one client may drive that Chrome; a second
   Playwright client on the same instance stalls it.
@@ -51,7 +51,7 @@ library, no automation flag is ever set and `navigator.webdriver` stays false.
 A block page ("Access Denied", "Pardon our interruption", a Cloudflare interstitial, or a
 reference number) is recognized. The daemon waits, enters through the site's front door,
 and tries once more. A second block hands the application to the owner with the direct
-link (`MANUAL_TAKEOVER`); `reconcile ... applied` then records a manual application.
+link (`MANUAL_TAKEOVER`); replying `applied` in the thread then records a manual application.
 CAPTCHAs are never solved by the workflow; the owner completes them in the browser.
 
 ## Job-fit review before any applicant data
@@ -79,7 +79,7 @@ other wishes never affect the decision either; they are left to the resume and t
 written answers. A requirement Qwen files as a graduation window that never mentions
 graduating (an internship term, for example) is reclassified as dates. Either non-fit
 decision holds a feed job with one card in the thread and one in the shortlist channel
-(nothing goes to action-needed for a fit hold) and waits for `proceed` or `defer`. The
+(nothing goes to action-needed for a fit hold) and waits for `go` or `park it`. The
 card's summary and reasons are the conflicting requirements themselves, plus any
 unchecked eligibility, not Qwen's prose. A link you pasted is never held on fit. Qwen's
 raw extraction is kept, so improved code rules re-evaluate old reviews without another
@@ -110,38 +110,52 @@ bounded repair that must keep every number and name, and the card shows the clea
 with a before/after summary.
 
 Boards that need an account are recognized. Your policy asks first: the card offers
-`account APPLICATION_ID create`; on approval the daemon fills the application email and a
+`create account`; on approval the daemon fills the application email and a
 generated password, accepts the site's terms checkbox, clicks the create control, and
 stores the credential encrypted on this Mac. Later sign-in pages on that host are
 completed with the stored account. Email verification, CAPTCHA, MFA, and identity checks
 stay with the owner in the recruiting browser.
 
-Owner commands are accepted only from the configured numeric owner in the control,
-action-needed, and matching forum channels. They are parsed by deterministic code:
+## Replying in the thread
+
+You reply inside the application's own forum thread, where the bot already knows which
+application is meant, so a reply is a word or a number. Replies are accepted only from
+the configured numeric owner; they are matched by deterministic code, case-insensitively,
+as the whole message, with trailing punctuation ignored:
 
 ```text
-answer APPLICATION_ID FIELD_KEY = value      bind an answer to an observed question
-answer APPLICATION_ID FIELD_KEY = skip       optional questions only
-use APPLICATION_ID FIELD_KEY PROPOSAL_HASH   approve exactly one Qwen draft
-resume APPLICATION_ID                        prepare again with the new answers
-defer APPLICATION_ID                         park it and let the queue continue
-proceed APPLICATION_ID                       override a job-fit hold
-account APPLICATION_ID create                allow one account on this board
-submit APPLICATION_ID PACKAGE_HASH           send one reviewed package once
-reconcile APPLICATION_ID applied             owner applied or confirmed manually
-reconcile APPLICATION_ID not-submitted       owner verified nothing was sent
+go · proceed · continue · resume    carry on: prepare again, or accept a job-fit hold
+park it · park · defer · later · skip   park it and let the queue continue
+send it · send · submit · apply · apply now   send the reviewed package once
+use draft 2 · draft 2 · use 2       approve Qwen's second draft, exactly as shown
+2: value · 2 = value · answer 2: value   answer question 2 from the hold card
+2: skip                              leave an optional question blank
+applied · i applied · done · sent it myself   you applied or confirmed it yourself
+not sent · not submitted · nothing sent       you verified nothing was sent
+create account · make an account · account    allow one account on this board
 ```
 
-`PROPOSAL_HASH` and `PACKAGE_HASH` accept a prefix of 8 to 64 hex characters of the
-current hash; cards show the first 12. A prefix that does not match the current draft or
-package is rejected.
+Questions are numbered on the hold card; the numbers count every question the form
+asked beyond your approved facts, in form order, whether it is open, drafted by Qwen, or
+already answered with a draft under your policy. Drafts are numbered separately, in the
+order Qwen wrote them; each draft card names its own `use draft N` reply. `send it` binds
+to the package that is ready right now and is refused while nothing is ready. Any other
+text in a thread is ignored. A reply that cannot apply (`send it` when nothing is ready,
+`use draft 3` when there are two) gets one plain line in the thread saying why.
+
+The control channel has no implied application, so the explicit forms work there and in
+any thread: `resume|defer|proceed APPLICATION_ID`, `account APPLICATION_ID create`,
+`submit APPLICATION_ID PACKAGE_HASH`, `reconcile APPLICATION_ID applied|not-submitted`,
+`use APPLICATION_ID FIELD_KEY PROPOSAL_HASH`, and `answer APPLICATION_ID FIELD_KEY = value`.
+The hashes accept a prefix of 8 to 64 hex characters of the current value and are rejected
+when they do not match the current draft or package. The ids live in `system-log`.
 
 Every hold is one card in the thread and one in an owner channel (action-needed, or
-shortlist for a fit hold): what happened, why, the questions only you can answer, and
-the exact reply commands in a code block. The "Answers needed" card lists only the
-questions Qwen could not draft (up to six, numbered, with their options) and a bare
-`answer APPLICATION_ID FIELD_KEY = ` line for the first four to complete; drafts are
-approved from their own cards in the thread.
+shortlist for a fit hold): what happened, why, the numbered questions, and the replies
+in a code block. The "Answers needed" card lists the questions only you can answer under
+"Only you can answer" and the ones Qwen drafted under "Qwen drafted" (with the `use draft
+N` reply that approves each, or the `N: your text` reply that replaces a draft already
+used), then a bare `N: ` line for the first four open questions, `go`, and `park it`.
 
 `action-needed` and `shortlist` are to-do lists. An application has at most one live
 card in each; a new card replaces the previous one, and the cards are withdrawn as
@@ -165,6 +179,14 @@ limit, Qwen is told it, one retry asks for a shorter answer, and a remaining ove
 cut at a sentence boundary and marked as shortened. A "rising senior" style requirement
 is decided by code from the approved graduation month and the internship year.
 
+A typeahead (a text input with an autocomplete hint or a "start typing" placeholder) is
+treated like a combobox: the value is typed and the matching suggestion is picked; when
+the suggestion list has no ARIA roles, the first suggestion is taken and accepted only if
+the committed text still names the approved city. When a site rejects a form naming a
+"required field", that label is remembered for the application and treated as required on
+the next preparation. A text the site silently truncates is cut to what the field keeps,
+at a sentence boundary, and the form card says so.
+
 A field counts as required when the input says so or when its label carries a
 "required" class or a trailing asterisk, which is how Ashby and Lever mark it. A place
 typeahead (location, city) is typed into and the one suggestion that starts with the
@@ -182,8 +204,8 @@ when a field is matched to a profile fact.
 
 ## Submission
 
-Submission runs only from an authenticated `submit` command whose hash matches the
-current package of a `READY_FOR_REVIEW` application, and only when private
+Submission runs only from an authenticated `send it` reply (or an explicit `submit`
+command) bound to the current package hash of a `READY_FOR_REVIEW` application, and only when private
 `config/workflow.json` sets `submission_enabled` and lists an adapter in
 `submit_adapters`. The model has no submit tool.
 
@@ -246,8 +268,9 @@ Greenhouse receipt, so cards and the Erga confirmation work unchanged.
 
 Two private `config/workflow.json` keys turn the review step into an after-the-fact one:
 
-- `auto_use_drafts`: Qwen's drafts become the answers without a per-draft `use` reply.
-  The draft cards stay in the thread; an `answer` reply before sending still overrides.
+- `auto_use_drafts`: Qwen's drafts become the answers without a per-draft `use draft`
+  reply. The draft cards stay in the thread, each used draft gets a line naming the
+  question's number, and a `N: your text` reply before sending still overrides.
 - `auto_submit`: a complete package is sent once, on the tick that prepared it, through
   the enabled adapter for that site. The thread records "auto-submit is on · sending
   once", then the result card. `max_submissions_per_day` (default 10) and
@@ -268,7 +291,7 @@ result. Nothing is ever sent twice for the same package.
 
 When the site keeps the form open and names a validation error after the single click,
 nothing was sent: the attempt is recorded as not submitted, the application goes back to
-"needs you" with the site's message, and a later `resume` prepares a new package. Only an
+"needs you" with the site's message, and a later `go` prepares a new package. Only an
 outcome the page cannot settle (navigation without a confirmation, a timeout, a crash)
 becomes "unclear" and blocks all sending until the owner reconciles it.
 
@@ -284,8 +307,10 @@ never a candidate fact. Credentials live only in the encrypted local store.
 ## Local configuration
 
 Private `config/workflow.json` maps `guild_id`, `forum_channel_id`, `control_channel_id`,
-`action_channel_id`, `source_channel_id`, `shortlist_channel_id`, and lifecycle `tags`.
-It also supplies `hermes_python`, an explicit `enabled` flag, `submission_enabled`,
+`action_channel_id`, `source_channel_id`, `shortlist_channel_id`, `system_channel_id`,
+and lifecycle `tags`. `system_channel_id` is optional: when it is missing, the worker
+looks the `system-log` channel up by name once and writes the id into the file; without
+such a channel the system log stays off. It also supplies `hermes_python`, an explicit `enabled` flag, `submission_enabled`,
 `submit_adapters`, `max_waiting_applications` (default 1), `browser_app` (`chrome` or
 `chromium`), `max_open_tabs` (default 5), `human_pacing` (default true), and an optional
 `unslop_path` pointing at a local clone of the Unslop repository. Private
@@ -310,8 +335,8 @@ logged to `logs/delivery-failures.log` under the state root and retried on every
 tick. A failed card withdrawal or status-card edit is logged there too, but not retried.
 Each tick also re-checks queued feed jobs against the approved exclusion rules and
 defers the ones that now match, with the reason in the queue record; a link you pasted
-is never pruned that way. The worker takes an application you told to `resume`,
-`proceed`, or `account ... create` first, then a pasted link before a feed job, and
+is never pruned that way. The worker takes an application you told to go on (`go` or
+`create account`) first, then a pasted link before a feed job, and
 otherwise the newest queued job. An ambiguous forum creation is held for
 reconciliation. The worker holds the only processing lock, so a `PREPARING` application
 older than fifteen minutes is a crashed run and is handed back to the owner. When the
@@ -335,5 +360,5 @@ without new confirmation wording. Multi-page support advances only on
 Next/Continue controls after a complete page. Account creation covers email, password,
 terms checkbox and known name fields; anything else on a registration page is a hold.
 No CAPTCHA solving (a visible challenge stops and asks), no proxies, no recruiting-mail tracking. Unattended submission is an owner policy with a daily cap and a minimum gap.
-Natural-language owner replies are not converted into commands; the strict forms above
-are required.
+Only the word, number, and explicit replies above are understood; a sentence in a thread
+is ignored, never interpreted.

@@ -721,15 +721,17 @@ def review_application(application_id: str, page: dict) -> dict:
             # Written answers get the Unslop pass before they are hashed for approval.
             answer.update(polish(directory, answer["key"], answer["value"]))
     shorten_to_fit(result, questions)
+    number = 0
     for answer in result["answers"]:
         answer["proposal_hash"] = fingerprint(
             {"application_id": application_id, "context_hash": context_hash, **answer}
         )
         answer["label"] = labels.get(answer["key"], "")
         if answer["kind"] == "proposal":
-            answer["approve_command"] = (
-                f"use {application_id} {answer['key']} {answer['proposal_hash'][:12]}"
-            )
+            # The draft's number is how the owner names it; it is not part of the hash.
+            number += 1
+            answer["number"] = number
+            answer["approve_command"] = f"use draft {number}"
     write_private(directory / "answer-proposals.json", result)
     for answer in result["answers"]:
         workflow.record(

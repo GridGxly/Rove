@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -676,7 +677,7 @@ def test_fit_hold_names_conflicts_and_unchecked_eligibility_without_qwen_prose()
     ]
     assert hold["summary"].startswith("Conflicts with your approved facts: No visa sponsorship")
     assert "stretch" not in hold["summary"]
-    assert hold["commands"] == ["proceed abcdef012345", "defer abcdef012345"]
+    assert hold["commands"] == ["go", "park it"]
 
 
 def test_fit_hold_without_conflicts_asks_about_unchecked_eligibility_only():
@@ -851,9 +852,13 @@ def test_the_thread_status_card_mirrors_the_live_owner_card(state, monkeypatch):
     calls = owner_channels(monkeypatch)
     app = workflow.enqueue("https://jobs.example.com/status")["application_id"]
     workflow.set_state(app, "NEEDS_USER", thread_id="thread-1")
-    command = f"answer {app} abcdef012345 = "
+    questions = [{"label": "Current GPA", "key": "abcdef012345", "state": "open"}]
     workflow.action_needed(
-        app, "A question needs you.", commands=[command], headline="Answers needed"
+        app,
+        "A question needs you.",
+        questions=questions,
+        commands=["1: ", "go", "park it"],
+        headline="Answers needed",
     )
     _, path, payload = [c for c in calls if c[0] == "PATCH"][-1]
     assert path == "/channels/thread-1/messages/thread-1" and len(payload["embeds"]) == 1
@@ -861,12 +866,14 @@ def test_the_thread_status_card_mirrors_the_live_owner_card(state, monkeypatch):
     assert (
         "Answers needed" in card["description"] and "A question needs you." in card["description"]
     )
-    assert {f["name"]: f["value"] for f in card["fields"]}["Reply"] == workflow.command_block(
-        [command]
-    )
+    fields = {f["name"]: f["value"] for f in card["fields"]}
+    assert fields["Reply"] == workflow.command_block(["1: ", "go", "park it"])
+    assert "application" not in card["footer"]["text"]
+    no_ids(card)
     workflow.set_state(app, "DEFERRED")
     card = [c for c in calls if c[0] == "PATCH"][-1][2]["embeds"][0]
-    assert f"resume {app}" in card["description"] and "Parked" in card["description"]
+    assert "Reply `go`" in card["description"] and "Parked" in card["description"]
+    no_ids(card)
 
 
 def test_status_card_is_not_refreshed_without_a_thread_or_when_disabled(state, monkeypatch):
@@ -1106,7 +1113,8 @@ def test_a_site_that_says_already_applied_stops_before_anything_is_sent(state, m
             "SELECT data FROM application_events WHERE application_id=? AND kind='needs_action'",
             (app,),
         ).fetchone()
-    assert f"reconcile {app} applied" in row["data"] and "already" in row["data"]
+    payload = json.loads(row["data"])
+    assert payload["commands"] == ["applied", "park it"] and "already" in payload["reason"]
 
 
 def test_profile_facts_resolve_from_the_meaning_of_a_label_not_its_exact_wording():
@@ -1140,3 +1148,453 @@ def test_profile_facts_resolve_from_the_meaning_of_a_label_not_its_exact_wording
     assert phone_variants("+1 555-010-0199") == ["5550100199", "+15550100199"]
     assert phone_variants("5550100199") == ["5550100199", "+15550100199"]
     assert phone_variants("+44 20 7946 0958") == ["+44 20 7946 0958"]
+
+
+def no_ids(rendered):
+    """Owner-facing cards and lines never carry an application id, field key or hash."""
+    text = json.dumps(rendered)
+    assert not re.search(r"[a-f0-9]{12}", text), text
+
+
+def owner_message(content: str, author: str = "owner") -> dict:
+    return {"author": {"id": author}, "content": content}
+
+
+def test_word_replies_resolve_only_inside_the_applications_thread(state):
+    app = workflow.enqueue("https://jobs.example.com/words")["application_id"]
+    workflow.set_state(app, "NEEDS_USER", thread_id="t1")
+    threads = {"t1": app}
+    allowed = {"control", "t1"}
+    parse = lambda text, channel="t1", author="owner": parse_command(
+        owner_message(text, author), "owner", channel, allowed, threads
+    )
+    assert parse("go") == {"kind": "resume", "application_id": app, "word": "go"}
+    assert parse("Go!")["kind"] == "resume"
+    assert parse("`continue`")["kind"] == "resume"
+    assert parse("park it.") == {"kind": "defer", "application_id": app, "word": "park it"}
+    assert parse("Later")["kind"] == "defer"
+    assert parse("applied") == {
+        "kind": "reconcile",
+        "application_id": app,
+        "outcome": "applied",
+        "word": "applied",
+    }
+    assert parse("sent it myself")["outcome"] == "applied"
+    assert parse("not sent")["outcome"] == "not-submitted"
+    assert parse("nothing sent")["outcome"] == "not-submitted"
+    assert parse("create account") == {
+        "kind": "account",
+        "application_id": app,
+        "word": "create account",
+    }
+    # The control channel has no implied application: words mean nothing there.
+    assert parse("go", channel="control") is None
+    assert parse("go", author="stranger") is None
+    # Unknown text, a bare number and a stray sentence are ignored, exactly like before.
+    assert parse("thanks, looks good") is None
+    assert parse("2") is None
+    assert parse("go ahead and send it") is None
+    # Explicit forms still work in a thread.
+    assert parse(f"defer {app}") == {"kind": "defer", "application_id": app}
+    # Sending needs a reviewed package; the refusal is one plain line without ids.
+    with pytest.raises(ValueError, match="Nothing is ready to send"):
+        parse("send it")
+    workflow.set_state(app, "READY_FOR_REVIEW", package_hash="c" * 64)
+    assert parse("Send it") == {
+        "kind": "submit",
+        "application_id": app,
+        "package_hash": "c" * 64,
+        "word": "send it",
+    }
+    assert parse("apply now")["package_hash"] == "c" * 64
+    workflow.set_state(app, "APPLIED")
+    with pytest.raises(ValueError, match="already sent"):
+        parse("submit")
+
+
+def test_go_proceeds_past_a_fit_hold_and_resumes_otherwise(state):
+    app = workflow.enqueue("https://jobs.example.com/fit")["application_id"]
+    workflow.set_state(app, "NEEDS_USER", thread_id="t1")
+    workflow.record(app, "needs_action", {"headline": "Your call on fit", "reason": "x"})
+    parse = lambda text: parse_command(owner_message(text), "owner", "t1", {"t1"}, {"t1": app})
+    assert parse("go")["kind"] == "proceed"
+    assert parse("proceed")["kind"] == "proceed"
+    workflow.record(app, "needs_action", {"headline": "Answers needed", "reason": "y"})
+    assert parse("go")["kind"] == "resume"
+    workflow.record(app, "needs_action", {"headline": "Your call on fit", "reason": "x"})
+    workflow.set_state(app, "QUEUED")
+    assert parse("go")["kind"] == "resume"
+
+
+def proposals_file(state, app, answers):
+    from erga_autopilot.onboarding import read_approved
+
+    directory = state / "applications" / app
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "answer-proposals.json").write_text(
+        json.dumps({"profile_hash": read_approved()["profile_hash"], "answers": answers})
+    )
+    return directory
+
+
+def test_numbered_replies_bind_the_exact_question_and_draft(state):
+    app = workflow.enqueue("https://jobs.example.com/numbers")["application_id"]
+    workflow.set_state(app, "NEEDS_USER", thread_id="t1")
+    directory = proposals_file(
+        state,
+        app,
+        [
+            {"key": "aaaaaaaaaaaa", "kind": "needs_user", "value": "", "label": "GPA"},
+            {"key": "bbbbbbbbbbbb", "kind": "proposal", "proposal_hash": "1" * 64, "value": "A"},
+            {"key": "cccccccccccc", "kind": "proposal", "proposal_hash": "2" * 64, "value": "B"},
+        ],
+    )
+    fields = [
+        {"key": key, "label": label, "kind": "textarea", "required": True, "options": []}
+        for key, label in [
+            ("aaaaaaaaaaaa", "GPA"),
+            ("bbbbbbbbbbbb", "Why?"),
+            ("cccccccccccc", "Us?"),
+        ]
+    ]
+    (directory / "observation.json").write_text(json.dumps({"fields": fields}))
+    parse = lambda text: parse_command(owner_message(text), "owner", "t1", {"t1"}, {"t1": app})
+    # Drafts count only proposals, in file order.
+    assert parse("use draft 2") == {
+        "kind": "use",
+        "application_id": app,
+        "field_key": "cccccccccccc",
+        "proposal_hash": "2" * 64,
+        "word": "use draft 2",
+    }
+    assert parse("Draft 1")["field_key"] == "bbbbbbbbbbbb"
+    assert parse("use 1")["proposal_hash"] == "1" * 64
+    with pytest.raises(ValueError, match="no draft 3"):
+        parse("use draft 3")
+    with pytest.raises(ValueError, match="no draft 0"):
+        parse("draft 0")
+    # Questions are numbered by the latest hold's list, whatever their state.
+    with pytest.raises(ValueError, match="Nothing here is waiting"):
+        parse("1: 3.9")
+    questions = [
+        {"key": "bbbbbbbbbbbb", "label": "Why?", "state": "drafted", "draft": 1},
+        {"key": "aaaaaaaaaaaa", "label": "GPA", "state": "open"},
+    ]
+    workflow.record(app, "needs_action", {"headline": "Answers needed", "questions": questions})
+    assert parse("2: 3.9") == {
+        "kind": "answer",
+        "application_id": app,
+        "field_key": "aaaaaaaaaaaa",
+        "value": "3.9",
+        "number": 2,
+    }
+    assert parse("answer 1 = My own words: better.")["value"] == "My own words: better."
+    assert parse("1 = skip")["field_key"] == "bbbbbbbbbbbb"
+    with pytest.raises(ValueError, match="no question 3"):
+        parse("3: x")
+    # The resolved reply goes through the same binding as the explicit form.
+    apply_command(parse("use draft 2"), "m1")
+    apply_command(parse("2: 3.9"), "m2")
+    answers = workflow.approved_answers(app)
+    assert answers["cccccccccccc"]["value"] == "B" and answers["aaaaaaaaaaaa"]["value"] == "3.9"
+    with workflow.db() as conn:
+        rows = [
+            json.loads(r[0])
+            for r in conn.execute("SELECT data FROM application_events WHERE kind='owner_answer'")
+        ]
+    assert rows[0]["label"] == "Us?" and rows[0]["proposal_hash"] == "2" * 64
+    for row in rows:
+        no_ids(workflow.event_embeds(app, "owner_answer", row))
+    assert workflow.event_embeds(app, "owner_answer", rows[0]) == [
+        "→ You approved Qwen's draft for “Us?”"
+    ]
+    assert workflow.event_embeds(app, "owner_answer", rows[1]) == ["→ You answered “GPA”: 3.9"]
+
+
+def test_question_list_numbers_open_drafted_and_used_questions_in_form_order():
+    from erga_autopilot.worker import question_list
+
+    asked = [
+        {"key": "aaaaaaaaaaaa", "label": "Why us?", "required": True},
+        {"key": "bbbbbbbbbbbb", "label": "GPA", "required": True, "options": ["3", "4"]},
+        {"key": "cccccccccccc", "label": "Excited?", "required": True},
+    ]
+    proposals = {
+        "answers": [
+            {"key": "cccccccccccc", "kind": "proposal", "value": "Yes"},
+            {"key": "bbbbbbbbbbbb", "kind": "needs_user"},
+            {"key": "aaaaaaaaaaaa", "kind": "proposal", "value": "Mission"},
+        ]
+    }
+    questions = question_list(asked, asked, proposals, set())
+    assert [(q["state"], q.get("draft")) for q in questions] == [
+        ("drafted", 2),
+        ("open", None),
+        ("drafted", 1),
+    ]
+    questions = question_list(
+        asked, [asked[1], {"key": "dddddddddddd", "label": "New"}], proposals, {"aaaaaaaaaaaa"}
+    )
+    assert [q["state"] for q in questions] == ["used", "open", "drafted", "open"]
+    fields = {name: value for name, value, _ in workflow.hold_fields({"questions": questions})}
+    assert fields["Only you can answer"] == "2. GPA  (3 / 4)\n4. New"
+    assert fields["Qwen drafted"] == (
+        "1. Why us? · Qwen's draft is the answer · reply `1: your text` to change it\n"
+        "3. Excited? · reply `use draft 1` to approve"
+    )
+    no_ids(fields)
+
+
+def test_owner_cards_and_lines_carry_no_identifiers(state):
+    app = workflow.enqueue("https://jobs.example.com/clean")["application_id"]
+    proposals_file(
+        state,
+        app,
+        [
+            {"key": "aaaaaaaaaaaa", "kind": "needs_user", "value": ""},
+            {"key": "bbbbbbbbbbbb", "kind": "proposal", "proposal_hash": "1" * 64, "value": "A"},
+        ],
+    )
+    package = "f" * 64
+    samples = {
+        "fields_prepared": {
+            "filled": [
+                {"label": "First name", "value": "Alex", "source": "identity.legal_first_name"},
+                {"label": "Resume", "source": "frozen approved base resume", "sha256": "e" * 64},
+                {
+                    "label": "Phone",
+                    "value": "555",
+                    "source": "owner setup reply codex-owner-reply:call 9",
+                },
+            ],
+            "pending": [{"key": "aaaaaaaaaaaa", "label": "GPA"}],
+        },
+        "qwen_answer_proposal": {
+            "key": "bbbbbbbbbbbb",
+            "proposal_hash": "1" * 64,
+            "label": "Why us?",
+            "value": "A",
+            "sources": ["story"],
+            "approve_command": f"use {app} bbbbbbbbbbbb 111111111111",
+        },
+        "qwen_question": {"key": "aaaaaaaaaaaa", "label": "GPA", "explanation": "unknown"},
+        "submission_confirmed": {
+            "package_hash": package,
+            "confirmation_url": "https://jobs.example.com/thanks",
+            "checks": {"confirmation_url": True},
+        },
+        "submission_unknown": {
+            "package_hash": package,
+            "reason": "timeout",
+            "checks": {"confirmed": False, "post_accepted": True},
+        },
+        "submission_rejected": {"package_hash": package, "reason": "Email is required"},
+        "submit_attempt": {"package_hash": package, "owner_message_id": "1" * 18, "adapter": "x"},
+        "submit_requested": {"package_hash": package, "word": "send it"},
+        "reconcile_requested": {"outcome": "applied"},
+        "resume_requested": {},
+        "auto_submit_queued": {"package_hash": package},
+        "auto_draft_used": {"key": "bbbbbbbbbbbb", "label": "Why us?", "number": 2},
+        "resume_prepared": {"sha256": "e" * 64, "tailored": True},
+        "needs_action": {
+            "headline": "Submission unclear",
+            "reason": "Check it.",
+            "questions": [{"key": "aaaaaaaaaaaa", "label": "GPA"}],
+            "commands": [
+                f"reconcile {app} applied",
+                f"reconcile {app} not-submitted",
+                f"answer {app} aaaaaaaaaaaa = ",
+                f"use {app} bbbbbbbbbbbb 111111111111",
+                f"submit {app} {package[:12]}",
+            ],
+        },
+        "lifecycle": {
+            "from": "UNKNOWN_SUBMISSION",
+            "to": "NEEDS_USER",
+            "trigger": "owner",
+            "detail": "x",
+        },
+        "discord_tag_failed": {"tags": ["Applied"], "error": "HTTPStatusError", "run_id": "d" * 12},
+    }
+    rendered = {kind: workflow.event_embeds(app, kind, data) for kind, data in samples.items()}
+    for items in rendered.values():
+        no_ids(items)
+    draft = rendered["qwen_answer_proposal"][0]
+    assert draft["title"] == "Draft 1 · Why us?"
+    assert draft["fields"][0]["value"] == workflow.command_block(["use draft 1"])
+    assert rendered["submit_attempt"] == ["→ Sending it once"]
+    assert rendered["auto_submit_queued"] == ["→ Auto-submit is on · sending it once"]
+    assert rendered["submit_requested"] == ["→ You replied `send it` · sending it once"]
+    assert rendered["reconcile_requested"] == ["→ You replied `reconcile applied`"]
+    assert rendered["resume_requested"] == ["→ You replied `resume`"]
+    assert rendered["auto_draft_used"] == [
+        (
+            "→ Used Qwen's draft for “Why us?” · reply `2: your text` in this thread before "
+            "it is sent to change it"
+        )
+    ]
+    filled = {f["name"]: f["value"] for f in rendered["fields_prepared"][0]["fields"]}
+    assert filled["Resume"] == "resume PDF · _your resume_"
+    assert filled["Phone"].endswith("_your reply_")
+    assert rendered["fields_prepared"][1] == "→ 1 question left for Qwen or you"
+    unknown = {f["name"]: f["value"] for f in rendered["submission_unknown"][0]["fields"]}
+    assert unknown["Reply"] == workflow.command_block(["applied", "not sent"])
+    confirmed = {f["name"]: f["value"] for f in rendered["submission_confirmed"][0]["fields"]}
+    assert list(confirmed) == ["Confirmation page", "Confirmed by"]
+    hold = {f["name"]: f["value"] for f in rendered["needs_action"][0]["fields"]}
+    assert hold["Reply"] == workflow.command_block(["applied", "not sent", "1: ", "send it"])
+    assert rendered["resume_prepared"] == ["→ Resume ready · tailored from your evidence"]
+    # Cards the owner channels and the forum's first post get say the same words.
+    notice = workflow.notice_embed(app, "action", samples["needs_action"])
+    no_ids(notice)
+    assert {f["name"]: f["value"] for f in notice["fields"]}["Reply"] == hold["Reply"]
+
+
+def test_source_words_speak_to_the_owner():
+    words = workflow.source_words
+    assert words("owner setup reply codex-owner-reply:call 99jGqo") == "your reply"
+    assert words("owner Discord message auto-draft:abcdef012345") == "your reply"
+    assert words("policy.decline_self_identification") == "declined, as allowed"
+    assert words("default.phone_type") == "default"
+    for prefix in ("identity.", "education.", "eligibility.", "preferences."):
+        assert words(prefix + "anything") == "your profile"
+
+
+def test_the_forum_first_post_and_feed_card_name_no_application_id(state, monkeypatch):
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {"enabled": True, "forum_channel_id": "forum", "guild_id": "g"},
+    )
+    posted = []
+    monkeypatch.setattr(
+        workflow,
+        "discord",
+        lambda method, path, payload=None: posted.append((method, path, payload)) or {"id": "t9"},
+    )
+    app = workflow.enqueue("https://jobs.example.com/first", title="Example — Intern")[
+        "application_id"
+    ]
+    assert workflow.ensure_forum(app) == "t9"
+    first = posted[0][2]["message"]["embeds"][0]
+    no_ids(first)
+    assert "`send it`" in first["description"]
+    assert [f["name"] for f in first["fields"]] == ["Source", "Posting"]
+    sent = seed_feed(state, monkeypatch, {}, 1)
+    assert discord_feed.tick()["sent"] == 1
+    card = sent[0][2]["embeds"][0]
+    no_ids(card)
+    assert [f["name"] for f in card["fields"]] == ["Cycle", "Track"]
+    assert card["footer"]["text"] == "Queued" and card["title"] == "Software Intern"
+
+
+def test_system_line_posts_only_when_configured(state, monkeypatch):
+    posted = []
+    monkeypatch.setattr(
+        workflow,
+        "discord",
+        lambda method, path, payload=None: posted.append((method, path, payload)),
+    )
+    app = workflow.enqueue("https://jobs.example.com/log")["application_id"]
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": True, "guild_id": "g"})
+    workflow.system_line(app, "no channel yet")
+    monkeypatch.setattr(
+        workflow, "config", lambda: {"enabled": False, "system_channel_id": "sys", "guild_id": "g"}
+    )
+    workflow.system_line(app, "disabled")
+    assert posted == []
+    monkeypatch.setattr(
+        workflow, "config", lambda: {"enabled": True, "system_channel_id": "sys", "guild_id": "g"}
+    )
+    workflow.system_line(app, "hello")
+    assert posted == [
+        (
+            "POST",
+            "/channels/sys/messages",
+            {"content": f"`{app}` · hello", "allowed_mentions": {"parse": []}},
+        )
+    ]
+    # Recorded events with identifiers go to the system log, routine steps do not.
+    workflow.record(app, "submit_attempt", {"package_hash": "f" * 64, "adapter": "greenhouse_v1"})
+    workflow.record(app, "opened", {"url": "https://jobs.example.com/log", "title": "t"})
+    assert len(posted) == 2
+    assert (
+        posted[-1][2]["content"]
+        == f"`{app}` · submit attempt · greenhouse_v1 · package " + "f" * 64
+    )
+
+    def refused(method, path, payload=None):
+        raise OSError("down")
+
+    monkeypatch.setattr(workflow, "discord", refused)
+    workflow.system_line(app, "never raises")
+    assert "system" in (state / "logs/delivery-failures.log").read_text()
+
+
+def test_system_channel_is_looked_up_once_by_name_and_kept_in_config(state, monkeypatch):
+    path = state / "config/workflow.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"enabled": True, "guild_id": "g", "forum_channel_id": "f"}))
+    calls = []
+    channels = [{"id": 1, "name": "general"}, {"id": 42, "name": "system-log"}]
+    monkeypatch.setattr(
+        workflow,
+        "discord",
+        lambda method, path, payload=None: calls.append((method, path)) or channels,
+    )
+    assert workflow.ensure_system_channel() == "42"
+    assert json.loads(path.read_text()) == {
+        "enabled": True,
+        "guild_id": "g",
+        "forum_channel_id": "f",
+        "system_channel_id": "42",
+    }
+    assert workflow.ensure_system_channel() == "42"
+    assert calls == [("GET", "/guilds/g/channels")]
+    # No channel of that name, an error, or no guild: nothing is written and nothing raises.
+    path.write_text(json.dumps({"enabled": True, "guild_id": "g"}))
+    channels[:] = [{"id": 1, "name": "general"}]
+    assert workflow.ensure_system_channel() is None
+    monkeypatch.setattr(workflow, "discord", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    assert workflow.ensure_system_channel() is None
+    path.write_text(json.dumps({"enabled": True}))
+    assert workflow.ensure_system_channel() is None
+    assert "system_channel_id" not in json.loads(path.read_text())
+
+
+def test_a_thread_reply_that_cannot_apply_gets_one_plain_line(state, monkeypatch):
+    from erga_autopilot import worker
+
+    app = workflow.enqueue("https://jobs.example.com/plain")["application_id"]
+    workflow.set_state(app, "NEEDS_USER", thread_id="t1")
+    monkeypatch.setattr(workflow, "config", lambda: {"control_channel_id": "control"})
+    monkeypatch.setattr(worker, "private_env", lambda: {"DISCORD_OWNER_USER_ID": "owner"})
+    monkeypatch.setattr(worker, "discord", lambda *a: [])
+    worker.poll_commands()
+    with workflow.db() as conn:
+        cursor = conn.execute(
+            "SELECT message_id FROM workflow_checkpoints WHERE channel_id='t1'"
+        ).fetchone()[0]
+    posted = []
+
+    def fake(method, path, payload=None):
+        if method == "GET" and path.startswith("/channels/t1/"):
+            return [
+                {"id": str(int(cursor) + 1), "author": {"id": "owner"}, "content": "send it"},
+                {"id": str(int(cursor) + 2), "author": {"id": "owner"}, "content": "nice job"},
+                {"id": str(int(cursor) + 3), "author": {"id": "owner"}, "content": "park it"},
+            ]
+        if method == "POST":
+            posted.append((path, payload))
+            return {"id": "p1"}
+        return []
+
+    monkeypatch.setattr(worker, "discord", fake)
+    worker.poll_commands()
+    assert [p for p, _ in posted] == ["/channels/t1/messages"]
+    assert posted[0][1]["content"] == "Nothing is ready to send here yet."
+    no_ids(posted[0][1]["content"])
+    assert workflow.get(app)["status"] == "DEFERRED"
+    with workflow.db() as conn:
+        kinds = [r[0] for r in conn.execute("SELECT kind FROM owner_commands")]
+    assert kinds == ["defer"]
