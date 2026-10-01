@@ -1201,38 +1201,51 @@ def next_queued(max_waiting: int):
     digest picks, then feed jobs by score (the newest first within a score band).
 
     With `auto_submit` on, holds waiting on the owner never stop the queue; the daily cap
-    and the per-platform gap are the brakes, and a job on a platform still inside its gap
-    gives way to the best job on another platform. With it off, `max_waiting` holds stop
-    feed jobs until the owner answers.
+    and the per-platform gap are the brakes. The gap applies to every application, so a
+    job on a platform that just took a submission gives way to the best job on another
+    platform; the daily cap never stops what the owner resumed or pasted. With
+    `auto_submit` off, `max_waiting` holds stop feed jobs until the owner answers.
     """
     settings = workflow.config()
     unattended = bool(settings.get("auto_submit"))
     now = datetime.now(UTC)
     with workflow.db() as conn:
         intake.prepare_pacing(conn)
-        # An explicit owner resume/proceed is processed even while other applications wait.
-        resumed = conn.execute(
-            "SELECT q.id FROM application_queue q JOIN owner_commands c ON c.application_id=q.id "
-            "WHERE q.status='QUEUED' AND c.kind IN ('resume','proceed','account') AND c.status='applied' "
-            "ORDER BY c.created_at DESC LIMIT 1"
-        ).fetchone()
-        if resumed:
-            return resumed[0]
-        pasted = conn.execute(
-            "SELECT id FROM application_queue WHERE status='QUEUED' AND source='owner_link' "
-            "ORDER BY created_at LIMIT 1"
-        ).fetchone()
-        if pasted:
-            # A link the owner pasted is worked next, however many holds are waiting.
-            return pasted[0]
-        resting: set = set()
-        if unattended:
-            # Unattended sending is paced from the attempts on record.
-            if intake.daily_cap_reached(conn, settings, now):
-                return None
-            if intake.inside_global_gap(conn, settings, now):
-                return None
-            resting = intake.resting_platforms(conn, settings, now)
+        resting = intake.resting_platforms(conn, settings, now) if unattended else set()
+
+        def first_free(rows):
+            return next(
+                (
+                    row["id"]
+                    for row in rows
+                    if not resting or intake.platform_of(row["url"]) not in resting
+                ),
+                None,
+            )
+
+        # An explicit owner resume/proceed is processed even while other applications
+        # wait, and a link the owner pasted is worked next, however many holds there are.
+        chosen = first_free(
+            conn.execute(
+                "SELECT q.id,q.url FROM application_queue q JOIN owner_commands c "
+                "ON c.application_id=q.id WHERE q.status='QUEUED' "
+                "AND c.kind IN ('resume','proceed','account') AND c.status='applied' "
+                "ORDER BY c.created_at DESC"
+            ).fetchall()
+        ) or first_free(
+            conn.execute(
+                "SELECT id,url FROM application_queue WHERE status='QUEUED' "
+                "AND source='owner_link' ORDER BY created_at"
+            ).fetchall()
+        )
+        if chosen:
+            return chosen
+        # Unattended sending is paced from the attempts on record.
+        if unattended and (
+            intake.daily_cap_reached(conn, settings, now)
+            or intake.inside_global_gap(conn, settings, now)
+        ):
+            return None
         candidates = conn.execute(
             "SELECT id,url FROM application_queue WHERE status='QUEUED' AND source='owner_pick' "
             "ORDER BY created_at"
@@ -1248,10 +1261,7 @@ def next_queued(max_waiting: int):
                 "ORDER BY COALESCE(s.score,0)/? DESC,q.created_at DESC",
                 (intake.SCORE_BAND,),
             ).fetchall()
-        for row in candidates:
-            if not resting or intake.platform_of(row["url"]) not in resting:
-                return row["id"]
-    return None
+        return first_free(candidates)
 
 
 def tick() -> dict:

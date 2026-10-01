@@ -1,6 +1,8 @@
 """Deterministic Keryx notifications; never run Qwen or authorize an application."""
 
+import contextlib
 import json
+import sqlite3
 import time
 from datetime import UTC, datetime
 
@@ -80,7 +82,9 @@ def feed_db():
           status TEXT NOT NULL DEFAULT 'pending', message_id TEXT);
     """)
     if "score" not in {row[1] for row in db.execute("PRAGMA table_info(feed_outbox)")}:
-        db.execute("ALTER TABLE feed_outbox ADD COLUMN score INTEGER NOT NULL DEFAULT 0")
+        # Another local service may add the column in the same moment; either one will do.
+        with contextlib.suppress(sqlite3.OperationalError):
+            db.execute("ALTER TABLE feed_outbox ADD COLUMN score INTEGER NOT NULL DEFAULT 0")
     intake.ensure_tables(db)
     return db
 

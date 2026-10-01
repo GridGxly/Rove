@@ -346,6 +346,47 @@ def test_rows_imported_before_identities_existed_are_not_reannounced(state, monk
     assert discord_feed.tick()["sent"] == 0 and not posts(sent, "jobs")
 
 
+def test_an_outbox_from_before_scores_gains_the_column_and_still_posts(state, monkeypatch):
+    listing = job("old")
+    with jobs.database() as db:
+        db.executescript("""
+            CREATE TABLE feed_outbox(
+              key TEXT PRIMARY KEY, job_id TEXT NOT NULL, payload TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending', message_id TEXT);
+        """)
+        db.execute(
+            "INSERT INTO feed_outbox(key,job_id,payload) VALUES(?,?,?)",
+            ("f" * 64, listing["id"], json.dumps(listing)),
+        )
+        db.execute(
+            "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                jobs.REPOSITORY,
+                listing["id"],
+                listing["company"],
+                listing["title"],
+                listing["location"],
+                "internship",
+                listing["cycle"],
+                "open",
+                1,
+                listing["url"],
+                None,
+                json.dumps(listing),
+                "h",
+                "a" * 40,
+                "t",
+                "t",
+            ),
+        )
+    sent = feed(state, monkeypatch)
+    assert discord_feed.tick()["sent"] == 1
+    (card,) = [p["embeds"][0] for p in posts(sent, "jobs")]
+    assert card["description"] == "**Example Labs** · Austin, TX"
+    with discord_feed.feed_db() as db:
+        assert tuple(db.execute("SELECT status,score FROM feed_outbox").fetchone()) == ("sent", 0)
+
+
 # --- tiers -----------------------------------------------------------------
 
 BORDERLINE = [
@@ -832,12 +873,13 @@ def test_the_platform_gap_sends_the_best_job_on_another_platform_instead_of_idli
     assert worker.next_queued(1) == own_site
     workflow.set_state(own_site, "DEFERRED")
     assert worker.next_queued(1) is None  # every platform with work is resting
-    # A link the owner pasted is theirs to send whenever they like.
+    # The gap is per platform for everything sent unattended, a pasted link included.
     pasted = queued("boards.greenhouse.io/example/jobs/4000003", source="owner_link")
-    assert worker.next_queued(1) == pasted
-    workflow.set_state(pasted, "DEFERRED")
+    assert worker.next_queued(1) is None
     clock(monkeypatch, noon + timedelta(seconds=61))
-    assert worker.next_queued(1) == best  # 91 seconds on: Greenhouse is free again
+    assert worker.next_queued(1) == pasted  # 91 seconds on: Greenhouse is free again
+    workflow.set_state(pasted, "DEFERRED")
+    assert worker.next_queued(1) == best
     settings["min_seconds_between_submissions_per_platform"] = 600
     assert worker.next_queued(1) is None
     settings["min_seconds_between_submissions_per_platform"] = 0

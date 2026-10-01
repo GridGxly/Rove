@@ -6,8 +6,10 @@ discovery priority, never a claim of eligibility, and feed text is data: it can 
 raise a number, it cannot approve anything.
 """
 
+import contextlib
 import json
 import re
+import sqlite3
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlsplit
@@ -850,7 +852,9 @@ def prepare_pacing(conn):
     ensure_tables(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(live_submission_attempts)")}
     if "platform" not in columns:
-        conn.execute("ALTER TABLE live_submission_attempts ADD COLUMN platform TEXT")
+        # Another local service may add the column in the same moment; either one will do.
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("ALTER TABLE live_submission_attempts ADD COLUMN platform TEXT")
     rows = conn.execute(
         "SELECT a.application_id,q.url FROM live_submission_attempts a LEFT JOIN "
         "application_queue q ON q.id=a.application_id WHERE a.platform IS NULL"
