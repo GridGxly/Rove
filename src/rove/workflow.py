@@ -644,9 +644,11 @@ STATE_WORDS = {
 
 def question_fingerprint(label, options=(), *, kind: str = "", employer: str = "") -> str:
     """The key an answer is remembered under: what the question means, which way round it
-    is asked, and its scope. Wording and options take no part: "Gender" and "What is your
-    gender?" share a key, "authorized to work in Canada" never shares the US one. Empty
-    when the question cannot be remembered (no label, or employer-specific without one).
+    is asked, and its scope. The options take no part, and neither does the wording of a
+    question code knows: "Gender" and "What is your gender?" share a key, "authorized to
+    work in Canada" never shares the US one. A question code does not know is keyed by
+    its wording. Empty when the question cannot be remembered (no label, or
+    employer-specific without an employer).
     """
     from . import questions
 
