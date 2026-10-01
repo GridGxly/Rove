@@ -1710,19 +1710,21 @@ def test_a_reply_on_a_card_in_action_needed_names_its_application(state, monkeyp
     reply = {"author": {"id": "owner"}, "content": "go", "message_reference": {"message_id": card}}
     command = worker.parse_command(reply, "owner", "action", {"action"}, {})
     assert command["application_id"] == app and command["kind"] == "resume"
-    # A bare word names no application in a shared channel, even with one live card.
     bare = {"author": {"id": "owner"}, "content": "park it"}
-    with pytest.raises(ValueError, match="Which one"):
-        worker.parse_command(bare, "owner", "action", {"action"}, {})
+    assert worker.parse_command(bare, "owner", "action", {"action"}, {})["kind"] == "defer"
     other = workflow.enqueue(
         "https://jobs.example.com/card2", source="keryx", title="Other — Intern"
     )["application_id"]
     workflow.set_state(other, "NEEDS_USER")
     workflow.action_needed(other, "Needs you", commands=["go"], headline="Answers needed")
-    with pytest.raises(ValueError, match="Which one"):
+    with pytest.raises(ValueError, match="Which one") as asked:
         worker.parse_command(
             {"author": {"id": "owner"}, "content": "go"}, "owner", "action", {"action"}, {}
         )
+    # With two cards live the line names both by company and role, never by an id.
+    assert "Which one? Example — Intern · Other — Intern." in str(asked.value)
+    assert "Answer with the company name" in str(asked.value)
+    no_ids(str(asked.value))
     chatter = {"author": {"id": "owner"}, "content": "what is this"}
     assert worker.parse_command(chatter, "owner", "action", {"action"}, {}) is None
 

@@ -300,7 +300,7 @@ def test_drafting_leaves_one_research_line_in_the_thread(state, mock_http, monke
     key = "abcdef012345"
 
     def fake_generate(directory, context, basename, attempts=2):
-        assert "builds warehouse robots" in context["company_research"]
+        assert "builds warehouse robots" in " ".join(context["company_research"]["quotes"])
         answer = {
             "key": key,
             "kind": "proposal",

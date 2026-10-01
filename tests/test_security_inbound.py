@@ -149,23 +149,43 @@ def owner_says(content, message_id="5000", reply_to=None, author=OWNER, **extra)
 # --- H2: a link the model queues ------------------------------------------------
 
 
-def test_every_caller_names_its_source_and_only_the_owner_parser_says_owner_link():
+def queue_calls(tree: ast.AST):
+    """The calls of `workflow.enqueue` in one module: `workflow.enqueue(...)`, or a bare
+    `enqueue(...)` where the module imported the name from workflow."""
+    imported = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "workflow"
+        and any(alias.name == "enqueue" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "enqueue":
+            if isinstance(func.value, ast.Name) and func.value.id == "workflow":
+                yield node
+        elif imported and isinstance(func, ast.Name) and func.id == "enqueue":
+            yield node
+
+
+def test_every_caller_names_its_source_and_only_the_owner_gives_owner_link():
     """`owner_link` skips the fit hold, the exclusions and the queue. In src/ it is given
-    in exactly one place: the code that reads the owner's own agent-control message."""
-    callers = {}
+    in two places, both the owner's own hand: the code that reads his agent-control
+    message, and the command he types in his terminal."""
+    callers, computed = {}, set()
     for path in sorted((REPOSITORY / "src/rove").glob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text())):
-            if not isinstance(node, ast.Call):
-                continue
-            name = getattr(node.func, "attr", getattr(node.func, "id", ""))
-            if name != "enqueue":
-                continue
+        for node in queue_calls(ast.parse(path.read_text())):
             sources = [k.value for k in node.keywords if k.arg == "source"]
             assert sources, f"{path.name} queues a link without naming its source"
-            assert isinstance(sources[0], ast.Constant), f"{path.name} computes a source"
-            callers.setdefault(sources[0].value, set()).add(path.name)
+            if isinstance(sources[0], ast.Constant):
+                callers.setdefault(sources[0].value, set()).add(path.name)
+            else:
+                computed.add(path.name)
+    # Only the terminal command takes its source from an argument (`--source`).
+    assert computed == {"cli.py"}
     assert callers["owner_link"] == {"inbound.py"}
-    assert {"server.py", "cli.py", "live_browser.py"} <= callers["agent"]
+    assert {"server.py", "live_browser.py"} <= callers["agent"]
     assert callers["keryx"] == {"discord_feed.py"}
     assert set(callers) <= set(workflow.SOURCES) | set(workflow.SOURCE_ALIASES)
     # Nothing the model can call queues with more than the agent's standing.
@@ -352,10 +372,10 @@ def live_card(application_id: str, channel: str = "action") -> str:
         ).fetchone()[0]
 
 
-def held_application(path: str, channel: str = "action") -> str:
-    app = workflow.enqueue(
-        f"https://jobs.example.com/{path}", source="keryx", title="Example — Intern"
-    )["application_id"]
+def held_application(path: str, channel: str = "action", title: str = "Example — Intern") -> str:
+    app = workflow.enqueue(f"https://jobs.example.com/{path}", source="keryx", title=title)[
+        "application_id"
+    ]
     workflow.set_state(app, "NEEDS_USER")
     workflow.action_needed(
         app, "Needs you", commands=["go", "park it"], headline="Answers needed", channel=channel
@@ -379,19 +399,26 @@ def test_reply_to_an_unknown_card_names_no_application(state, monkeypatch):
     with pytest.raises(ValueError, match="not one of my live cards"):
         parse("go", reply_to="999999")
     assert worker.card_application(owner_says("looks fine", reply_to="999999"), "action") is None
-    # Bare words act only inside an application's thread, however few cards are live.
-    for word in ("done", "send", "later", "go", "applied", "use draft 1", "1: yes"):
-        with pytest.raises(ValueError, match="Which one"):
-            parse(word)
+    for word in ("done", "send", "later", "park it", "1: yes"):
+        with pytest.raises(ValueError, match="not one of my live cards"):
+            parse(word, reply_to="999999")
+    # The owner's own bare word, not a reply to anything, is about the one live card.
+    resume = {"kind": "resume", "application_id": app, "word": "go"}
+    assert parse("go") == resume
+    assert parse("later") == {"kind": "defer", "application_id": app, "word": "later"}
     assert parse("thanks") is None
     # A reply on the real card works, in the channel the card is in and nowhere else.
-    assert parse("go", reply_to=card) == {"kind": "resume", "application_id": app, "word": "go"}
+    assert parse("go", reply_to=card) == resume
     with pytest.raises(ValueError, match="not one of my live cards"):
         parse("go", reply_to=card, channel="short")
+    with pytest.raises(ValueError, match="No card is waiting here"):
+        parse("go", channel="short")
     # A card that was withdrawn is no longer a card.
     workflow.withdraw_notices(app)
     with pytest.raises(ValueError, match="not one of my live cards"):
         parse("go", reply_to=card)
+    with pytest.raises(ValueError, match="No card is waiting here"):
+        parse("go")
     assert command_rows() == []
 
 
@@ -476,6 +503,12 @@ def test_nobody_but_the_owner_is_read_in_any_polled_channel(state, monkeypatch):
         assert conn.execute("SELECT status FROM mail_confirmations").fetchone()[0] == "pending"
 
 
+NOT_MINE = (
+    "That is not one of my live cards, so nothing was done. Reply on a live card, "
+    "or answer in the application's thread."
+)
+
+
 def test_the_owners_reply_to_a_foreign_card_is_refused_in_one_plain_line(state, monkeypatch):
     discord_recorder(monkeypatch)
     app = held_application("real")
@@ -484,18 +517,11 @@ def test_the_owners_reply_to_a_foreign_card_is_refused_in_one_plain_line(state, 
         "content": "go",
         "message_reference": {"message_id": "424242"},
     }
-    bare = {"author": {"id": OWNER}, "content": "done"}
     pasted = {"author": {"id": OWNER}, "content": "https://boards.greenhouse.io/acme/jobs/1"}
-    posted = poll(monkeypatch, {"action": [forged_reply, bare], "control": [pasted]})
-    not_mine = (
-        "That is not one of my live cards, so nothing was done. Reply on a live card, "
-        "or answer in the application's thread."
-    )
-    which = "Which one? Use Discord's reply on its card, or answer in its thread."
+    posted = poll(monkeypatch, {"action": [forged_reply], "control": [pasted]})
     assert sorted(posted) == sorted(
         [
-            ("/channels/action/messages", not_mine),
-            ("/channels/action/messages", which),
+            ("/channels/action/messages", NOT_MINE),
             ("/channels/control/messages", "Queued your link. It goes next."),
         ]
     )
@@ -503,6 +529,97 @@ def test_the_owners_reply_to_a_foreign_card_is_refused_in_one_plain_line(state, 
     with workflow.db() as conn:
         rows = [tuple(r) for r in conn.execute("SELECT source,status FROM application_queue")]
     assert sorted(rows) == [("keryx", "NEEDS_USER"), ("owner_link", "QUEUED")]
+
+
+def test_a_bare_word_acts_on_the_one_live_card(state, monkeypatch):
+    discord_recorder(monkeypatch)
+    app = held_application("only", title="Example Labs — Software Intern")
+    posted = poll(monkeypatch, {"action": [{"author": {"id": OWNER}, "content": "Go"}]})
+    assert posted == []
+    assert command_rows() == [(app, "resume")] and workflow.get(app)["status"] == "QUEUED"
+
+
+def test_with_several_live_cards_a_bare_word_asks_which_one_by_company_and_role(state, monkeypatch):
+    discord_recorder(monkeypatch)
+    labs = held_application("labs", title="Example Labs — Software Intern")
+    other = held_application("other", title="Other Co — Data Intern")
+    which = (
+        "Which one? Example Labs — Software Intern · Other Co — Data Intern. Answer with "
+        "the company name, or use Discord's reply on its card."
+    )
+    # A word, then the company: the word is applied to that application and no other.
+    said = [{"author": {"id": OWNER}, "content": text} for text in ("go", "other co")]
+    posted = poll(monkeypatch, {"action": said})
+    assert posted == [
+        ("/channels/action/messages", which),
+        ("/channels/action/messages", "Got it: Other Co — Data Intern."),
+    ]
+    assert labs not in json.dumps(posted) and other not in json.dumps(posted)
+    assert command_rows() == [(other, "resume")]
+    assert workflow.get(other)["status"] == "QUEUED"
+    assert workflow.get(labs)["status"] == "NEEDS_USER"
+    # The word was used up: the company name alone, later, does nothing.
+    assert inbound.owner_message(owner_says("Example Labs"), "action", SETTINGS, {}) is None
+    assert command_rows() == [(other, "resume")]
+
+
+def test_which_one_takes_a_role_when_the_company_has_two_cards_and_forgets_after_an_hour(
+    state, monkeypatch
+):
+    discord_recorder(monkeypatch)
+    software = held_application("a", title="Example Labs — Software Intern")
+    data = held_application("b", title="Example Labs — Data Intern")
+    channels = {"action", "short"}
+
+    def parse(content):
+        return worker.parse_command(owner_says(content), OWNER, "action", channels, {})
+
+    def say(content, message_id="6000"):
+        return inbound.owner_message(owner_says(content, message_id), "action", SETTINGS, {})
+
+    with pytest.raises(ValueError, match="Which one"):
+        parse("park it")
+    with pytest.raises(ValueError, match="fits more than one: Example Labs — Software Intern"):
+        say("example labs")
+    assert command_rows() == []
+    assert say("data intern") == "Got it: Example Labs — Data Intern."
+    assert command_rows() == [(data, "defer")]
+    assert workflow.get(software)["status"] == "NEEDS_USER"
+    # The word was used up, and chatter is not a word to keep.
+    assert parse("thanks, looks good") is None
+    assert say("software") is None
+    # A word nobody followed up on within the hour is forgotten.
+    held_application("c", title="Other Co — Data Intern")
+    with pytest.raises(ValueError, match="Which one"):
+        parse("go")
+    with inbound.waiting_db() as conn:
+        conn.execute("UPDATE owner_waiting_words SET created_at='2026-01-01T00:00:00+00:00'")
+    assert say("software") is None
+    assert command_rows() == [(data, "defer")]
+    with inbound.waiting_db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM owner_waiting_words").fetchone()[0] == 0
+
+
+def test_the_terminal_command_queues_the_owners_link_unless_told_otherwise(
+    state, monkeypatch, capsys
+):
+    from rove import cli
+
+    def run(*arguments):
+        monkeypatch.setattr("sys.argv", ["rove", "workflow", "enqueue", *arguments])
+        cli.main()
+        return json.loads(capsys.readouterr().out)["application_id"]
+
+    mine = run("--url", "https://boards.greenhouse.io/acme/jobs/1")
+    assert source_of(mine) == "owner_link"
+    other = run("--url", "https://boards.greenhouse.io/acme/jobs/2", "--source", "agent")
+    assert source_of(other) == "agent"
+    for unknown in ("keryx", "boss"):
+        with pytest.raises(SystemExit):
+            run("--url", "https://boards.greenhouse.io/acme/jobs/3", "--source", unknown)
+    capsys.readouterr()
+    with workflow.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM application_queue").fetchone()[0] == 2
 
 
 # --- M3: what a draft may know and say -------------------------------------------
@@ -589,7 +706,8 @@ def test_the_drafting_context_carries_no_contact_pay_gpa_policy_or_eligibility(s
     assert "gpa" not in profile["education"]["schools"][0]
     assert profile["education"]["schools"][0]["major"] == "Computer Science"
     assert set(profile["preferences"]) == set(draft_guard.DRAFTING_FIELDS["preferences"])
-    text = json.dumps(context)
+    # (The application id is random hex and could contain a short digit run by chance.)
+    text = json.dumps({k: v for k, v in context.items() if k != "application_id"})
     for private in (
         EMAIL,
         "010-0199",
@@ -648,7 +766,7 @@ def test_drafts_carrying_contact_or_undisclosed_facts_are_rejected(state, monkey
     assert len(sent) == 2
     note = sent[1]["previous_output_problem"]
     assert "never contains contact details" in note
-    assert "0199" not in note and "3.87" not in note and EMAIL not in note
+    assert "010-0199" not in note and "3.87" not in note and EMAIL not in note
     answers = {a["key"]: a for a in result["answers"]}
     reasons = {
         KEYS[0]: "included your phone number",
@@ -670,7 +788,8 @@ def test_drafts_carrying_contact_or_undisclosed_facts_are_rejected(state, monkey
     stored = (state / "applications" / app / "answer-proposals.json").read_text()
     with workflow.db() as conn:
         recorded = json.dumps([r[0] for r in conn.execute("SELECT data FROM application_events")])
-    for private in ("0199", EMAIL, EMAIL.upper(), "3.87", "62,000", "12 Example Street"):
+    # (The phone is matched in the form the draft wrote it; bare digits also occur in hashes.)
+    for private in ("010-0199", EMAIL, EMAIL.upper(), "3.87", "62,000", "12 Example Street"):
         assert private not in stored and private not in recorded, private
     asked = [{"key": key, "label": "q"} for key in KEYS]
     assert worker.use_drafts(app, result, asked) == [KEYS[6]]

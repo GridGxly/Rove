@@ -1,17 +1,20 @@
 """What the owner's own Discord messages can do before they are parsed as a command.
 
 `worker.poll_commands` reads the channels; this module decides who wrote a message and
-handles the three things that are not replies to an application's hold:
+handles the things that are not a plain reply to one application's hold:
 
-- a link the owner pastes in agent-control is queued as the owner's own link. This is
-  the only place that source is given: the model's MCP tool cannot give it, and neither
-  can a page, a mail or anyone else in the server.
+- a link the owner pastes in agent-control is queued as the owner's own link. Apart
+  from the owner's own terminal, this is the only place that source is given: the
+  model's MCP tool cannot give it, and neither can a page, a mail or anyone else.
 - the owner's Discord reply on a mail card in the recruiting channel confirms or drops a
   mail whose sender could not be verified.
 - `not rejected` in an application's thread takes back the last step a mail made.
+- in action-needed and shortlist, a bare word with several cards live gets a "Which
+  one?" line; the owner's next message naming the company applies the word to it.
 """
 
 import re
+from datetime import UTC, datetime, timedelta
 
 from . import workflow
 
@@ -96,4 +99,139 @@ def owner_message(message: dict, channel: str, settings: dict, threads: dict) ->
         from . import mail
 
         return mail.undo_last_step(threads[channel], str(message.get("id") or "owner"))
+    cards = {settings.get(key): name for name, key in workflow.NOTICE_CHANNELS.items()}
+    if channel in cards and not (message.get("message_reference") or {}).get("message_id"):
+        return answer_which_one(message, channel, cards[channel])
     return None
+
+
+# --- "Which one?" in action-needed and shortlist ----------------------------------
+
+# How long a bare word waits for the owner to name the application it was meant for.
+WAITING_WORD = timedelta(minutes=60)
+LISTED_CARDS = 6
+
+
+def waiting_db():
+    conn = workflow.db()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS owner_waiting_words(channel_id TEXT PRIMARY KEY, "
+        "content TEXT NOT NULL, message_id TEXT NOT NULL, created_at TEXT NOT NULL)"
+    )
+    return conn
+
+
+def live_cards(channel_name: str) -> list[dict]:
+    """The applications with a live card in one owner channel, oldest card first."""
+    with workflow.db() as conn:
+        rows = conn.execute(
+            "SELECT q.* FROM owner_notices n JOIN application_queue q ON q.id=n.application_id "
+            "WHERE n.channel=? AND n.delivery='sent' GROUP BY q.id ORDER BY MIN(n.id)",
+            (channel_name,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def shown_title(item: dict) -> str:
+    """Company and role as plain words: no markup a title could carry, never an id."""
+    title = re.sub(r"[`*_~|<>\[\]\\@#]", " ", workflow.display_title(item))
+    return workflow.clip(" ".join(title.split()), 70)
+
+
+def listed(cards: list[dict]) -> str:
+    names = [shown_title(item) for item in cards[:LISTED_CARDS]]
+    more = len(cards) - len(names)
+    return " · ".join(names) + (f" · and {more} more" if more > 0 else "")
+
+
+def plain_key(text) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def could_answer(content: str, cards: list[dict]) -> bool:
+    """Whether a plain message could be the answer to a card's one open question."""
+    if not content.strip() or len(content) > 200 or re.search(r"https?://", content):
+        return False
+    for item in cards:
+        hold = workflow.latest_hold(item["id"]) or {}
+        opened = [q for q in hold.get("questions") or [] if q.get("state", "open") == "open"]
+        if item["status"] == "NEEDS_USER" and len(opened) == 1:
+            return True
+    return False
+
+
+def which_one(channel: str, message: dict, cards: list[dict]) -> str:
+    """Keep the owner's word and return the line that asks which card it was for."""
+    with waiting_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO owner_waiting_words VALUES(?,?,?,?)",
+            (
+                channel,
+                str(message.get("content") or "").strip(),
+                str(message.get("id") or ""),
+                workflow.now(),
+            ),
+        )
+    return (
+        f"Which one? {listed(cards)}. Answer with the company name, or use Discord's "
+        "reply on its card."
+    )
+
+
+def named_cards(content: str, cards: list[dict]) -> list[dict]:
+    """The live cards a short answer names: by company, by role, or by words of the title."""
+    from .mail import split_title
+
+    wanted = plain_key(content)
+    if len(wanted) < 2 or len(wanted) > 80:
+        return []
+    exact, partial = [], []
+    for item in cards:
+        company, role = (plain_key(part) for part in split_title(item))
+        title = plain_key(workflow.display_title(item))
+        if wanted in {company, title}:
+            exact.append(item)
+        elif len(wanted) >= 3 and f" {wanted} " in f" {company} {role} {title} ":
+            partial.append(item)
+    return exact or partial
+
+
+def answer_which_one(message: dict, channel: str, channel_name: str) -> str | None:
+    """The owner's message after a "Which one?": when it names one live card, the word
+    that was waiting is applied to that application, exactly as if typed in its thread."""
+    with waiting_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM owner_waiting_words WHERE channel_id=?", (channel,)
+        ).fetchone()
+    if not row:
+        return None
+    waiting = dict(row)
+
+    def forget():
+        with waiting_db() as conn:
+            conn.execute("DELETE FROM owner_waiting_words WHERE channel_id=?", (channel,))
+
+    if datetime.now(UTC) - datetime.fromisoformat(waiting["created_at"]) > WAITING_WORD:
+        forget()
+        return None
+    cards = live_cards(channel_name)
+    named = named_cards(message.get("content") or "", cards)
+    if not named:
+        return None
+    if len(named) > 1:
+        raise ValueError(
+            f"That fits more than one: {listed(named)}. Add the role, or use Discord's "
+            "reply on its card."
+        )
+    from . import worker
+
+    forget()
+    item = named[0]
+    command = worker.thread_command(waiting["content"], item["id"])
+    if command is None:
+        raise ValueError(
+            f"“{workflow.clip(waiting['content'], 60)}” does not fit {shown_title(item)}. "
+            "Reply on its card or in its thread."
+        )
+    worker.apply_command(command, waiting["message_id"] or str(message.get("id") or ""))
+    return f"Got it: {shown_title(item)}."

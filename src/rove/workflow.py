@@ -225,10 +225,11 @@ def owner_override(application_id: str, kind: str) -> bool:
 # Who put a link in the queue decides what it may skip. Nothing a page, a mail or
 # the model says can raise a link's source; only a caller that names one can.
 #
-#   owner_link  a link code parsed out of the owner's own message in agent-control
+#   owner_link  a link code parsed out of the owner's own message in agent-control, or
+#               one he queued from his own terminal (`rove workflow enqueue`)
 #   owner_pick  a job the owner picked from a digest
 #   feed        the configured job feed (stored as `keryx`)
-#   agent       anything else: a link the model queued through MCP, or a local command
+#   agent       anything else: a link the model queued or opened through MCP
 #
 # owner_decided  the owner already made the call: no fit hold, no exclusion pruning,
 #                worked ahead of the queue and its pacing

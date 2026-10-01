@@ -73,6 +73,8 @@ def main():
     workflow.add_argument("action", choices=["tick", "status", "enqueue", "resume", "defer"])
     workflow.add_argument("--url")
     workflow.add_argument("--id")
+    # The owner types this in his own terminal, so the link is his unless he says otherwise.
+    workflow.add_argument("--source", default="owner_link")
     mail = sub.add_parser("mail")
     mail.add_argument("action", choices=["tick", "status"])
     args = parser.parse_args()
@@ -84,7 +86,9 @@ def main():
         elif args.action == "enqueue":
             if not args.url:
                 parser.error("enqueue requires --url")
-            result = workflow.enqueue(args.url, source="agent")
+            if args.source not in workflow.SOURCES:
+                parser.error("--source must be one of: " + ", ".join(workflow.SOURCES))
+            result = workflow.enqueue(args.url, source=args.source)
         elif args.action in {"resume", "defer"}:
             # Local owner operation, equivalent to the Discord command of the same name.
             if not args.id:

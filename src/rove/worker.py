@@ -766,14 +766,26 @@ HELP_LINE = (
 
 
 def card_application(message: dict, channel: str) -> str | None:
-    """In action-needed or shortlist, only a Discord reply on one of Rove's own live cards
-    in that channel names an application. A reply on anything else (someone's look-alike
-    card, a card already withdrawn) names none, and a bare word names none either, however
-    few cards are live: the shared channels have no implied application."""
+    """Which application a message in action-needed or shortlist is about.
+
+    A Discord reply names the application only when it points at one of Rove's own live
+    cards in that channel; a reply on anything else (a look-alike card, a card already
+    withdrawn) names none, however few cards are live. A message that is not a reply is
+    about the one live card when there is exactly one. With several live, a word or a
+    plain answer gets a "Which one?" line that lists them by company and role; the owner
+    then names the company or replies on the card.
+    """
     settings = workflow.config()
     names = {settings.get(key): name for name, key in workflow.NOTICE_CHANNELS.items()}
     if channel not in names:
         return None
+    content = str(message.get("content") or "")
+    word = " ".join(content.strip().strip("`").rstrip(".!?").split()).lower()
+    is_command = bool(
+        word in WORDS
+        or re.fullmatch(r"(?:use draft|draft|use) \d{1,2}", word)
+        or re.match(r"(?:answer\s+)?\d{1,2}\s*[:=]", word)
+    )
     referenced = str((message.get("message_reference") or {}).get("message_id") or "")
     if referenced:
         with workflow.db() as conn:
@@ -784,20 +796,19 @@ def card_application(message: dict, channel: str) -> str | None:
             ).fetchone()
         if row:
             return row["application_id"]
-    word = " ".join(
-        str(message.get("content") or "").strip().strip("`").rstrip(".!?").split()
-    ).lower()
-    if (
-        word in WORDS
-        or re.fullmatch(r"(?:use draft|draft|use) \d{1,2}", word)
-        or re.match(r"(?:answer\s+)?\d{1,2}\s*[:=]", word)
-    ):
-        if referenced:
+        if is_command:
             raise ValueError(
                 "That is not one of my live cards, so nothing was done. Reply on a live "
                 "card, or answer in the application's thread."
             )
-        raise ValueError("Which one? Use Discord's reply on its card, or answer in its thread.")
+        return None
+    live = inbound.live_cards(names[channel])
+    if len(live) == 1:
+        return live[0]["id"]
+    if len(live) > 1 and (is_command or inbound.could_answer(content, live)):
+        raise ValueError(inbound.which_one(channel, message, live))
+    if is_command:
+        raise ValueError("No card is waiting here. Answer in the application's thread.")
     return None
 
 
