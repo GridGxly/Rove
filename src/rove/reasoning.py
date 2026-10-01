@@ -17,15 +17,16 @@ from typing import Annotated, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from . import unslop, vault, workflow
+from . import draft_guard, unslop, vault, workflow
 from .evidence import career_evidence
 from .onboarding import read_approved
 from .research import company_context
+from .research import quoted as quoted_research
 from .runtime import state_root, write_private
 
 # Bump when the prompts in scripts/recruiting_reasoning.py change so cached
 # reviews produced by an older prompt are never reused silently.
-PROMPT_VERSION = "2026-09-30.6"
+PROMPT_VERSION = "2026-10-01.1"
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 
 
@@ -661,6 +662,9 @@ def review_application(application_id: str, page: dict) -> dict:
         return {"answers": []}
     profile = approved["profile"]
     item = workflow.get(application_id)
+    # What no written answer may carry: contact details, an undisclosed GPA, pay floors.
+    # They are kept out of the context below and checked for in every draft after it.
+    private = draft_guard.private_facts(profile, application_id)
     context = {
         "application_id": application_id,
         "prompt_version": PROMPT_VERSION,
@@ -668,33 +672,30 @@ def review_application(application_id: str, page: dict) -> dict:
         "intake_source": item["source"],
         "source_meaning": "keryx means discovered automatically in the Keryx GitHub jobs feed; this is trusted intake metadata, not a claimed employee referral",
         "intake_url": item["source_url"],
-        "profile": {
-            key: profile[key]
-            for key in [
-                "identity",
-                "education",
-                "eligibility",
-                "availability",
-                "preferences",
-                "stories",
-                "application_policy",
-            ]
+        "profile": draft_guard.drafting_profile(profile),
+        "career_evidence": draft_guard.scrub(
+            asyncio.run(career_evidence("TransferTrack OBI PayPals")), private
+        ),
+        "owner_answers": {
+            key: answer
+            for key, answer in workflow.approved_answers(application_id).items()
+            if not draft_guard.private_fact_in(answer["value"], private)
         },
-        "career_evidence": asyncio.run(career_evidence("TransferTrack OBI PayPals")),
-        "owner_answers": workflow.approved_answers(application_id),
         "job_context": page.get("text", "")[:5500],
     }
     voice = vault.voice_samples()
     if voice:
         # The owner's own writing, bounded by the vault reader; a style sample the
         # prompt must not copy or cite, never a source of facts.
-        context["owner_voice"] = voice
-    research = company_context(application_id, posting_text_for(directory, page), item["url"])
+        context["owner_voice"] = draft_guard.scrub(voice, private)
+    research = quoted_research(
+        company_context(application_id, posting_text_for(directory, page), item["url"])
+    )
     workflow.record_research(application_id)  # one quiet thread line: pages read, no text
     if research:
-        # Public text from the employer's own site, bounded and stripped of anything that
-        # reads as an instruction. It steers a "why this company" draft; it is never a
-        # fact about the applicant.
+        # Public text from the employer's own site, bounded, stripped of anything that
+        # reads as an instruction and handed over as quoted sentences. It steers a "why
+        # this company" draft; it is never a fact about the applicant.
         context["company_research"] = research
     directions = directory / "owner-context.json"
     if directions.exists():
@@ -716,10 +717,16 @@ def review_application(application_id: str, page: dict) -> dict:
                     {q["key"] for q in questions},
                     {q["key"]: q.get("options") or [] for q in questions},
                 )
+                leaks = draft_guard.problems(result, private, voice)
                 problems = length_problems(result, questions)
-                if problems and not attempt:
-                    context = {**context, "previous_output_problem": problems}
+                if (leaks or problems) and not attempt:
+                    note = "; ".join(
+                        filter(None, [leaks and draft_guard.retry_note(leaks), problems])
+                    )
+                    context = {**context, "previous_output_problem": note[:600]}
                     continue
+                # A second draft that still carries a private fact is dropped, not sent.
+                draft_guard.withhold(result, leaks)
                 if problems:
                     shorten_to_fit(result, questions)
                 break
@@ -748,6 +755,8 @@ def review_application(application_id: str, page: dict) -> dict:
         if answer["kind"] == "proposal" and len(answer["value"]) > 60:
             # Written answers get the Unslop pass before they are hashed for approval.
             answer.update(polish(directory, answer["key"], answer["value"]))
+    # The cleanup pass rewrites a draft, so the finished text is checked once more.
+    draft_guard.withhold(result, draft_guard.problems(result, private, voice))
     shorten_to_fit(result, questions)
     number = 0
     for answer in result["answers"]:

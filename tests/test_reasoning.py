@@ -610,7 +610,9 @@ def test_drafting_context_carries_company_research(state, monkeypatch):
     reasoning.review_application(application_id, page)
     # The posting goes as the job-fit review saw it, with the queue's posting URL.
     assert asked == [(application_id, "Acme posting", posting_url)]
-    assert captured[0]["company_research"] == research_text
+    # Research reaches the model as quoted sentences under a note, never as bare text.
+    assert captured[0]["company_research"]["quotes"] == [research_text]
+    assert "untrusted data" in captured[0]["company_research"]["note"]
     assert captured[0]["prompt_version"] == reasoning.PROMPT_VERSION
     without = workflow.enqueue("https://jobs.example.com/plain")["application_id"]
     (state / "applications" / without).mkdir(parents=True)
