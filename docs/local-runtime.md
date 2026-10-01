@@ -16,7 +16,7 @@ See [Runtime measurements](runtime-benchmarks.md) for measured throughput, cache
 | QMD | 2.8.3, scoped local npm installation |
 | Obsidian | 1.13.7, existing private vault |
 | Tectonic | 0.17.0, local resume compilation |
-| Autopilot | Python 3.12, dependencies pinned in `uv.lock` |
+| Rove | Python 3.12, dependencies pinned in `uv.lock` |
 | Patchright | 1.63, drives the daemon-launched Google Chrome over local CDP |
 
 The model's root weights are MLX affine 4-bit, group size 64, totaling 16,054,541,599 bytes. Vision, normalization and convolution components retain source precision. The separate MTP head is 849,400,337 bytes; the complete selected download with metadata is 16,950,465,457 bytes. The base is `Qwen/Qwen3.8-27B`; OrcaRouter published the converted/abliterated checkpoint under Apache-2.0, updated 2026-08-27. `trust_remote_code` stays false. Model weights are not modified.
@@ -134,7 +134,7 @@ uv run autopilot gateway restart
 uv run autopilot gateway status
 ```
 
-Hermes starts the narrow Autopilot MCP process as needed. `uv run autopilot mcp` is the foreground MCP entry point; it expects a stdio client. `uv run autopilot smoke` runs the visible browser fixture directly.
+Hermes starts the narrow Rove MCP process as needed. `uv run autopilot mcp` is the foreground MCP entry point; it expects a stdio client. `uv run autopilot smoke` runs the visible browser fixture directly.
 
 For overlapping memory measurements, `uv run autopilot smoke --hold-seconds 60` keeps the prepared browser open before closing it. The CLI accepts 0–120 seconds and reports the hold separately from mechanical work. The MCP tool uses the default zero-second hold.
 

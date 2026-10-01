@@ -32,7 +32,7 @@ def wait_for_api():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local prepare-only Autopilot")
+    parser = argparse.ArgumentParser(description="Local prepare-only Rove")
     sub = parser.add_subparsers(dest="command", required=True)
     model = sub.add_parser("model")
     model.add_argument("action", choices=["start", "stop", "restart", "status", "logs"])

@@ -1,6 +1,6 @@
 # Browser automation
 
-Erga Autopilot needs browser automation to feel fast without giving up correctness, auditability, privacy, or submission safety.
+Rove needs browser automation to feel fast without giving up correctness, auditability, privacy, or submission safety.
 
 The reference design keeps **Qwen3.8-27B** as the local reasoning model. There is no required cloud browser-decision model and no Jev/TypeSafe runtime dependency.
 

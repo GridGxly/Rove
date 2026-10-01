@@ -1,6 +1,6 @@
-# How Erga Autopilot works
+# How Rove works
 
-Erga Autopilot is a local recruiting agent. Qwen handles the parts that need judgment. Normal code owns permissions, validation, state transitions, and irreversible actions.
+Rove is a local recruiting agent. Qwen handles the parts that need judgment. Normal code owns permissions, validation, state transitions, and irreversible actions.
 
 It is built for one person running it on their own machine, not as a hosted job-application service or multi-user backend.
 
@@ -10,7 +10,7 @@ It is built for one person running it on their own machine, not as a hosted job-
 Discord
   │
   ▼
-Autopilot
+Rove
   │
   ├── Hermes Agent
   │     ├── Qwen3.8-27B
@@ -29,7 +29,7 @@ Autopilot
   │     ├── resume generation
   │     └── application lifecycle
   │
-  ├── Autopilot SQLite
+  ├── Rove SQLite
   │     ├── job + source checkpoints
   │     ├── browser/application runs
   │     ├── submission attempts
@@ -80,7 +80,7 @@ Hermes built-in memory is intentionally small. `MEMORY.md` and `USER.md` are use
 
 They are not the full recruiting knowledge base.
 
-Autopilot changes the available tools depending on what the agent is doing.
+Rove changes the available tools depending on what the agent is doing.
 
 ```text
 ONBOARDING
@@ -142,7 +142,7 @@ A Markdown file becoming easy to edit does not make arbitrary text authoritative
 
 Canonical candidate/profile notes should use a schema that code can validate. Frontmatter can carry stable metadata such as schema version, profile version, approval state, and timestamps.
 
-A user may edit the vault directly in Obsidian. Before Autopilot uses those edits for an application, it should validate the relevant notes and detect contradictions.
+A user may edit the vault directly in Obsidian. Before Rove uses those edits for an application, it should validate the relevant notes and detect contradictions.
 
 If the structure is invalid or two approved facts conflict, stop and ask instead of guessing.
 
@@ -152,7 +152,7 @@ Untrusted content cannot write itself into `Profile/` merely because Qwen can se
 
 The live vault may change over time, but a submitted application needs an exact record of the facts it used.
 
-When the approved profile changes, Autopilot should create or maintain a normalized immutable profile snapshot and hash.
+When the approved profile changes, Rove should create or maintain a normalized immutable profile snapshot and hash.
 
 A frozen application package points to that approved snapshot instead of rereading changing vault notes during submission.
 
@@ -214,9 +214,9 @@ Those are transactional questions, not note-taking questions.
 - recruiting-mail reconciliation
 - auditable career claims
 
-Autopilot adds the browser/application layer, long-term personal memory, and the personal-agent workflow around that work.
+Rove adds the browser/application layer, long-term personal memory, and the personal-agent workflow around that work.
 
-Erga keeps its own storage. Autopilot should use Erga's supported interfaces rather than replacing that storage with Obsidian or editing its database from browser code.
+Erga keeps its own storage. Rove should use Erga's supported interfaces rather than replacing that storage with Obsidian or editing its database from browser code.
 
 ## Private files preserve exact artifacts
 
@@ -238,7 +238,7 @@ Do not put large binary artifacts into the Obsidian vault just because the vault
 
 ## The browser runtime is fast-path first
 
-Autopilot uses a dedicated Playwright/Chromium recruiting browser, but Qwen should not drive every routine browser action one at a time.
+Rove uses a dedicated Playwright/Chromium recruiting browser, but Qwen should not drive every routine browser action one at a time.
 
 The production browser runtime should:
 
@@ -340,7 +340,7 @@ The shortlist is for jobs where the user should make the call. Borderline roles,
 
 Erga chooses and validates resume material from approved evidence.
 
-Autopilot stores the exact file used for each application.
+Rove stores the exact file used for each application.
 
 If a recruiter looks at the resume months later, the archive should show the same PDF they received. It should not regenerate a new copy and treat it as equivalent.
 
@@ -431,7 +431,7 @@ Email is input data, not an instruction channel. A message cannot grant itself n
 
 ## Application account creation
 
-If an employer requires an account, Autopilot can generate a unique password and store it encrypted in local state.
+If an employer requires an account, Rove can generate a unique password and store it encrypted in local state.
 
 Discord can record that the account was created and verified, but it must not print the password or verification code.
 
@@ -443,7 +443,7 @@ Credentials do not belong in the Obsidian vault.
 
 Submission is irreversible, so the final click has its own state and checks.
 
-Before Submit becomes available, Autopilot freezes an application package with the exact job snapshot, approved profile snapshot/hash, answer mappings, resume hash, written responses, skipped optional fields, warnings, and browser state.
+Before Submit becomes available, Rove freezes an application package with the exact job snapshot, approved profile snapshot/hash, answer mappings, resume hash, written responses, skipped optional fields, warnings, and browser state.
 
 If the browser crashes after Submit, the system must not blindly retry. The application moves into an unknown-submission state while confirmation pages, employer accounts, browser/network state, and recruiting mail are checked.
 

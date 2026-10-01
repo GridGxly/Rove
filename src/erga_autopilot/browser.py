@@ -86,7 +86,7 @@ def fixture_html() -> bytes:
     for i, label in enumerate(LABELS):
         controls.append(f'<label for="f{i}">{html.escape(label)}</label><input id="f{i}" required>')
     return (
-        """<!doctype html><html><head><title>Synthetic Autopilot Application</title>
+        """<!doctype html><html><head><title>Synthetic Rove Application</title>
     <style>body{font:16px system-ui;max-width:760px;margin:35px auto;background:#f5f7fb;color:#182431}
     form{display:grid;grid-template-columns:1fr 2fr;gap:14px;background:white;padding:28px;border-radius:14px}
     input,textarea{padding:9px;border:1px solid #abb7c7;border-radius:5px}aside{padding:18px;background:#ffefcf}</style></head>

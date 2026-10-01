@@ -1,10 +1,10 @@
-# Erga Autopilot product requirements
+# Rove product requirements
 
 Draft, 2026-09-30. When this disagrees with code and tests, the code wins.
 
 ## Purpose and problem
 
-Applying by hand means opening the same forms hundreds of times, retyping approved facts, writing short answers under pressure, and losing track of what went where. Erga Autopilot does that work on the owner's Mac: take in a job, check it against approved facts, prepare an evidence-backed resume, fill the form, draft answers with a local model, send, and keep an exact record. The owner reads the record on a phone and is interrupted only for facts nobody else knows.
+Applying by hand means opening the same forms hundreds of times, retyping approved facts, writing short answers under pressure, and losing track of what went where. Rove does that work on the owner's Mac: take in a job, check it against approved facts, prepare an evidence-backed resume, fill the form, draft answers with a local model, send, and keep an exact record. The owner reads the record on a phone and is interrupted only for facts nobody else knows.
 
 ## Who it is for
 

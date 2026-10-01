@@ -1,6 +1,6 @@
 # Prompt injection
 
-Erga Autopilot gives a local model access to a browser, recruiting data, email, a private Obsidian vault, and tools. That makes prompt injection one of the main security problems the project has to handle.
+Rove gives a local model access to a browser, recruiting data, email, a private Obsidian vault, and tools. That makes prompt injection one of the main security problems the project has to handle.
 
 The rule is simple:
 
@@ -116,7 +116,7 @@ If a model has a general Obsidian note-writing capability for research, that cap
 
 ## Memory writes are controlled
 
-Job pages and email cannot silently teach Autopilot new facts about the user.
+Job pages and email cannot silently teach Rove new facts about the user.
 
 The model may notice a possible new fact or answer, but durable authoritative changes must go through explicit profile or memory operations and, where required, user approval.
 

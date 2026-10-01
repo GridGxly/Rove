@@ -514,7 +514,7 @@ def write_note(site: str, record: dict) -> Path | None:
         f"# {site}",
         "",
         "> Untrusted research, not a profile fact. Read from the employer's public site to",
-        '> steer a "why this company" draft. Nothing here is about the applicant. Autopilot',
+        '> steer a "why this company" draft. Nothing here is about the applicant. Rove',
         "> never reads this note back: the copy Qwen sees is the private cache under the",
         "> application, so an edit here changes no draft.",
         "",

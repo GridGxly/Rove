@@ -1,6 +1,6 @@
 # Security
 
-Erga Autopilot controls a browser, handles recruiting data, keeps a private long-term memory vault, and may eventually submit job applications. Treat it like privileged local automation, not a normal chatbot.
+Rove controls a browser, handles recruiting data, keeps a private long-term memory vault, and may eventually submit job applications. Treat it like privileged local automation, not a normal chatbot.
 
 Some controls described here are part of the target design and may not exist on every branch yet. When this file and the code disagree, the code is what is actually running.
 
@@ -73,7 +73,7 @@ Memory/vault permissions should also differ by mode. Research may write non-auth
 
 The recruiting browser must use its own dedicated Playwright/Chromium profile.
 
-Do not connect Autopilot to an everyday browser profile.
+Do not connect Rove to an everyday browser profile.
 
 The recruiting profile should not contain:
 

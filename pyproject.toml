@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "erga-autopilot"
 version = "0.1.0"
-description = "Local, prepare-only recruiting automation with explicit authority boundaries"
+description = "Rove: local, prepare-only recruiting automation with explicit authority boundaries"
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "httpx>=0.28,<1",

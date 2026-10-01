@@ -39,7 +39,7 @@ full compensation, industry and work-style analysis still require posting review
 Importing the source alone does not enable notifications or applications. The explicit
 [application workflow](application-workflow.md) configuration adds scheduled refresh,
 notification delivery, and queued preparation. Erga's own optional Keryx cache
-can remain disabled: Autopilot owns this intake catalog and avoids a second download.
+can remain disabled: Rove owns this intake catalog and avoids a second download.
 
 ## Resumable interview
 
@@ -118,7 +118,7 @@ retrieval; `read_candidate_section` supplies authoritative structured answers.
 
 ## Hermes connection
 
-The production Autopilot MCP include list has thirteen narrow tools. Nine cover
+The production Rove MCP include list has thirteen narrow tools. Nine cover
 onboarding, discovery and evidence:
 
 - `search_job_feed`, `read_job_listing`, `job_feed_status`

@@ -1,6 +1,6 @@
 # Memory and storage
 
-Erga Autopilot uses different storage layers for different jobs. The goal is to keep long-term knowledge readable by the user without giving up the transactional guarantees needed for browser automation and submission safety.
+Rove uses different storage layers for different jobs. The goal is to keep long-term knowledge readable by the user without giving up the transactional guarantees needed for browser automation and submission safety.
 
 The reference design uses four main layers:
 
@@ -11,7 +11,7 @@ Hermes hot memory
 Obsidian vault  ──> QMD index
       │
       ▼
-Autopilot logic
+Rove logic
       │
       ├── SQLite transactional state
       ├── Erga state
@@ -37,13 +37,13 @@ Use `MEMORY.md` and `USER.md` for compact, high-value context such as:
 - important environment facts
 - stable user preferences
 - known tool quirks
-- pointers to the private Autopilot vault and runtime
+- pointers to the private Rove vault and runtime
 
 Do not try to fit the full candidate profile, company research, application history, or recruiting archive into Hermes hot memory. Those files are intentionally small.
 
 ## Obsidian is the long-term semantic memory
 
-The private Obsidian vault is the main human-readable knowledge store for Autopilot.
+The private Obsidian vault is the main human-readable knowledge store for Rove.
 
 It holds information that benefits from being readable, searchable, linkable, and editable outside the agent:
 
@@ -87,7 +87,7 @@ That layout is a starting point, not a reason to create empty folders before the
 
 `Story/Voice.md` is optional. Put a few paragraphs you wrote without help in it (notes,
 emails, an old essay). When it exists, Qwen gets up to about 2,500 characters of it as a
-style sample for written application answers. Autopilot reads the note and never writes
+style sample for written application answers. Rove reads the note and never writes
 it. It is not a candidate fact: nothing in it reaches an application unless the approved
 profile or evidence shows the same fact.
 
@@ -107,7 +107,7 @@ Obsidian being human-readable does not mean the model gets unrestricted write au
 
 Canonical profile and policy notes should use a schema that code can parse and validate. Markdown frontmatter is appropriate for stable metadata such as schema version, profile version, approval state, and timestamps.
 
-A human may edit the vault directly in Obsidian, but Autopilot should validate relevant notes before using them for an application. If a manual edit creates a contradiction or invalid structure, stop and surface the problem instead of guessing.
+A human may edit the vault directly in Obsidian, but Rove should validate relevant notes before using them for an application. If a manual edit creates a contradiction or invalid structure, stop and surface the problem instead of guessing.
 
 Writes to authoritative areas such as `Profile/` should go through explicit profile/memory operations. Qwen may propose a change, but it should not turn arbitrary web content, email, or research text into an approved candidate fact.
 
@@ -115,7 +115,7 @@ Writes to authoritative areas such as `Profile/` should go through explicit prof
 
 Applications need an exact record of the facts they used even if the live vault changes later.
 
-When an approved candidate profile changes, Autopilot should be able to create a normalized immutable snapshot and hash for that profile version. The snapshot can live as a private file while SQLite stores the version ID, hash, and path/reference.
+When an approved candidate profile changes, Rove should be able to create a normalized immutable snapshot and hash for that profile version. The snapshot can live as a private file while SQLite stores the version ID, hash, and path/reference.
 
 A frozen application package should point to that approved snapshot rather than reading a changing vault note during submission.
 
@@ -135,7 +135,7 @@ Those notes may influence research and writing where policy allows, but they can
 
 When provenance matters, store the source URL, retrieval date, and enough context to understand where a note came from.
 
-Company research is the research note Autopilot writes today. Before Qwen drafts a written
+Company research is the research note Rove writes today. Before Qwen drafts a written
 answer, trusted code reads up to three public pages from the employer's own site and keeps
 the sentences that say what the company does, its size or stage, its product and its
 values. The text is written to `Erga Autopilot/Research/<employer host>.md`, marked
@@ -159,7 +159,7 @@ The reference full setup may use the Hermes QMD skill. Check the current Hermes/
 
 ## SQLite stays for transactional state
 
-Autopilot still needs SQLite, but its role is intentionally narrower.
+Rove still needs SQLite, but its role is intentionally narrower.
 
 Use SQLite for state where duplication, ordering, concurrency, crash recovery, or exact transitions matter.
 
@@ -202,11 +202,11 @@ That gives the user a profile they can actually read while keeping the onboardin
 
 ## Erga keeps its own state
 
-Erga has its own local storage and domain model. Autopilot should not replace that storage with Obsidian or reach into Erga's database from browser code.
+Erga has its own local storage and domain model. Rove should not replace that storage with Obsidian or reach into Erga's database from browser code.
 
 Use Erga's supported interfaces for career evidence, resume generation/validation, application state, and recruiting reconciliation.
 
-Autopilot SQLite may reference Erga application or artifact IDs where needed.
+Rove SQLite may reference Erga application or artifact IDs where needed.
 
 ## Filesystem artifacts
 

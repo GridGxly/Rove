@@ -1,12 +1,12 @@
-# Erga Autopilot agent guide
+# Rove agent guide
 
 Read this file before changing code, setup, configuration, docs, or agent behavior in this repository. It is the baseline project context for coding agents and should stay useful even when no earlier conversation is available.
 
 ## What this project is
 
-Erga Autopilot is a local-first recruiting assistant built for one person running it on their own machine.
+Rove, formerly Erga Autopilot, is a local-first recruiting assistant built for one person running it on their own machine.
 
-It started from [Erga](https://github.com/Adr1an04/erga-mcp), which already handles application tracking, career evidence, resume tailoring, Git-backed project evidence, and recruiting-mail reconciliation. Autopilot keeps that foundation and adds the parts needed to actually work through applications: job intake, applicant memory, a Discord control surface, browser automation, detailed application history, and recruiting follow-up.
+It started from [Erga](https://github.com/Adr1an04/erga-mcp), which already handles application tracking, career evidence, resume tailoring, Git-backed project evidence, and recruiting-mail reconciliation. Rove keeps that foundation and adds the parts needed to actually work through applications: job intake, applicant memory, a Discord control surface, browser automation, detailed application history, and recruiting follow-up.
 
 This is an independent project, not an official Erga project. Preserve Erga attribution and license notices when touching derived code or assets.
 
@@ -91,7 +91,7 @@ Do not make a QMD result authoritative just because it ranked highly. The source
 
 ### SQLite
 
-Autopilot SQLite is intentionally narrow. Use it for transactional state where duplication, ordering, crash recovery, exact transitions, or uniqueness matter.
+Rove SQLite is intentionally narrow. Use it for transactional state where duplication, ordering, crash recovery, exact transitions, or uniqueness matter.
 
 Examples:
 
@@ -122,7 +122,7 @@ SQLite can reference those files by path, hash, and relationship.
 
 ### Erga state
 
-Erga keeps its own storage and domain model. Autopilot should integrate through supported Erga interfaces instead of rewriting Erga's database or replacing it with Obsidian.
+Erga keeps its own storage and domain model. Rove should integrate through supported Erga interfaces instead of rewriting Erga's database or replacing it with Obsidian.
 
 ## Profile writes and versioning
 

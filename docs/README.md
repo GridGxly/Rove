@@ -1,6 +1,6 @@
 # Documentation
 
-Erga Autopilot is a personal, local-first recruiting system. It is not a hosted service.
+Rove is a personal, local-first recruiting system. It is not a hosted service.
 
 If you're new here, start with these:
 

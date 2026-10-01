@@ -121,7 +121,7 @@ shows it, so the words an applicant-tracking system matches on stay true.
 If the vault has `Erga Autopilot/Story/Voice.md`, about 2,500 characters of it go to Qwen
 as `owner_voice`: the draft follows its sentence rhythm, plain words, first person and
 concrete detail without copying its sentences, and the note is never a source of facts.
-Autopilot reads that note and never writes it; the draft is re-made when it changes.
+Rove reads that note and never writes it; the draft is re-made when it changes.
 
 Before Qwen drafts, trusted code gathers company research once per application. It reads
 at most three public pages from the employer's own site: the home page, the about or
@@ -327,7 +327,7 @@ the question's wording without qualifiers plus its options, and filled on any la
 that asks the same question, with the source "your earlier answer". When the new form
 offers options, the remembered value is used only if it is one of them. `skip` is never
 remembered. The exact store is the `answer_memory` table in SQLite; a readable copy is
-`Answers.md` in the vault's Erga Autopilot folder. Approved profile facts come first,
+`Answers.md` in the vault's `Erga Autopilot` folder. Approved profile facts come first,
 remembered answers second, Qwen drafts third; only what none of them covers reaches the
 owner.
 
@@ -527,7 +527,7 @@ Next/Continue controls after a complete page. Account creation covers email, pas
 terms checkbox and known name fields; anything else on a registration page is a hold.
 No CAPTCHA solving (a visible challenge stops and asks), no proxies. Recruiting mail covers
 the Inbox of one Zoho account and the five labels above; mail about a job that was never
-applied to through Autopilot is ignored, and `Accepted` and `Withdrawn` are not set by
+applied to through Rove is ignored, and `Accepted` and `Withdrawn` are not set by
 code yet. Unattended submission is an owner policy with a daily cap and a minimum gap.
 Only the word, number, and explicit replies above are understood; a sentence in a thread
 is ignored, never interpreted.

@@ -1,6 +1,6 @@
 # Will this run on my machine?
 
-Erga Autopilot is being developed on a 14-inch MacBook Pro with an M5 Pro, 48GB of unified memory, and a 1TB SSD. That is the machine the default local setup is tuned around. You do not need the exact same Mac.
+Rove is being developed on a 14-inch MacBook Pro with an M5 Pro, 48GB of unified memory, and a 1TB SSD. That is the machine the default local setup is tuned around. You do not need the exact same Mac.
 
 If your hardware is different, it is worth checking the whole stack before downloading a large model or changing a bunch of settings. A capable model or coding agent can read this repo, compare it with your machine, and suggest a reasonable starting point.
 
@@ -15,10 +15,10 @@ If your model cannot open GitHub links, give it the current `AGENTS.md`, `README
 Fill in the machine details you know. If the agent can inspect your computer, leave unknown fields blank and let it use safe, read-only system commands.
 
 ```text
-I want to run Erga Autopilot on my own machine.
+I want to run Rove on my own machine.
 
 Repository:
-https://github.com/GridGxly/erga-autopilot
+https://github.com/GridGxly/Rove
 
 Before recommending anything, read the current repository. At minimum, inspect:
 - AGENTS.md
@@ -45,7 +45,7 @@ My machine:
 
 If you have local computer or terminal access, inspect missing hardware details yourself with safe read-only system commands. Do not read or upload personal files, credentials, browser data, SSH keys, environment secrets, application data, Obsidian vault contents, or recruiting data just to identify the hardware.
 
-The current Erga Autopilot design runs a local model alongside Hermes Agent, Erga, Playwright/browser automation, Discord, a private Obsidian vault, QMD local retrieval, SQLite transactional state, and optional Zoho integration. Account for the whole running stack, not just whether the model weights technically fit in memory.
+The current Rove design runs a local model alongside Hermes Agent, Erga, Playwright/browser automation, Discord, a private Obsidian vault, QMD local retrieval, SQLite transactional state, and optional Zoho integration. Account for the whole running stack, not just whether the model weights technically fit in memory.
 
 Rate my machine as one of these:
 1. comfortable as documented
@@ -126,7 +126,7 @@ On other platforms, use the normal read-only hardware tools for that operating s
 
 ## What a useful answer looks like
 
-"The model fits" is not enough. A real Autopilot run also needs room for the operating system, inference runtime, Hermes, Erga, Python, Discord, SQLite, Obsidian/QMD retrieval, and a browser with a potentially heavy application page open.
+"The model fits" is not enough. A real Rove run also needs room for the operating system, inference runtime, Hermes, Erga, Python, Discord, SQLite, Obsidian/QMD retrieval, and a browser with a potentially heavy application page open.
 
 A good answer should also avoid pretending to know the exact speed of hardware it has never benchmarked. The useful part is a starting configuration and a short plan to test it on the actual machine.
 

@@ -1,6 +1,6 @@
 # Getting started
 
-Erga Autopilot is still experimental. Some of this guide describes the setup the project is being built toward, not commands that are guaranteed to exist on every branch yet.
+Rove is still experimental. Some of this guide describes the setup the project is being built toward, not commands that are guaranteed to exist on every branch yet.
 
 Start with synthetic data and prepare-only browser runs. Do not connect real recruiting data until the earlier pieces work and the security checks pass.
 
@@ -39,7 +39,7 @@ If you are not sure whether your machine has enough headroom, use [Will this run
 
 The reference full setup uses:
 
-- Python 3.12 through 3.14 for Autopilot (Erga itself supports 3.11+)
+- Python 3.12 through 3.14 for Rove (Erga itself supports 3.11+)
 - [`uv`](https://docs.astral.sh/uv/)
 - Git
 - Node.js 22 or newer when using the reference QMD retrieval setup
@@ -71,12 +71,14 @@ If QMD is part of the setup, check the current Hermes QMD requirements before in
 ## Clone the repo
 
 ```bash
-git clone https://github.com/GridGxly/erga-autopilot.git
-cd erga-autopilot
+git clone https://github.com/GridGxly/Rove.git
+cd Rove
 uv sync
 ```
 
 If your hardware needs different runtime settings, keep those changes in your own clone or fork so they are easy to track.
+
+Rove was renamed from Erga Autopilot, but the internal names have not moved yet. The Python package is still `erga_autopilot`, the command is still `uv run autopilot`, the launchd labels are still `dev.erga-autopilot.*`, the state root is still `~/.config/erga-autopilot/`, and the vault folder is still `Erga Autopilot/`. Running installs, saved state, and vault notes depend on those identifiers, so they will change in a separate step with a migration. Use the old names wherever this guide shows them.
 
 ## Keep live data outside Git
 
@@ -111,7 +113,7 @@ Use fake people, companies, email addresses, Discord IDs, job postings, vault no
 
 ## Erga
 
-Erga Autopilot builds on [Erga](https://github.com/Adr1an04/erga-mcp).
+Rove builds on [Erga](https://github.com/Adr1an04/erga-mcp).
 
 Erga remains responsible for the parts it already handles well:
 
@@ -123,7 +125,7 @@ Erga remains responsible for the parts it already handles well:
 - application lifecycle state
 - recruiting-mail reconciliation
 
-Autopilot adds browser execution, candidate onboarding/profile memory, the Discord interface, field-level application logging, long-term semantic memory, and submission orchestration around that core.
+Rove adds browser execution, candidate onboarding/profile memory, the Discord interface, field-level application logging, long-term semantic memory, and submission orchestration around that core.
 
 Do not bypass Erga by editing its SQLite tables directly from browser code. Use its application/domain surface or MCP tools.
 
@@ -221,7 +223,7 @@ MANUAL_TAKEOVER
 
 The model can stay the same while the available tools and permissions change.
 
-The reference setup uses Hermes' Obsidian skill for vault operations. Canonical profile writes should still be mediated by Autopilot's validated profile/memory operations rather than unrestricted model edits.
+The reference setup uses Hermes' Obsidian skill for vault operations. Canonical profile writes should still be mediated by Rove's validated profile/memory operations rather than unrestricted model edits.
 
 ## Fast browser runtime
 
@@ -231,7 +233,7 @@ Qwen3.8-27B remains the local reasoning model. The browser layer should make rou
 
 Playwright MCP can still be useful while developing or debugging the browser layer, but it is not required as the per-action production loop.
 
-Use a dedicated recruiting browser profile. Do not connect Autopilot to your everyday browser profile or give it unrelated logins, banking sessions, password-manager extensions, or other private browser state.
+Use a dedicated recruiting browser profile. Do not connect Rove to your everyday browser profile or give it unrelated logins, banking sessions, password-manager extensions, or other private browser state.
 
 Start with a visible browser and prepare-only runs so you can watch what happens. Measure browser round trips, Qwen calls, fill accuracy, retries, manual takeovers, and memory pressure before turning on unattended submission.
 
@@ -266,7 +268,7 @@ SYSTEM
 
 These are logical names, not hard-coded IDs. Real guild, channel, role, and user IDs belong in local configuration.
 
-A third-party source bot should only see the source channels it needs. The Autopilot bot should authorize its owner by numeric Discord user ID rather than display name alone.
+A third-party source bot should only see the source channels it needs. The Rove bot should authorize its owner by numeric Discord user ID rather than display name alone.
 
 `#memory` is a conversational interface to the local memory system. It is not the database or the vault itself.
 
@@ -314,7 +316,7 @@ The current build order is:
 2. Mac runtime foundation
 3. Qwen3.8 local-runtime certification
 4. Hermes policy, hot memory, and Obsidian/QMD foundation
-5. Erga integration and transactional Autopilot state
+5. Erga integration and transactional Rove state
 6. security and prompt-injection tests
 7. Discord control plane
 8. applicant onboarding and validated vault profile

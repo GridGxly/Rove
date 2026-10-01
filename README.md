@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/erga-autopilot-logo.svg" width="760" alt="Erga Autopilot" />
+  <img src="docs/assets/erga-autopilot-logo.svg" width="760" alt="Rove" />
 </p>
 
 <p align="center">
@@ -14,11 +14,11 @@
 
 ## Why this exists
 
-I built Erga Autopilot for my own internship search.
+I built Rove for my own internship search.
 
 It’s built on top of [Erga](https://github.com/Adr1an04/erga-mcp), which already handles the stuff I care about like application tracking, resume tailoring, project evidence, and recruiting emails. I wanted to take it a step further and automate the part I was still doing by hand: opening applications, filling out forms, asking me when something is unclear, saving exactly what was submitted, and tracking what happens afterward.
 
-Erga Autopilot is **not** an official Erga project and is not affiliated with its maintainer. Adrian and the Erga contributors did the original Erga work. This project builds on that foundation under the MIT license and adds browser automation, a Discord control surface, local applicant memory, and application orchestration. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution details.
+Rove is **not** an official Erga project and is not affiliated with its maintainer. Adrian and the Erga contributors did the original Erga work. This project builds on that foundation under the MIT license and adds browser automation, a Discord control surface, local applicant memory, and application orchestration. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution details.
 
 ## What it does
 
@@ -43,7 +43,7 @@ Discord is the remote interface. The model, memory, databases, resumes, browser 
 Discord
   │
   ▼
-Autopilot
+Rove
   │
   ├── Qwen3.8-27B      reasoning
   ├── Hermes Agent     sessions, tools, MCP, hot memory
@@ -90,7 +90,7 @@ It is intended to hold approved profile information, application preferences, na
 
 Canonical profile notes are still validated by code. A webpage, email, research result, or model output cannot write itself into the approved candidate profile just because it appears in the vault.
 
-When an application is prepared, Autopilot freezes the approved profile/version and other inputs it used so later edits to the vault do not rewrite history.
+When an application is prepared, Rove freezes the approved profile/version and other inputs it used so later edits to the vault do not rewrite history.
 
 QMD can provide local retrieval over the vault as it grows. QMD is an index, not the source of truth.
 
@@ -122,7 +122,7 @@ Not sure where your machine lands? Read [Will this run on my machine?](docs/hard
 The current reference setup uses:
 
 - macOS on Apple Silicon;
-- Python 3.12 through 3.14 for Autopilot;
+- Python 3.12 through 3.14 for Rove;
 - [`uv`](https://docs.astral.sh/uv/);
 - Git;
 - Node.js 22+ for the full reference setup with QMD;
@@ -152,12 +152,14 @@ Read [SECURITY.md](SECURITY.md), [Browser automation](docs/browser-automation.md
 This is still experimental and is not a one-command consumer app yet.
 
 ```bash
-git clone https://github.com/GridGxly/erga-autopilot.git
-cd erga-autopilot
+git clone https://github.com/GridGxly/Rove.git
+cd Rove
 uv sync
 ```
 
 Then follow [docs/getting-started.md](docs/getting-started.md).
+
+The project was called Erga Autopilot until September 2026. The Python package `erga_autopilot`, the `autopilot` command, the `erga-autopilot` package name in `pyproject.toml`, the `dev.erga-autopilot.*` launchd labels, the `~/.config/erga-autopilot/` state root, and the `Erga Autopilot/` folder in the Obsidian vault keep the old identifier for now. Installed services, saved state, and vault notes depend on those names, so they will move in a separate step with a migration rather than a find-and-replace.
 
 If you want the original local-first recruiting assistant without browser auto-application behavior, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
 
@@ -183,6 +185,6 @@ Built by [Ralph Clavens Love Noel](https://github.com/GridGxly) for personal use
 
 ## License
 
-Erga Autopilot is licensed under the [MIT License](LICENSE).
+Rove is licensed under the [MIT License](LICENSE).
 
 Parts of the project and some design decisions come from Erga and remain subject to Erga's MIT license and attribution requirements. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

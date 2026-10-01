@@ -34,8 +34,8 @@ def sync_answers() -> Path | None:
     lines = [
         "# Remembered answers",
         "",
-        "Facts you answered once in Discord. Autopilot fills them on any later form that asks the",
-        "same question. Edit or remove a line here and tell Autopilot in `#memory` to change it;",
+        "Facts you answered once in Discord. Rove fills them on any later form that asks the",
+        "same question. Edit or remove a line here and tell Rove in `#memory` to change it;",
         "the exact store is the local database.",
         "",
         "| Question | Answer | Remembered |",
@@ -172,7 +172,7 @@ VOICE_SAMPLE_CHARS = 2500
 def voice_samples(limit: int = VOICE_SAMPLE_CHARS) -> str:
     """The owner's own writing from `Story/Voice.md`, or "" when there is none.
 
-    Read only: Autopilot never writes this note. It is a style sample for drafting, not a
+    Read only: Rove never writes this note. It is a style sample for drafting, not a
     candidate fact. Front matter is dropped and the text is cut at a sentence or line end
     near the limit so the model sees whole sentences.
     """

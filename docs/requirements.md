@@ -1,6 +1,6 @@
-# Requirements to run Erga Autopilot
+# Requirements to run Rove
 
-This page is the checklist for a full local Autopilot setup. The project is still being built, so some items describe the target runtime rather than a finished installer. When implementation changes a requirement, update this file in the same branch.
+This page is the checklist for a full local Rove setup. The project is still being built, so some items describe the target runtime rather than a finished installer. When implementation changes a requirement, update this file in the same branch.
 
 The public repository should show what software, services, APIs, permissions, memory layers, and configuration the project expects. It must never contain a real user's secret values or applicant data.
 
@@ -26,7 +26,7 @@ A full local setup is expected to need:
 - macOS on Apple Silicon for the primary tested path
 - Xcode Command Line Tools
 - Git
-- Python 3.12 through 3.14 for Autopilot, as declared in `pyproject.toml`
+- Python 3.12 through 3.14 for Rove, as declared in `pyproject.toml`
 - [`uv`](https://docs.astral.sh/uv/)
 - Node.js 22 or newer for the reference full setup with QMD
 - a supported MLX / MLX-VLM runtime
@@ -37,9 +37,9 @@ A full local setup is expected to need:
 - Patchright (a Playwright fork) and Google Chrome, or Patchright's Chrome for Testing, for the recruiting browser
 - the `cryptography` package for the encrypted local credential store
 - optionally a local clone of [Unslop](https://github.com/theclaymethod/unslop) for draft cleanup scanners (`unslop_path`)
-- SQLite for Autopilot transactional state
+- SQLite for Rove transactional state
 
-Autopilot dependencies are locked in `uv.lock`. See [Local runtime](local-runtime.md) for the tested oMLX and model revisions and certification commands.
+Rove dependencies are locked in `uv.lock`. See [Local runtime](local-runtime.md) for the tested oMLX and model revisions and certification commands.
 
 Real candidate onboarding and Keryx discovery use the same Python dependencies. They
 require a private Obsidian vault path and local state storage; Keryx refresh reads
@@ -115,15 +115,15 @@ At the time this page was updated, the Hermes QMD skill required:
 - extension-capable SQLite on macOS rather than the system SQLite
 - local helper-model downloads on first setup
 
-On macOS, that may require a Homebrew SQLite installation specifically for QMD's extension support. QMD 2.8.3's packaged Node SQLite implementation worked on the tested machine without that additional install. This is separate from Autopilot's normal SQLite database access.
+On macOS, that may require a Homebrew SQLite installation specifically for QMD's extension support. QMD 2.8.3's packaged Node SQLite implementation worked on the tested machine without that additional install. This is separate from Rove's normal SQLite database access.
 
 The current Hermes documentation reports that QMD's first run downloads roughly 2GB of local helper models for embeddings, reranking, and query expansion. Treat that number as upstream information that may change; verify it during installation.
 
 QMD is derived state. The vault remains the source of truth. If the QMD index is lost, rebuild it.
 
-### Autopilot SQLite
+### Rove SQLite
 
-Autopilot SQLite is for transactional machine state, not the main semantic user memory.
+Rove SQLite is for transactional machine state, not the main semantic user memory.
 
 It is expected to hold things such as:
 
@@ -144,7 +144,7 @@ It is expected to hold things such as:
 
 ### Erga storage
 
-Erga keeps its own local state and domain model. Autopilot should use Erga's supported interfaces rather than replacing Erga's storage with Obsidian or writing directly into its database from browser code.
+Erga keeps its own local state and domain model. Rove should use Erga's supported interfaces rather than replacing Erga's storage with Obsidian or writing directly into its database from browser code.
 
 ### Private artifacts
 
@@ -166,7 +166,7 @@ The reference setup uses Hermes' bundled Obsidian skill for vault access and may
 
 Erga remains the foundation for career evidence, project evidence, resume tailoring, generated resume validation, application state, and recruiting-mail reconciliation.
 
-Autopilot should integrate through Erga's supported interfaces rather than reaching directly into its database from browser code.
+Rove should integrate through Erga's supported interfaces rather than reaching directly into its database from browser code.
 
 ### Fast browser runtime
 
@@ -284,7 +284,7 @@ Secrets should come from one of the approved local secret/config mechanisms used
 
 Real runtime state belongs outside the repository checkout.
 
-A normal Autopilot runtime root can live under:
+A normal Rove runtime root can live under:
 
 ```text
 ~/.config/erga-autopilot/
@@ -335,7 +335,7 @@ SYSTEM
 
 A local installation maps those logical destinations to real Discord IDs in private configuration.
 
-The source bot should only have access to the source channels it needs. The Autopilot bot should have only the permissions required for its workflow.
+The source bot should only have access to the source channels it needs. The Rove bot should have only the permissions required for its workflow.
 
 `#memory` is an interface to the local memory system; it is not the memory database itself.
 

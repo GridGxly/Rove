@@ -1,6 +1,6 @@
 # Discord architecture
 
-Discord is Erga Autopilot's remote control surface and human-readable activity log. It is not the source of truth for application state, candidate memory, or artifacts.
+Discord is Rove's remote control surface and human-readable activity log. It is not the source of truth for application state, candidate memory, or artifacts.
 
 The server layout used by the project is:
 
@@ -31,9 +31,9 @@ Real guild, channel, role, and user IDs stay in local configuration and must not
 
 `applications` is a Discord forum. Once an application enters preparation, it gets its own forum post.
 
-That post is the readable history for one application. It should answer what Autopilot did, what it submitted, what changed later, and why.
+That post is the readable history for one application. It should answer what Rove did, what it submitted, what changed later, and why.
 
-The post's first message is a live status card that Autopilot edits in place (headline, one line, the replies it accepts), so the forum list previews the current state. The entries below it are the chronological record: routine steps (opened, clicked Apply, resume ready, your replies, lifecycle changes, the submit click) are one-line messages, and cards are used for decisions, drafts, job fit, the filled form, submission results, and failures. Sources are shown in words ("your profile", "your reply", "your evidence"), never as internal keys, and nothing the owner reads carries an application id, field key, or package hash; those go to `system-log`.
+The post's first message is a live status card that Rove edits in place (headline, one line, the replies it accepts), so the forum list previews the current state. The entries below it are the chronological record: routine steps (opened, clicked Apply, resume ready, your replies, lifecycle changes, the submit click) are one-line messages, and cards are used for decisions, drafts, job fit, the filled form, submission results, and failures. Sources are shown in words ("your profile", "your reply", "your evidence"), never as internal keys, and nothing the owner reads carries an application id, field key, or package hash; those go to `system-log`.
 
 The thread is also where you answer. The bot knows which application a thread belongs to, so a reply is a word (`go`, `park it`, `send it`, `applied`, `not sent`, `create account`), a draft number (`use draft 2`), or a question number with your answer (`2: Yes`). The [application workflow](application-workflow.md#replying-in-the-thread) lists the full grammar.
 
@@ -56,7 +56,7 @@ The Discord post is a readable flight recorder. SQLite remains the exact transac
 
 #### `shortlist`
 
-`shortlist` holds jobs that need a human decision before Autopilot continues.
+`shortlist` holds jobs that need a human decision before Rove continues.
 
 This is useful for borderline roles, unusual opportunities, startups, local companies, or jobs that do not clearly pass or fail the configured application rules.
 
@@ -68,7 +68,7 @@ The implemented workflow posts a job-fit hold here, and only here: a feed job wh
 
 #### `agent-control`
 
-`agent-control` is the main command surface for interacting with Autopilot.
+`agent-control` is the main command surface for interacting with Rove.
 
 Commands and approvals sent here are still subject to normal authorization and policy checks. A Discord message does not override code-level submission, memory, browser, or credential rules. This channel has no implied application, so only the explicit forms with an application id work here (see the [application workflow](application-workflow.md#replying-in-the-thread)); the word replies belong in the application's thread.
 
@@ -82,7 +82,7 @@ Examples include:
 - CAPTCHA or MFA
 - an ambiguous submission result
 - a written response waiting for approval
-- a browser state Autopilot cannot safely recover from
+- a browser state Rove cannot safely recover from
 - a deadline or recruiting event that needs a decision
 
 This channel should stay quiet unless the user actually needs to do something.

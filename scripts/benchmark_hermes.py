@@ -1,7 +1,7 @@
 """Measure the real Hermes wire request, then replay that identical payload directly.
 
 Run with the pinned Hermes managed Python, passing --hermes-checkout. Results and
-synthetic request payloads remain in the private Autopilot state directory.
+synthetic request payloads remain in the private Rove state directory.
 """
 
 import argparse

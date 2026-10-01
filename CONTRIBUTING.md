@@ -1,6 +1,6 @@
 # Contributing
 
-Erga Autopilot started as a personal recruiting tool. Contributions are welcome, but changes should preserve the things the project depends on most: correct applicant data, auditable behavior, local-first state, narrow permissions, and no invented resume claims.
+Rove started as a personal recruiting tool. Contributions are welcome, but changes should preserve the things the project depends on most: correct applicant data, auditable behavior, local-first state, narrow permissions, and no invented resume claims.
 
 ## Before opening a pull request
 
@@ -52,8 +52,8 @@ Optional integrations should stay optional.
 ## Setup
 
 ```bash
-git clone https://github.com/GridGxly/erga-autopilot.git
-cd erga-autopilot
+git clone https://github.com/GridGxly/Rove.git
+cd Rove
 uv sync
 ```
 
@@ -136,7 +136,7 @@ A profile/storage change should include the pieces relevant to it, such as:
 
 ## SQLite changes
 
-Autopilot SQLite is for transactional machine state, not the main semantic knowledge base.
+Rove SQLite is for transactional machine state, not the main semantic knowledge base.
 
 Good reasons to add a table/field include deduplication, exact workflow state, crash recovery, queues, idempotency, bindings, submission attempts, or artifact metadata.
 
@@ -199,6 +199,6 @@ Do not add generated-tool or assistant credit to commit messages.
 
 ## Attribution
 
-Erga Autopilot builds on [Erga](https://github.com/Adr1an04/erga-mcp), maintained by Adrian (`Adr1an04`) and the Erga contributors under the MIT license.
+Rove builds on [Erga](https://github.com/Adr1an04/erga-mcp), maintained by Adrian (`Adr1an04`) and the Erga contributors under the MIT license.
 
 Keep required upstream notices intact when modifying or redistributing derived code or assets.
