@@ -18,14 +18,13 @@ import socketserver
 import subprocess
 import time
 import urllib.request
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import sync_playwright
 
-from . import boards, form_reading, workflow
+from . import boards, form_reading, questions, workflow
 from .jobs import lookup_job_link, public_link
 from .onboarding import read_approved
 from .runtime import state_root, write_private
@@ -105,28 +104,16 @@ def normalized(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-COUNTRY_ALIASES = {"united states", "united states of america", "usa", "us", "u s", "u s a"}
+COUNTRY_ALIASES = questions.COUNTRY_ALIASES
 
 
 def option_matches(option_label: str, value) -> bool:
     """Exact option text, or the same country written differently."""
-    a, b = normalized(option_label), normalized(str(value))
-    return a == b or (a in COUNTRY_ALIASES and b in COUNTRY_ALIASES)
-
-
-PLACE_LABELS = {
-    "location",
-    "current location",
-    "location city",
-    "city",
-    "city state",
-    "where are you located",
-}
+    return questions.option_matches(option_label, value)
 
 
 def is_place_label(label) -> bool:
-    name = " ".join(re.sub(r"\b(optional|required)\b", " ", normalized(label or "")).split())
-    return name in PLACE_LABELS
+    return questions.is_place_label(label)
 
 
 def phone_variants(value) -> list[str]:
@@ -141,213 +128,25 @@ def phone_variants(value) -> list[str]:
 
 
 def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
-    identity = profile["identity"]
-    # "(Optional)" and "(Required)" qualify the field; they are not part of its name.
-    name = " ".join(re.sub(r"\b(optional|required)\b", " ", normalized(label)).split())
-    if name in {"contact phone type", "phone type", "phone number type"}:
-        return "Mobile", "default.phone_type"
-    keys = {
-        "first name": "legal_first_name",
-        "legal first name": "legal_first_name",
-        "middle name": "legal_middle_name",
-        "legal middle name": "legal_middle_name",
-        "country region of residence": "country",
-        "country region": "country",
-        "state": "state_region",
-        "state region": "state_region",
-        "state province": "state_region",
-        "state province region": "state_region",
-        "mobile number": "phone",
-        "cell phone": "phone",
-        "mobile phone number": "phone",
-        "last name": "legal_last_name",
-        "legal last name": "legal_last_name",
-        "preferred name": "preferred_name",
-        "preferred first name": "preferred_name",
-        "email": "email",
-        "email address": "email",
-        "phone": "phone",
-        "phone number": "phone",
-        "mobile phone": "phone",
-        "city": "city",
-        "location city": "city",
-        "zip code": "postal_code",
-        "postal code": "postal_code",
-        "linkedin": "linkedin",
-        "linkedin profile": "linkedin",
-        "linkedin url": "linkedin",
-        "github": "github",
-        "github url": "github",
-        "portfolio": "portfolio",
-        "phone number including country code": "phone",
-        "first name legal": "legal_first_name",
-        "last name legal": "legal_last_name",
-        "country": "country",
-        "country of residence": "country",
-        "website": "portfolio",
-        "personal website": "portfolio",
-    }
-    if name in keys:
-        key = keys[name]
-        return identity[key], "identity." + key
-    # A label that contains the fact's name means that fact: "Profile Link (Optional)" is
-    # the portfolio, "LinkedIn Profile URL" is LinkedIn. Order puts the specific first.
-    contains = (
-        ("linkedin", "linkedin"),
-        ("github", "github"),
-        ("portfolio", "portfolio"),
-        ("personal website", "portfolio"),
-        ("personal site", "portfolio"),
-        ("website", "portfolio"),
-        ("profile link", "portfolio"),
-        ("profile url", "portfolio"),
-        ("online profile", "portfolio"),
-        ("given name", "legal_first_name"),
-        ("first name", "legal_first_name"),
-        ("family name", "legal_last_name"),
-        ("surname", "legal_last_name"),
-        ("last name", "legal_last_name"),
-        ("email", "email"),
-        ("mobile", "phone"),
-        ("phone", "phone"),
-        ("zip", "postal_code"),
-        ("postal", "postal_code"),
-    )
-    # Only a short, plain label is trusted this way: a label carrying instructions or
-    # naming someone else (a reference, a manager) is never an identity fact.
-    plain = len(name.split()) <= 5 and not re.search(
-        r"reference|manager|supervisor|emergency|employer|company|recruiter|contact person"
-        r"|upload|verify|ignore|instruction",
-        name,
-    )
-    for needle, key in contains:
-        if plain and needle in name and identity.get(key):
-            return identity[key], "identity." + key
-    if name in {"name", "full name", "legal name", "legal full name"}:
-        return " ".join(
-            identity[k]
-            for k in ("legal_first_name", "legal_middle_name", "legal_last_name")
-            if identity[k]
-        ), "identity.legal_name"
-    schools = profile["education"]["schools"]
-    if len(schools) == 1:
-        school = schools[0]
-        educational = {
-            "school": "school",
-            "university": "school",
-            "college university": "school",
-            "major": "major",
-            "field of study": "major",
-            "what is your field of study": "major",
-            "degree": "degree",
-        }
-        if name in educational:
-            key = educational[name]
-            return school[key], "education.schools.0." + key
-        if (
-            name in {"gpa", "current gpa"}
-            and school["disclose_gpa"] is True
-            and school["gpa"] is not None
-        ):
-            return str(school["gpa"]), "education.schools.0.gpa"
-        if (
-            name == "when is your expected graduation date month year"
-            and school["graduation_month"]
-        ):
-            return datetime.strptime(school["graduation_month"], "%Y-%m").replace(
-                tzinfo=UTC
-            ).strftime("%B %Y"), "education.schools.0.graduation_month"
-    eligible = profile["eligibility"]
-    if (
-        re.fullmatch(
-            r"are you legally authorized to work in (?:the )?(?:u s|us|usa|united states)(?: for [a-z ]+)?",
-            name,
-        )
-        and eligible["us_work_authorized"] is not None
-    ):
-        return "Yes" if eligible["us_work_authorized"] else "No", "eligibility.us_work_authorized"
-    if (
-        re.match(r"will you now or in the future require .*sponsorship", name)
-        and eligible["sponsorship_now"] is False
-        and eligible["sponsorship_future"] is False
-    ):
-        return "No", "eligibility.sponsorship_now+future"
-    prefs = profile["preferences"]
-    excluded = [normalized(x) for x in (prefs.get("excluded_locations") or []) if x]
-    if (
-        prefs.get("relocate") is True
-        and "onsite" in (prefs.get("work_styles") or [])
-        and re.search(
-            r"(comfortable|able|willing|open|available) (to )?(work|working|commut|relocat|be|being)"
-            r"|will you be (local|located|based|in|able)|are you (local|located|based)|relocat",
-            name,
-        )
-        and re.search(r"office|on ?site|in person|local|located|based|relocat|commut|hybrid", name)
-        and not any(place and place in name for place in excluded)
-    ):
-        # Approved: relocate anywhere in the US and work onsite. A named city that the
-        # owner excluded is never answered for them.
-        return "Yes", "preferences.relocate+onsite"
-    if name in {
-        "location",
-        "current location",
-        "city state",
-        "city and state",
-        "where are you located",
-    }:
-        parts = [identity.get("city"), identity.get("state_region")]
-        if all(parts):
-            return ", ".join(parts), "identity.location"
-    # Dates, graduation, authorization, demographics and custom questions
-    # need an adapter or user review; never guess option values or legal wording.
-    return None, None
+    """A free-text value for a label from the approved profile, with its source.
 
-
-SELF_ID_LABEL = re.compile(
-    r"gender|race|ethnicit|hispanic|latino|veteran|disabilit|sexual orientation|"
-    r"self.?identif|protected veteran",
-    re.IGNORECASE,
-)
-DECLINE_OPTION = re.compile(
-    r"decline|prefer not|don.?t wish|do not wish|not to (answer|disclose|self)|"
-    r"choose not|rather not",
-    re.IGNORECASE,
-)
+    The rules live in questions.py: a label is matched by its meaning, word for word,
+    and anything it does not know (dates, demographics, another person's contact
+    details, a custom question) is never guessed.
+    """
+    return questions.known_fact(label, profile)
 
 
 def decline_self_identification(label: str, option_labels: list[str]) -> str | None:
-    """Voluntary self-identification is answered with the form's own decline option.
-
-    Declining cannot affect candidacy; it is the standard practice, never an inference
-    about the applicant. A form without a decline option stays with the owner.
-    """
-    if not SELF_ID_LABEL.search(label or ""):
-        return None
-    matches = [o for o in option_labels if DECLINE_OPTION.search(str(o))]
-    return str(matches[0]) if len(matches) == 1 else None
+    """Voluntary self-identification is answered with the form's own decline option."""
+    return questions.decline_self_identification(label, option_labels)
 
 
 def resolve_choice(label: str, options: list[dict], profile: dict) -> tuple[str | None, str | None]:
-    """Pick exactly one option from an approved fact; never a guess among options."""
-    labels = [o["label"] for o in options]
-    value, source = resolve_known(label, profile)
-    candidates = set()
-    if value is not None:
-        candidates = {normalized(str(value))}
-    elif "graduat" in normalized(label):
-        schools = profile["education"]["schools"]
-        month = schools[0]["graduation_month"] if len(schools) == 1 else None
-        if month:
-            when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
-            candidates = {normalized(when.strftime(f)) for f in ("%B %Y", "%b %Y", "%Y")}
-            source = "education.schools.0.graduation_month"
-    matches = [x for x in labels if normalized(x) in candidates]
-    if len(matches) == 1:
-        return matches[0], source
-    declined = decline_self_identification(label, labels)
-    if declined:
-        return declined, "policy.decline_self_identification"
-    return None, None
+    """Pick exactly one option from what code may answer without the owner's memory: an
+    approved fact, the form's decline option, or a standing default for a plain question.
+    Never a guess among options."""
+    return questions.resolve({"label": label, "options": options}, profile)
 
 
 # Visible status and validation messages, read the same way by the observation below and
@@ -1501,6 +1300,9 @@ class RecruitingBrowser:
                     field["required"] = True
         pending = []
         filled = []
+        # What Rove recorded itself (a used draft, a blank), and whose employer this is.
+        automatic = workflow.automatic_answers(run_id)
+        employer = questions.employer_key(workflow.get(run_id)["url"])
         grouped = {f["name"] for f in before["fields"] if f["kind"] == "radio_group"}
         for field in before["fields"]:
             if field["disabled"] or field["readonly"]:
@@ -1513,7 +1315,7 @@ class RecruitingBrowser:
             if self.fill_read_question(field, answers, filled, pending):
                 continue  # a grouped checkbox, a checkbox group, or an unreadable question
             if field["kind"] in {"radio_group", "choice"}:
-                owner_answer = answers.get(field["key"])
+                owner_answer = questions.application_answer(field, answers, automatic)
                 if owner_answer and owner_answer["value"].lower() == "skip":
                     if not field["required"]:
                         continue
@@ -1521,15 +1323,13 @@ class RecruitingBrowser:
                 if owner_answer:
                     value, source = owner_answer["value"], owner_answer["source"]
                 else:
-                    value, source = resolve_choice(
-                        field["label"], field["options"], approved["profile"]
+                    # Approved profile, then the owner's earlier answer, then a default.
+                    value, source = questions.resolve(
+                        field,
+                        approved["profile"],
+                        recall=workflow.recall_answer,
+                        employer=employer,
                     )
-                if value is None:
-                    remembered = workflow.recall_answer(
-                        field["label"], [o["label"] for o in field["options"]]
-                    )
-                    if remembered is not None:
-                        value, source = remembered, "your earlier answer"
                 if value is not None and normalized(field.get("value") or "") == normalized(
                     str(value)
                 ):
@@ -1630,29 +1430,12 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            owner_answer = answers.get(field["key"])
+            owner_answer = questions.application_answer(field, answers, automatic)
             if owner_answer and owner_answer["value"].lower() == "skip":
                 if not field["required"]:
                     continue
                 # A blank recorded while the field looked optional is not an answer now.
                 owner_answer = None
-            if owner_answer:
-                value, source = owner_answer["value"], owner_answer["source"]
-            else:
-                value, source = resolve_known(field["label"], approved["profile"])
-            if value is None and not owner_answer:
-                remembered = workflow.recall_answer(
-                    field["label"], [o["label"] for o in field["options"]]
-                )
-                if remembered is not None:
-                    value, source = remembered, "your earlier answer"
-            if (
-                value is not None
-                and re.search(r"phone|mobile", field["label"], re.IGNORECASE)
-                and not re.search(r"country code", field["label"], re.IGNORECASE)
-            ):
-                value = phone_variants(value)[0]
-            choices = [o["label"] for o in field["options"]]
             if field["kind"] in ("text", "search") and (
                 field.get("autocomplete") in ("list", "both")
                 or re.search(
@@ -1664,6 +1447,26 @@ class RecruitingBrowser:
             ):
                 # Place fields are pickers nearly everywhere, even without ARIA hints.
                 field = {**field, "role": "combobox"}
+            # A picker shows its options only once opened: until then only a value that
+            # does not depend on them (a profile fact, an earlier answer) is resolved.
+            unread_picker = field["role"] == "combobox" and not field["options"]
+            if owner_answer:
+                value, source = owner_answer["value"], owner_answer["source"]
+            else:
+                value, source = questions.resolve(
+                    field,
+                    approved["profile"],
+                    recall=workflow.recall_answer,
+                    employer=employer,
+                    picker=unread_picker,
+                )
+            if (
+                value is not None
+                and re.search(r"phone|mobile", field["label"], re.IGNORECASE)
+                and not re.search(r"country code", field["label"], re.IGNORECASE)
+            ):
+                value = phone_variants(value)[0]
+            choices = [o["label"] for o in field["options"]]
             if field["role"] == "combobox" and value is None:
                 locator.click()
                 locator.press("ArrowDown")
@@ -1674,10 +1477,14 @@ class RecruitingBrowser:
                 except PlaywrightError:
                     pass
                 locator.press("Escape")
-            if value is None and choices:
-                declined = decline_self_identification(field["label"], choices)
-                if declined:
-                    value, source = declined, "policy.decline_self_identification"
+            if value is None and choices and unread_picker:
+                # The options are known now: resolve again against them.
+                value, source = questions.resolve(
+                    {**field, "options": [{"label": c} for c in choices]},
+                    approved["profile"],
+                    recall=workflow.recall_answer,
+                    employer=employer,
+                )
             if field["role"] == "combobox" and value is not None:
                 if self.select_combobox(locator, field, value, approved["profile"]):
                     filled.append(
@@ -1716,10 +1523,10 @@ class RecruitingBrowser:
                     continue
             if (
                 field["kind"] in ("checkbox", "radio")
-                and owner_answer
-                and value.lower() in {"yes", "no", "true", "false"}
+                and value is not None
+                and str(value).lower() in {"yes", "no", "true", "false"}
             ):
-                desired = value.lower() in {"yes", "true"}
+                desired = str(value).lower() in {"yes", "true"}
                 locator.set_checked(desired)
                 if locator.is_checked() != desired:
                     raise ValueError("Selection verification failed")
@@ -1729,7 +1536,11 @@ class RecruitingBrowser:
                 continue
             if (
                 field["kind"] not in ("text", "email", "tel", "url", "textarea")
-                or (field["kind"] == "textarea" and not owner_answer)
+                or (
+                    field["kind"] == "textarea"
+                    and not owner_answer
+                    and not questions.fills_long_text(source)
+                )
             ) or value is None:
                 pending.append(
                     {

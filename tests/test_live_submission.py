@@ -381,11 +381,12 @@ def test_unassociated_labels_radio_groups_and_button_choices_resolve_from_approv
     )
     assert filled["What is your expected graduation year?"] == "December 2027"
     assert filled["Name"] == "Alex Example" and "Resume" in filled
+    # A plain willingness question takes the owner's standing rule, and says so.
+    office = "Are you comfortable working out of our NYC Office 5 days/week?"
+    sources = {f["label"]: f.get("source") for f in result["filled"]}
+    assert filled[office] == "Yes" and sources[office] == "policy.default.onsite_willing"
+    assert runtime.page.locator("input[name=q3]").is_checked()
     pending = {q["label"]: q for q in result["pending"]}
-    assert pending["Are you comfortable working out of our NYC Office 5 days/week?"]["options"] == [
-        "Yes",
-        "No",
-    ]
     assert "Location" in pending and "Describe a project you built" in pending
     assert all(label not in pending for label in ("December 2026", "Spring 2027", "Other"))
     assert (
@@ -397,15 +398,19 @@ def test_unassociated_labels_radio_groups_and_button_choices_resolve_from_approv
         and not runtime.page.locator("input[name=q2]").is_checked()
     )
     assert result["status"] == "NEEDS_USER"
-    # A reviewed owner answer for the button question is applied on the next preparation.
-    nyc = pending["Are you comfortable working out of our NYC Office 5 days/week?"]
+    # The owner's own answer for the button question overrides the default on the next
+    # preparation, and is what a later form asking the same thing gets. A question about
+    # another office is another question.
+    nyc = next(f for f in opened["fields"] if f["label"] == office)
     worker.apply_command(
-        {"kind": "answer", "application_id": run_id, "field_key": nyc["key"], "value": "Yes"},
+        {"kind": "answer", "application_id": run_id, "field_key": nyc["key"], "value": "No"},
         "msg-nyc",
     )
     again = runtime.prepare(run_id)
-    assert {f["label"]: f.get("value") for f in again["filled"]}[nyc["label"]] == "Yes"
-    assert runtime.page.locator("input[name=q3]").is_checked()
+    assert {f["label"]: f.get("value") for f in again["filled"]}[office] == "No"
+    assert not runtime.page.locator("input[name=q3]").is_checked()
+    assert workflow.recall_answer(office + " *", ["Yes", "No"]) == "No"
+    assert workflow.recall_answer("Are you able to work on-site in Austin?", ["Yes", "No"]) is None
 
 
 def test_account_creation_and_sign_in_use_the_encrypted_store_and_never_leak(board):

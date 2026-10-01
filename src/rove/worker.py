@@ -144,13 +144,28 @@ def use_drafts(application_id: str, proposals: dict, asked: list) -> list[str]:
     The draft cards stay in the thread for review after the fact; a later numbered
     reply before submission still overrides. Facts only the owner knows stay questions.
     `asked` is the owner's numbered question list, so the thread line can cite the number.
+
+    A draft is never used for a legal or personal question, or for a field the form gave
+    no label: code decides that from the question itself, whatever the model returned.
+    The row is stored as a draft Rove used (`auto-draft:`), never as the owner's reply.
     """
+    from . import questions
+
     labels = {q["key"]: q.get("label", "") for q in asked}
     numbers = {q["key"]: number for number, q in enumerate(asked, start=1)}
+    by_key = {q["key"]: q for q in asked}
     used = []
+    refused = []
     with workflow.db() as conn:
         for answer in proposals.get("answers", []):
+            if answer.get("gate"):
+                # The review already kept this one for the owner; the log says why.
+                refused.append((answer.get("key"), answer["gate"]))
             if answer.get("kind") != "proposal" or answer["key"] not in labels:
+                continue
+            gate = questions.draft_gate(by_key[answer["key"]])
+            if gate:
+                refused.append((answer["key"], gate["code"]))
                 continue
             if conn.execute(
                 "SELECT 1 FROM application_answers WHERE application_id=? AND field_key=?",
@@ -175,6 +190,8 @@ def use_drafts(application_id: str, proposals: dict, asked: list) -> list[str]:
         )
     if used:
         workflow.flush_events(application_id)
+    for key, why in refused:
+        workflow.system_line(application_id, f"draft not used · question {key} · {why}")
     return used
 
 
@@ -245,7 +262,11 @@ def queue_auto_submit(application_id: str, package_hash: str) -> str:
 
 
 def skip_optional(application_id: str, questions: list):
-    """Record a blank for optional fields with no approved fact or draft; never asks."""
+    """Record a blank for optional fields with no approved fact or draft; never asks.
+
+    The blank is Rove's own record (`auto-skip:`), not an owner answer, and it is never
+    remembered: the same question on a later form is resolved afresh.
+    """
     with workflow.db() as conn:
         for question in questions:
             conn.execute(
@@ -635,7 +656,13 @@ def draft_by_number(application_id: str, number: int) -> dict:
 
 def single_question_answer(raw: str, application_id: str) -> dict | None:
     """When one question is open, the owner's plain reply is its answer. With options,
-    the reply must name one of them; a link or a long message is never taken as one."""
+    the reply must name one of them; a link or a long message is never taken as one.
+
+    A legal or personal question without options takes only the explicit `1: value`
+    form, so a stray remark in the thread never becomes a remembered legal answer.
+    """
+    from . import questions
+
     hold = workflow.latest_hold(application_id) or {}
     open_questions = [q for q in hold.get("questions") or [] if q.get("state", "open") == "open"]
     if len(open_questions) != 1 or len(raw) > 200 or re.search(r"https?://", raw):
@@ -656,6 +683,8 @@ def single_question_answer(raw: str, application_id: str) -> dict | None:
                 + " / ".join(o for o in options[:8] if not o.strip().startswith("-"))
             )
         value = match
+    elif questions.is_sensitive(question.get("label"), question.get("kind") or ""):
+        raise ValueError("For this one, reply `1: your answer` so I know it is your answer.")
     return {
         "kind": "answer",
         "application_id": application_id,
@@ -908,8 +937,10 @@ def apply_command(command: dict, message_id: str):
                 "value": answer["value"],
                 "proposal_hash": answer["proposal_hash"],
             }
-        remember_later = None
+        remember_later, remember_how = None, {}
         if command["kind"] in {"answer", "use"}:
+            from . import questions
+
             observation_path = state_root() / f"applications/{application_id}/observation.json"
             observation = json.loads(observation_path.read_text())
             field = next(
@@ -933,12 +964,17 @@ def apply_command(command: dict, message_id: str):
                 (application_id, field["key"], command["value"], message_id),
             )
             if command["kind"] == "answer" and not field.get("label_missing"):
-                # An answer to a question Rove could not read is for this form only.
+                # The owner's own answer becomes a fact for the same question anywhere; an
+                # answer to a question Rove could not read is for this form only.
                 remembered = [
                     o.get("label", "") if isinstance(o, dict) else str(o)
                     for o in field.get("options") or []
                 ]
                 remember_later = (label, remembered, command["value"])
+                remember_how = {
+                    "kind": field.get("kind") or "",
+                    "employer": questions.employer_key(item["url"]),
+                }
         conn.execute(
             "INSERT INTO owner_commands VALUES(?,?,?,?,?,?)",
             (
@@ -954,7 +990,7 @@ def apply_command(command: dict, message_id: str):
     if label is not None:
         data["label"] = label
     if remember_later:
-        workflow.remember_answer(*remember_later, message_id)
+        workflow.remember_answer(*remember_later, message_id, **remember_how)
     workflow.record(
         application_id,
         "owner_answer" if command["kind"] in {"answer", "use"} else command["kind"] + "_requested",

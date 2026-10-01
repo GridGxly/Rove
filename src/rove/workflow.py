@@ -642,80 +642,188 @@ STATE_WORDS = {
 }
 
 
-def question_fingerprint(label, options=()) -> str:
-    """The same question on any form: wording without qualifiers, plus its options."""
-    text = re.sub(r"\((optional|required)\)|\*", " ", str(label or "").lower())
-    words = re.findall(r"[a-z0-9]+", text)
-    choices = sorted(" ".join(re.findall(r"[a-z0-9]+", str(o).lower())) for o in options or [])
-    return hashlib.sha256(json.dumps([words, choices]).encode()).hexdigest()
+def question_fingerprint(label, options=(), *, kind: str = "", employer: str = "") -> str:
+    """The key an answer is remembered under: what the question means, which way round it
+    is asked, and its scope. Wording and options take no part: "Gender" and "What is your
+    gender?" share a key, "authorized to work in Canada" never shares the US one. Empty
+    when the question cannot be remembered (no label, or employer-specific without one).
+    """
+    from . import questions
+
+    return questions.memory_key(questions.classify(label, kind, options), employer) or ""
 
 
-def remember_answer(label, options, value, owner_message_id: str):
-    """An answer the owner gave once is a fact for every later form that asks the same."""
-    if not value or str(value).strip().lower() == "skip":
-        return
+MEMORY_COLUMNS = ("canonical_id", "polarity", "scope", "sensitivity", "origin")
+
+
+def migrate_answer_memory(conn):
+    """Add the canonical-identity columns and re-key rows stored under the old wording
+    fingerprint. Every remembered answer is kept; the two old rows of one answer (with
+    and without options) become one row under the question's canonical key."""
+    import sqlite3
+
+    from . import questions
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(answer_memory)")}
+    for column in MEMORY_COLUMNS:
+        if column not in columns:
+            with contextlib.suppress(sqlite3.OperationalError):  # another process added it
+                conn.execute(f"ALTER TABLE answer_memory ADD COLUMN {column} TEXT")
+    legacy = conn.execute(
+        "SELECT * FROM answer_memory WHERE canonical_id IS NULL ORDER BY created_at"
+    ).fetchall()
+    for row in legacy:
+        question = questions.classify(row["label"], "", json.loads(row["options"]))
+        # An employer-specific answer from before employers were recorded stays listed
+        # under its old key; nothing recalls it.
+        key = questions.memory_key(question) or row["fingerprint"]
+        options = row["options"]
+        twin = conn.execute(
+            "SELECT options,value FROM answer_memory WHERE fingerprint=? AND canonical_id "
+            "IS NOT NULL",
+            (key,),
+        ).fetchone()
+        if twin and twin["value"] == row["value"] and options == "[]":
+            options = twin["options"]
+        conn.execute("DELETE FROM answer_memory WHERE fingerprint=?", (row["fingerprint"],))
+        conn.execute(
+            "INSERT OR REPLACE INTO answer_memory(fingerprint,label,options,value,created_at,"
+            "owner_message_id,canonical_id,polarity,scope,sensitivity,origin) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                key,
+                row["label"],
+                options,
+                row["value"],
+                row["created_at"],
+                row["owner_message_id"],
+                question.canonical_id,
+                question.polarity,
+                question.scope,
+                question.sensitivity,
+                "owner",
+            ),
+        )
+
+
+def policy_profile() -> dict:
+    """The approved profile for its answer policies; empty when none can be read."""
+    try:
+        return read_approved()["profile"]
+    except (ValueError, OSError, KeyError):
+        return {}
+
+
+def remember_answer(
+    label, options, value, owner_message_id: str, *, kind: str = "", employer: str = ""
+) -> bool:
+    """An answer the owner gave once is a fact for every later form that asks the same.
+
+    It is stored under the question's canonical id, polarity and scope, marked as given
+    by the owner. Returns whether it was stored. Not stored: `skip`, a field without a
+    label, a class the profile keeps as ask-each-time (export control), an
+    employer-specific question when `employer` is unknown, and a sensitive answer that
+    is not one of the options the form offered.
+    """
+    from . import questions
+
+    text = str(value or "").strip()
+    if not text or text.lower() == "skip":
+        return False
+    choices = [str(o) for o in options or []]
+    question = questions.classify(label, kind, choices)
+    key = questions.memory_key(question, employer)
+    if key is None:
+        return False
+    if question.topic in questions.POLICY_KEYS and questions.ask_each_time(
+        question, policy_profile()
+    ):
+        return False
+    if choices:
+        offered = questions.match_option(choices, text)
+        if offered is None and question.sensitivity == questions.SENSITIVE:
+            return False
+        text = offered or text
+    scope = f"employer:{employer}" if question.scope == "employer" else question.scope
     with db() as conn:
-        for fingerprint in {question_fingerprint(label, options), question_fingerprint(label)}:
-            conn.execute(
-                "INSERT OR REPLACE INTO answer_memory VALUES(?,?,?,?,?,?)",
-                (
-                    fingerprint,
-                    str(label)[:300],
-                    json.dumps([str(o) for o in options or []][:60]),
-                    str(value),
-                    now(),
-                    owner_message_id,
-                ),
-            )
+        migrate_answer_memory(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO answer_memory(fingerprint,label,options,value,created_at,"
+            "owner_message_id,canonical_id,polarity,scope,sensitivity,origin) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                key,
+                str(label)[:300],
+                json.dumps(choices[:60]),
+                text,
+                now(),
+                owner_message_id,
+                question.canonical_id,
+                question.polarity,
+                scope,
+                question.sensitivity,
+                "owner",
+            ),
+        )
     try:
         from . import vault
 
         vault.sync_answers()
     except Exception as error:  # noqa: BLE001 -- the readable copy never blocks the fact
         delivery_failed("vault", "answers", error)
+    return True
 
 
-def recall_answer(label, options=()) -> str | None:
-    """A remembered answer for this question, only when it still fits the options offered."""
+def recall_answer(
+    label, options=(), *, kind: str = "", employer: str = "", profile: dict | None = None
+) -> str | None:
+    """The owner's earlier answer to this canonical question, only when it still fits.
+
+    With options offered, the remembered value must be one of them; for a plain question
+    a remembered yes or no also fits the single option that starts with it. A negated
+    form, another country, or another employer's question never matches.
+    """
+    from . import questions
+
     choices = [str(o) for o in options or []]
+    question = questions.classify(label, kind, choices)
+    key = questions.memory_key(question, employer)
+    if key is None:
+        return None
+    if question.topic in questions.POLICY_KEYS and questions.ask_each_time(
+        question, policy_profile() if profile is None else profile
+    ):
+        return None
     with db() as conn:
-        for fingerprint in (question_fingerprint(label, choices), question_fingerprint(label)):
-            row = conn.execute(
-                "SELECT value FROM answer_memory WHERE fingerprint=?", (fingerprint,)
-            ).fetchone()
-            if row:
-                value = row["value"]
-                if choices:
-                    wanted = " ".join(re.findall(r"[a-z0-9]+", value.lower()))
-                    match = next(
-                        (
-                            o
-                            for o in choices
-                            if " ".join(re.findall(r"[a-z0-9]+", o.lower())) == wanted
-                        ),
-                        None,
-                    )
-                    if match is None:
-                        continue
-                    return match
-                return value
-    return None
+        migrate_answer_memory(conn)
+        row = conn.execute("SELECT value FROM answer_memory WHERE fingerprint=?", (key,)).fetchone()
+    if row is None:
+        return None
+    if choices:
+        return questions.match_option(
+            choices, row["value"], loose=question.sensitivity == questions.PLAIN
+        )
+    return row["value"]
+
+
+def forget_answer(label, options=(), *, kind: str = "", employer: str = "") -> bool:
+    """Drop the remembered answer for this canonical question; True when there was one."""
+    key = question_fingerprint(label, options, kind=kind, employer=employer)
+    with db() as conn:
+        migrate_answer_memory(conn)
+        removed = conn.execute("DELETE FROM answer_memory WHERE fingerprint=?", (key,)).rowcount
+    return bool(removed)
 
 
 def remembered_answers() -> list[dict]:
+    """Every remembered answer, oldest first, with the canonical identity it is kept under."""
     with db() as conn:
+        migrate_answer_memory(conn)
         rows = conn.execute(
-            "SELECT label,options,value,created_at FROM answer_memory WHERE options!='[]' "
-            "OR fingerprint IN (SELECT MIN(fingerprint) FROM answer_memory GROUP BY label) "
-            "ORDER BY created_at"
+            "SELECT label,options,value,created_at,canonical_id,polarity,scope,sensitivity,"
+            "origin FROM answer_memory ORDER BY created_at"
         ).fetchall()
-    seen, result = set(), []
-    for row in rows:
-        if row["label"] in seen:
-            continue
-        seen.add(row["label"])
-        result.append(dict(row))
-    return result
+    return [dict(row) for row in rows]
 
 
 def display_title(item: dict) -> str:
@@ -1606,12 +1714,24 @@ def field_key(field: dict) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
 
 
-def approved_answers(application_id: str) -> dict:
+# Rows Rove wrote into application_answers on its own: a Qwen draft used under the
+# owner's policy, or an optional field left blank. They are never the owner's words.
+AUTOMATIC_ANSWERS = {"auto-draft:": "draft", "auto-skip:": "skip"}
+
+
+def _answers(application_id: str) -> list:
     with db() as conn:
-        rows = conn.execute(
+        return conn.execute(
             "SELECT field_key,value,owner_message_id FROM application_answers WHERE application_id=?",
             (application_id,),
         ).fetchall()
+
+
+def approved_answers(application_id: str) -> dict:
+    """What the owner himself answered for this application, by field key.
+
+    Drafts Rove used and blanks it left are not here; see `automatic_answers`.
+    """
     return {
         r["field_key"]: {
             "value": r["value"],
@@ -1622,8 +1742,29 @@ def approved_answers(application_id: str) -> dict:
             )
             + r["owner_message_id"],
         }
-        for r in rows
+        for r in _answers(application_id)
+        if not r["owner_message_id"].startswith(tuple(AUTOMATIC_ANSWERS))
     }
+
+
+def automatic_answers(application_id: str) -> dict:
+    """What Rove recorded on its own for this application, by field key: `kind` is
+    `draft` (a Qwen draft used under the owner's policy) or `skip` (an optional field
+    left blank). The source says so in words and never names the owner."""
+    from . import questions
+
+    result = {}
+    for r in _answers(application_id):
+        kind = next(
+            (k for p, k in AUTOMATIC_ANSWERS.items() if r["owner_message_id"].startswith(p)), None
+        )
+        if kind:
+            result[r["field_key"]] = {
+                "value": r["value"],
+                "kind": kind,
+                "source": questions.USED_DRAFT if kind == "draft" else "left blank",
+            }
+    return result
 
 
 def save_result(application_id: str, result: dict):

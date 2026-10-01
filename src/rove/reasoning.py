@@ -576,11 +576,35 @@ def polish(directory: Path, key: str, value: str) -> dict:
     }
 
 
-def parse_review(raw: str, observed_keys: set[str], options_by_key: dict | None = None) -> dict:
+def parse_review(
+    raw: str,
+    observed_keys: set[str],
+    options_by_key: dict | None = None,
+    asked: list | None = None,
+) -> dict:
+    """Validate Qwen's answers against the questions that were asked.
+
+    `asked` is the list of pending questions (key, label, options). With it, code decides
+    which questions a model may draft at all: a legal or personal question, or a field
+    the form gave no label, comes back as "needs the owner" whatever the model said, with
+    the reason in `gate` for the system log.
+    """
+    from .questions import draft_gate
+
     result = Review.model_validate(load_json(raw)).model_dump()
+    by_key = {q.get("key"): q for q in asked or []}
     seen = set()
     for answer in result["answers"]:
         options = (options_by_key or {}).get(answer["key"]) or []
+        gate = draft_gate(by_key.get(answer["key"]))
+        if gate:
+            answer.update(
+                kind="needs_user",
+                value="",
+                sources=[],
+                explanation=gate["words"],
+                gate=gate["code"],
+            )
         if answer["kind"] == "proposal" and options:
             wanted = " ".join(re.findall(r"[a-z0-9]+", answer["value"].lower()))
             if wanted not in {" ".join(re.findall(r"[a-z0-9]+", o.lower())) for o in options}:
@@ -717,6 +741,7 @@ def review_application(application_id: str, page: dict) -> dict:
                     completed_response(generated),
                     {q["key"] for q in questions},
                     {q["key"]: q.get("options") or [] for q in questions},
+                    questions,
                 )
                 leaks = draft_guard.problems(result, private, voice)
                 problems = length_problems(result, questions)
