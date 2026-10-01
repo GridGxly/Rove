@@ -1,340 +1,180 @@
 # Getting started
 
-Rove is still experimental. Some of this guide describes the setup the project is being built toward, not commands that are guaranteed to exist on every branch yet.
+Rove is experimental and is set up by hand. The steps below are in the order that keeps real data out until the earlier pieces work. [Requirements](requirements.md) is the full checklist these steps refer to.
 
-Start with synthetic data and prepare-only browser runs. Do not connect real recruiting data until the earlier pieces work and the security checks pass.
+Work with synthetic data first, then with real data and submission off, and enable sending last.
 
-See [Local runtime](local-runtime.md) for the implemented certification commands and pinned model. `uv run rove smoke` launches the dedicated browser against a local synthetic form. It does not accept production application URLs.
+## 1. Check the machine
 
-Before installing the full stack, read [Requirements to run](requirements.md). It tracks the software, services, accounts, APIs, memory/storage layers, local configuration, browser setup, and network access a complete installation needs.
-
-## Hardware
-
-The primary development machine is:
-
-- 14-inch MacBook Pro
-- Apple M5 Pro with an 18-core CPU and 20-core GPU
-- 48GB unified memory
-- 1TB SSD
-
-The full Qwen3.8-27B stack is being tuned against 48GB unified memory.
-
-You do not need the same machine. If your hardware is different, clone or fork the repo and tune the runtime for it. The settings most likely to change are:
-
-- model or quantization
-- context length
-- KV-cache settings
-- model concurrency
-- headed vs. headless browser mode
-- screenshot and trace retention
-- application queue concurrency
-- QMD indexing overhead
-- memory and disk limits
-
-Lower-memory Apple Silicon machines may work with a smaller context window, a more aggressive quantization, or a lighter local-model setup. Other platforms may work too, but Apple Silicon macOS is the current development target.
-
-If you are not sure whether your machine has enough headroom, use [Will this run on my machine?](hardware-check.md). It includes a prompt that asks another model or coding agent to read the current repo, inspect your hardware safely, and recommend a starting configuration.
-
-## Software
-
-The reference full setup uses:
-
-- Python 3.12 through 3.14 for Rove (Erga itself supports 3.11+)
-- [`uv`](https://docs.astral.sh/uv/)
-- Git
-- Node.js 22 or newer when using the reference QMD retrieval setup
-- an MLX-compatible Qwen3.8 runtime
-- Hermes Agent
-- Erga
-- Obsidian or an Obsidian-compatible local Markdown vault
-- QMD for local vault retrieval
-- Playwright/Chromium browser dependencies for the fast local browser runtime
-- Discord bot credentials
-- optional Zoho OAuth credentials for recruiting-mail tracking
-
-On macOS, install the Xcode command-line tools if needed:
+Read the hardware notes in [Requirements](requirements.md#platform-and-hardware). On a Mac that differs from the reference machine, use [Will this run on my machine?](hardware-check.md) before downloading the model.
 
 ```bash
-xcode-select --install
-```
-
-Then verify the basics:
-
-```bash
+xcode-select --install   # if the command-line tools are missing
 uv --version
 git --version
-node --version
+node --version           # 22 or newer, for QMD
 ```
 
-If QMD is part of the setup, check the current Hermes QMD requirements before installing it. The current reference path requires Node.js 22+ and extension-capable SQLite on macOS.
-
-## Clone the repo
+## 2. Clone and install
 
 ```bash
 git clone https://github.com/GridGxly/Rove.git
 cd Rove
 uv sync
+uv run patchright install chromium
 ```
 
-If your hardware needs different runtime settings, keep those changes in your own clone or fork so they are easy to track.
+The last command installs Patchright's Chromium build. The synthetic fixture and the browser tests use it. The recruiting browser uses Google Chrome when it is installed and falls back to that build otherwise.
 
-## Keep live data outside Git
+Keep hardware-specific changes in your own clone or fork.
 
-The Git checkout is for code, docs, schemas, migrations, tests, and synthetic fixtures.
+## 3. Keep live data outside Git
 
-Live runtime data should live somewhere outside the repository, for example:
+The checkout holds code, docs, tests and synthetic fixtures. Everything real lives in the state root, `~/.config/rove` by default, and in your vault. The state root is created on first use. Set `ROVE_STATE_DIR` to put it somewhere else.
 
-```text
-~/.config/rove/
-├── config/
-├── secrets/
-├── state/
-├── browser/
-├── applications/
-├── mail/
-├── artifacts/
-├── logs/
-└── backups/
+Do not copy a real resume, profile, receipt, mail or screenshot into the repository, including into `tests/`.
+
+## 4. Local model and Hermes
+
+Install oMLX, download the model, and apply the settings in [Local runtime](local-runtime.md). Install Hermes and apply its settings and the 16K patch from the same page.
+
+```sh
+uv run rove start      # start the model server, then the Hermes gateway
+uv run rove status
+uv run rove stop
 ```
 
-The private Obsidian vault can live elsewhere. Point to it with local configuration such as `OBSIDIAN_VAULT_PATH`.
+The model server listens on localhost only. Weights load on the first request.
 
-Do not put real applicant profiles, vault notes, browser cookies, OAuth tokens, generated passwords, resume output history, application receipts, recruiting email, private screenshots, QMD indexes, or live databases in the repository.
+## 5. Prove the stack with synthetic data
 
-The `.gitignore` is a backup layer, not permission to keep sensitive files inside the checkout.
-
-## Public examples stay synthetic
-
-Anything committed to this project should be safe to publish.
-
-Use fake people, companies, email addresses, Discord IDs, job postings, vault notes, and application receipts in docs and tests. Do not copy a real production artifact into `tests/fixtures` just because it is convenient.
-
-## Erga
-
-Rove builds on [Erga](https://github.com/Adr1an04/erga-mcp).
-
-Erga remains responsible for the parts it already handles well:
-
-- career evidence
-- project and Git evidence
-- resume sources
-- resume tailoring
-- LaTeX generation and validation
-- application lifecycle state
-- recruiting-mail reconciliation
-
-Rove adds browser execution, candidate onboarding/profile memory, the Discord interface, field-level application logging, long-term semantic memory, and submission orchestration around that core.
-
-Do not bypass Erga by editing its SQLite tables directly from browser code. Use its application/domain surface or MCP tools.
-
-## Memory and storage
-
-Read [Memory and storage](memory-and-storage.md) before wiring real data into the project.
-
-The short version is:
-
-- Hermes `MEMORY.md` / `USER.md`: small hot memory for session-start context
-- Obsidian vault: long-term semantic memory and human-readable candidate knowledge
-- QMD: local retrieval/index over the vault
-- SQLite: transactional state for jobs, browser/application runs, submissions, bindings, queues, checkpoints, and idempotency
-- private files: exact resumes, application packages, receipts, screenshots, traces, and other artifacts
-- Erga: its own career/resume/application domain state
-
-Do not use Markdown as the submission state machine, and do not put the entire candidate knowledge base into SQLite.
-
-## Set up the private vault
-
-The reference setup uses a private Obsidian vault outside the repository.
-
-A starting layout can be:
-
-```text
-Rove/
-├── Profile/
-├── Story/
-├── Career/
-├── Companies/
-├── Applications/
-├── Research/
-├── Decisions/
-├── Daily/
-└── System/
+```sh
+uv run pytest -q
+uv run ruff check src tests scripts
+uv run rove smoke
 ```
 
-Do not create folders just to match the diagram if the implementation does not need them yet.
+The test suite runs offline and uses a temporary state folder. `rove smoke` opens a browser against a synthetic form on localhost, fills known fields from a synthetic profile and submits nothing. [Local runtime](local-runtime.md#verification-and-benchmarks) describes the benchmark commands and what the certification covered.
 
-The public config key is expected to be:
+Do not continue with real data until these pass on your machine.
 
-```text
-OBSIDIAN_VAULT_PATH
+## 6. Erga
+
+Install Erga from the Rove fork as described in [Requirements](requirements.md#which-erga-to-install). Put its real configuration at `erga/config.toml` in the state root and import your reviewed, factual master resume through Erga's own interface.
+
+Rove reads evidence from Erga and asks it to tailor resumes. It does not edit Erga's database.
+
+## 7. The vault
+
+Choose a private folder outside the checkout as the Obsidian vault and record its path in `config/recruiting.json` in the state root:
+
+```json
+{"obsidian_vault_path": "/path/to/private/vault"}
 ```
 
-The real path stays in local configuration.
+Rove creates a `Rove/` folder inside it when the profile is approved. To give drafts your own voice, add `Rove/Story/Voice.md` with a few paragraphs you wrote yourself. [Memory and storage](memory-and-storage.md#the-obsidian-vault) describes every note.
 
-The vault is not a free-form authority surface. Candidate/profile writes still go through schema validation and approval rules.
+## 8. Onboarding
 
-## QMD
+The profile is collected as a draft, reviewed by you, and approved by a local command. The Hermes agent can run the interview in Discord and propose sections. It cannot approve them.
 
-QMD is the reference local retrieval layer for the vault once the note set is large enough that filename-based lookup becomes brittle.
-
-Treat the QMD index as rebuildable derived state.
-
-Do not store credentials or irreplaceable state only inside the index.
-
-Verify current Hermes QMD setup instructions before installing. At the time this guide was updated, the reference setup required Node.js 22+, extension-capable SQLite on macOS, and additional local helper-model downloads.
-
-## Local model
-
-The target model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), run locally through an MLX-compatible runtime.
-
-The model server should listen on localhost only.
-
-Before using it on real applications, test the exact runtime on your machine for:
-
-- tool-call formatting
-- structured output
-- 4K, 8K, and 16K contexts on the reference 48GB Mac; increase only after measuring headroom
-- memory pressure and swap
-- browser use while the model is loaded
-- vault/QMD retrieval while the model is loaded
-- cancellation and restart behavior
-- synthetic prompt-injection cases
-
-Record the exact model revision and runtime versions once a local setup is stable.
-
-## Hermes
-
-Hermes is the agent harness around Qwen. It connects to the local model and exposes only the tools allowed for the current mode.
-
-Planned modes include:
-
-```text
-ONBOARDING
-JOB_REVIEW
-RESEARCH
-RESUME
-APPLICATION_PREPARE
-APPLICATION_SUBMIT
-MAIL_REVIEW
-MANUAL_TAKEOVER
+```sh
+uv run rove onboarding status
+uv run rove onboarding show
+uv run rove onboarding approve --expected-hash REVIEWED_DRAFT_HASH
+uv run rove memory index
 ```
 
-The model can stay the same while the available tools and permissions change.
+[Onboarding and jobs](onboarding-and-jobs.md) covers the sections, the approval rules and the retrieval index.
 
-The reference setup uses Hermes' Obsidian skill for vault operations. Canonical profile writes should still be mediated by Rove's validated profile/memory operations rather than unrestricted model edits.
+## 9. Import jobs
 
-## Fast browser runtime
-
-The production browser path uses a dedicated Playwright/Chromium recruiting browser.
-
-Qwen3.8-27B remains the local reasoning model. The browser layer should make routine form work fast in normal code by using compact observations, deterministic field resolution, safe batching, targeted waits, and post-fill verification. Qwen should be called when the form is ambiguous or needs real judgment, not for every known field.
-
-Playwright MCP can still be useful while developing or debugging the browser layer, but it is not required as the per-action production loop.
-
-Use a dedicated recruiting browser profile. Do not connect Rove to your everyday browser profile or give it unrelated logins, banking sessions, password-manager extensions, or other private browser state.
-
-Start with a visible browser and prepare-only runs so you can watch what happens. Measure browser round trips, Qwen calls, fill accuracy, retries, manual takeovers, and memory pressure before turning on unattended submission.
-
-Read [Browser automation](browser-automation.md) for the full design.
-
-## Discord
-
-Discord is the phone-friendly control surface.
-
-A private server can use a layout like this:
-
-```text
-SOURCES
-# internship-jobs
-# new-grad-jobs
-
-PIPELINE
-applications        (forum)
-# shortlist
-
-AGENT
-# agent-control
-# action-needed
-# memory
-
-RECRUITING
-# recruiting
-
-SYSTEM
-# system-log
+```sh
+uv run rove jobs sync
+uv run rove jobs matches --limit 10
 ```
 
-These are logical names, not hard-coded IDs. Real guild, channel, role, and user IDs belong in local configuration.
+Importing jobs queues nothing and posts nothing.
 
-A third-party source bot should only see the source channels it needs. The Rove bot should authorize its owner by numeric Discord user ID rather than display name alone.
+## 10. Create your own Discord bot
 
-`#memory` is a conversational interface to the local memory system. It is not the database or the vault itself.
+Every install needs its own bot in a private server. The maintainer's bot is not shared.
 
-## Zoho
+1. Create an application and a bot in the Discord Developer Portal.
+2. Turn off Public Bot and enable Message Content Intent.
+3. Put the token in the private env file as `DISCORD_BOT_TOKEN`.
+4. Invite the bot to a private server you own, with the permissions listed in [Requirements](requirements.md#create-your-own-discord-bot).
+5. Create the channels, the forum and its tags from [Discord](discord.md#channels).
+6. Put your own numeric user ID in the env file as `DISCORD_OWNER_USER_ID`.
 
-Zoho is optional. It can be useful for:
+The token and all server, channel and user IDs stay in local configuration and are never committed. Rove acts only on messages from the configured owner.
 
-- application acknowledgements
-- employer-account email verification
-- online assessment invitations
-- interview scheduling
-- offers
-- rejections
-- recruiter follow-ups
+Then configure the Hermes gateway for the same bot, owner and `agent-control` channel, as in [Local runtime](local-runtime.md#hermes-integration-and-compatibility-patch).
 
-Use the official Zoho Mail API with narrow scopes where possible. Do not leave verification codes in logs, the vault, or Discord after they are used.
+## 11. Write the configuration
 
-The implemented mail service reads the Inbox and tracks acknowledgements, online assessments, interviews, offers and rejections; the Self Client setup, the three read scopes and where the four values go are in [Requirements](requirements.md#zoho-mail).
+Create `config/workflow.json` and `config/feed.json` in the state root from the key tables in [Requirements](requirements.md#local-configuration). For the first runs:
 
-## First safe run
+- set `enabled` to `true` in `workflow.json`
+- leave `submission_enabled`, `auto_submit` and `auto_use_drafts` unset
+- set `enabled` to `false` in `feed.json` until you want feed jobs queued
 
-Before using real applicant data, prove the stack with fake data.
+## 12. Install the services
 
-A good first test is:
+```sh
+uv run rove install-services
+uv run rove browser status
+uv run rove workflow status
+```
 
-1. create a synthetic Obsidian vault/profile
-2. create a fake job record
-3. have Qwen retrieve the right synthetic profile context
-4. verify QMD retrieval if QMD is enabled
-5. open a demo form through the fast browser runtime
-6. inspect and normalize the form as a group
-7. fill deterministic fields in a safe batch without submitting
-8. verify every filled value and record each field/action
-9. generate a fake Discord application timeline
-10. confirm that no secret or private file was exposed
-11. confirm a frozen profile/application snapshot is not affected by later edits to the synthetic vault
+This installs the four launchd agents listed in [Requirements](requirements.md#services). The browser service starts the recruiting Chrome in the background. Its profile is separate from your everyday browser, and it should stay that way: no personal logins, no password manager, no sync.
 
-Only after that should real resumes, the private vault, Discord, Zoho, and employer application pages be connected.
+To stop a service, unload it:
 
-## Build order
+```sh
+launchctl bootout gui/$UID/dev.rove.workflow
+```
 
-The current build order is:
+Service output goes to `logs/` in the state root.
 
-1. repository and architecture foundation
-2. Mac runtime foundation
-3. Qwen3.8 local-runtime certification
-4. Hermes policy, hot memory, and Obsidian/QMD foundation
-5. Erga integration and transactional Rove state
-6. security and prompt-injection tests
-7. Discord control plane
-8. applicant onboarding and validated vault profile
-9. job ingestion and shortlist
-10. resume and company research
-11. fast browser runtime, compact observation, form normalization, and deterministic batch filling
-12. prepare-only browser reliability and ATS adapter testing
-13. controlled submission
-14. recruiting-mail tracking
-15. restricted unattended operation
-16. operations, backups, and upgrade testing
+## 13. Prepare one application
 
-Do not jump straight to unattended operation because the browser can click Submit.
+Paste a job link in `agent-control`, or queue it from the shell:
 
-## Next
+```sh
+uv run rove workflow enqueue --url https://jobs.example.com/internship
+```
 
-- [Requirements to run](requirements.md)
-- [Memory and storage](memory-and-storage.md)
-- [Will this run on my machine?](hardware-check.md)
-- [How it works](how-it-works.md)
-- [Prompt injection](prompt-injection.md)
-- [Security](../SECURITY.md)
-- [Contributing](../CONTRIBUTING.md)
+The worker picks it up on a following tick and opens a forum thread. Follow it there: the job-fit card, the resume, the filled form, the drafts and any question for you. With submission off, a complete form ends with a "Ready · send it yourself" card, and you press Submit in the recruiting Chrome.
+
+Check the filled values against what you approved. Read [Application workflow](application-workflow.md) for what each stop means and [Discord](discord.md#replies) for the replies.
+
+## 14. Turn on sending
+
+When preparation is reliable for you, set `submission_enabled` to `true` and list the adapters in `submit_adapters`. A complete form now ends with "Ready to submit", and your `send it` reply sends that exact package once.
+
+Read [Sending](application-workflow.md#sending) first. A submission cannot be undone, and an unclear result waits for you.
+
+## 15. Optional: the feed, unattended sending and mail
+
+- Set `enabled` in `config/feed.json` and run `uv run rove feed seed` once to start receiving feed jobs.
+- Set `auto_submit` only after you have reviewed several applications that Rove prepared and you sent. [Unattended sending](application-workflow.md#unattended-sending) explains the cap, the gap and what still stops.
+- Connect Zoho for mail tracking with the steps in [Requirements](requirements.md#zoho-mail).
+
+## Updating
+
+```sh
+git pull
+uv sync
+uv run rove install-services
+launchctl kickstart -k gui/$UID/dev.rove.browser
+```
+
+The last command restarts the browser daemon so it runs the new code. The Chrome window and its tabs survive. After updating Hermes, review and reapply the 16K patch. After updating Erga, follow the recipe in [Requirements](requirements.md#which-erga-to-install).
+
+## Where to look when something is wrong
+
+- the application's thread and `system-log` in Discord
+- `uv run rove workflow status`, `uv run rove browser status` and `uv run rove mail status`
+- `logs/` in the state root, including `delivery-failures.log`
+- the application's folder under `applications/` in the state root
