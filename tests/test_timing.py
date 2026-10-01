@@ -241,7 +241,17 @@ def record_two_applications():
     skips drafting) and then sent, one prepared once."""
     sample(0, APP, "queue_wait", "", 15.0)
     sample(15, APP, "open", "pass", 10.0, browser_calls=1, browser_seconds=10.0)
-    sample(25, APP, "fit_review", "pass", 80.0, model_calls=1, model_seconds=79.0)
+    sample(
+        25,
+        APP,
+        "fit_review",
+        "pass",
+        80.0,
+        model_calls=1,
+        model_seconds=79.0,
+        cached=False,
+        changed="first",
+    )
     sample(105, APP, "fill", "pass", 20.0, browser_calls=1, fields_code=9, fields_model=0)
     sample(
         125,
@@ -271,7 +281,17 @@ def record_two_applications():
     for seconds in (80.0, 57.5, 1.0):
         sample(30, APP, "model", "fit_review", seconds)
     sample(3600, OTHER, "open", "pass", 6.0, browser_calls=1)
-    sample(3606, OTHER, "fit_review", "pass", 100.0, model_calls=1, model_seconds=99.0)
+    sample(
+        3606,
+        OTHER,
+        "fit_review",
+        "pass",
+        100.0,
+        model_calls=1,
+        model_seconds=99.0,
+        cached=False,
+        changed="posting",
+    )
     sample(3600, OTHER, "pass", "", 110.0, model_calls=1, model_seconds=99.0)
 
 
@@ -316,6 +336,7 @@ def test_the_report_gives_count_median_p90_share_and_model_calls_per_stage(state
     calls = {line["label"]: line for line in summary["calls"]}
     assert (calls["model"]["runs"], calls["model"]["median"]) == (3, 57.5)
     assert summary["fills"] == {"code": 9, "model": 1.5, "owner": 0, "pending": 0}
+    assert summary["fit"] == {"stored": 1, "asked": {"first": 1, "posting": 1}}
     assert summary["drafting"] == {
         "calls": 1,
         "skipped": 1,
@@ -332,6 +353,10 @@ def test_the_report_gives_count_median_p90_share_and_model_calls_per_stage(state
     assert table_row(text, "fit review") == ["2", "90.00s", "100.0s", "57.0%", "2", "178.0"]
     assert table_row(text, "queue wait") == ["1", "15.00s", "15.00s", "–"]
     assert "1 call skipped" in text and "9 by code" in text
+    assert (
+        "fit review asked of the model: 1 first for the job, 1 after a new posting · "
+        "read back from the stored review: 1"
+    ) in text
 
 
 def run_cli(monkeypatch, capsys, *arguments) -> str:
@@ -373,3 +398,4 @@ def test_the_fixture_application_runs_offline_and_shows_the_stored_review_and_th
     assert table_row(table, "submit")[0] == "1" and table_row(table, "verify")[0] == "1"
     assert "sent 3 questions (1 writing, 1 choice, 0 short answer, 1 owner-only)" in table
     assert "and got 2 drafts · 1 call skipped" in table
+    assert "asked of the model: 1 first for the job · read back from the stored review: 2" in table

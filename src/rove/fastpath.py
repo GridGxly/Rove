@@ -53,6 +53,24 @@ def stored_review(application_id: str, key: tuple[str, str, str]) -> dict | None
     return result if isinstance(result, dict) and result.get("qwen_output") else None
 
 
+def review_change(application_id: str, key: tuple[str, str, str]) -> str:
+    """Why this job needs a model review now, for the timing record: `first`, or which
+    parts of the key differ from its latest stored review (`posting`, `profile`, `prompt`)."""
+    try:
+        with review_db() as conn:
+            row = conn.execute(
+                "SELECT posting_hash, profile_hash, prompt_version FROM fit_reviews "
+                "WHERE application_id=? ORDER BY created_at DESC LIMIT 1",
+                (application_id,),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 -- a reason that cannot be read is not worth a failure
+        return "unknown"
+    if not row:
+        return "first"
+    names = ("posting", "profile", "prompt")
+    return "_".join(n for n, old, new in zip(names, row, key, strict=True) if old != new) or "same"
+
+
 def store_review(application_id: str, key: tuple[str, str, str], result: dict):
     with review_db() as conn:
         conn.execute(

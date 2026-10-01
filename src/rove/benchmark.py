@@ -247,7 +247,16 @@ def summarize(rows: list[dict]) -> dict:
     drafting = [r["facts"] for r in rows if r["stage"] == "drafting"]
     asked = [f for f in drafting if not f.get("skipped")]
     sent = ("questions", "writing", "choices", "short", "owner_only", "proposals")
+    reviews = [r["facts"] for r in rows if r["stage"] == "fit_review" and "cached" in r["facts"]]
+    asked_why: dict[str, int] = {}
+    for facts in reviews:
+        if not facts["cached"]:
+            why = str(facts.get("changed") or "unknown")
+            asked_why[why] = asked_why.get(why, 0) + 1
     return {
+        "fit": {"stored": sum(1 for f in reviews if f["cached"]), "asked": asked_why}
+        if reviews
+        else {},
         "applications": len({r["application_id"] for r in rows if r["application_id"]}),
         "passes": len(passes),
         "submissions": len(submissions),
@@ -322,6 +331,23 @@ def render(summary: dict) -> str:
             f"fields per fill, median: {fills['code']:g} by code · {fills['model']:g} from "
             f"model drafts · {fills['owner']:g} from owner answers · {fills['pending']:g} "
             "left pending"
+        )
+    fit = summary["fit"]
+    if fit:
+        # `first` is a job's one expected review; the rest name which part of the key moved.
+        words = {
+            "first": "first for the job",
+            "same": "stored one unreadable",
+            "unknown": "reason not recorded",
+        }
+        asked = [
+            f"{count} {words.get(why) or 'after a new ' + why.replace('_', ' and ')}"
+            for why, count in sorted(fit["asked"].items(), key=lambda item: item[0] != "first")
+        ]
+        lines.append(
+            "fit review asked of the model: "
+            + (", ".join(asked) or "none")
+            + f" · read back from the stored review: {fit['stored']}"
         )
     drafting = summary["drafting"]
     if drafting:

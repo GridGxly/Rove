@@ -96,6 +96,15 @@ def form(url: str, *labels: str) -> dict:
     return {"url": url, "text": "Apply form", "fields": [{"label": label} for label in labels]}
 
 
+def fit_rows() -> list[tuple]:
+    """Each recorded fit review: whether it was read back, and why Qwen was asked if not."""
+    return [
+        (r["facts"]["cached"], r["facts"].get("changed"))
+        for r in timing.rows()
+        if r["stage"] == "fit_review" and "cached" in r["facts"]
+    ]
+
+
 def review_events(application_id: str) -> int:
     with workflow.db() as conn:
         return conn.execute(
@@ -138,11 +147,7 @@ def test_a_later_pass_reads_the_stored_review_instead_of_asking_qwen_again(state
     assert review_events(app) == 1  # the thread gets one fit card, not one per pass
     stored = json.loads((state / "applications" / app / "job-review.json").read_text())
     assert stored == first and stored["posting_hash"] == fastpath.posting_hash(POSTING)
-    assert [r["facts"]["cached"] for r in timing.rows() if r["stage"] == "fit_review"] == [
-        False,
-        True,
-        True,
-    ]
+    assert fit_rows() == [(False, "first"), (True, None), (True, None)]
 
 
 def test_a_changed_posting_is_reviewed_again_and_the_old_review_is_kept(state, monkeypatch):
@@ -161,6 +166,7 @@ def test_a_changed_posting_is_reviewed_again_and_the_old_review_is_kept(state, m
     inline = {**page, "text": POSTING + "\nApply for this job\nFirst name"}
     assert reasoning.review_job(app, inline)["cached"] is True
     assert len(model_calls) == 2
+    assert fit_rows() == [(False, "first"), (False, "posting"), *[(True, None)] * 3]
 
 
 def test_a_new_prompt_version_is_reviewed_again(state, monkeypatch):
@@ -174,6 +180,7 @@ def test_a_new_prompt_version_is_reviewed_again(state, monkeypatch):
     assert newer["prompt_version"] == reasoning.PROMPT_VERSION
     assert reasoning.review_job(app, page, POSTING)["cached"] is True
     assert len(model_calls) == 2
+    assert fit_rows() == [(False, "first"), (False, "prompt"), (True, None)]
 
 
 def test_a_new_approved_profile_is_reviewed_again(state, monkeypatch):
@@ -197,6 +204,7 @@ def test_a_new_approved_profile_is_reviewed_again(state, monkeypatch):
     assert after["profile_hash"] != before["profile_hash"]
     # Code checked the location against the newly approved relocation.
     assert after["unverified"] == [] and before["unverified"] == ["Based in Example City"]
+    assert fit_rows() == [(False, "first"), (False, "profile")]
 
 
 def test_each_job_keeps_its_own_review(state, monkeypatch):

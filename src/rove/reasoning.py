@@ -507,6 +507,7 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
             workflow.record(application_id, "qwen_job_review", current)
             workflow.flush_events(application_id)
         return {**current, "cached": True}
+    timing.note(changed=fastpath.review_change(application_id, cache_key))
     context = {
         "review_type": "job_fit",
         "prompt_version": PROMPT_VERSION,
