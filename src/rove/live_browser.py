@@ -1372,6 +1372,7 @@ class RecruitingBrowser:
                         "reason": "Needs reviewed answer or supported control adapter"
                         if chosen is None
                         else "Selection could not be verified",
+                        **questions.unlabeled(field),
                     }
                 )
                 continue
@@ -1550,6 +1551,7 @@ class RecruitingBrowser:
                         "options": choices,
                         "max_chars": field.get("maxlength"),
                         "reason": "Needs reviewed answer or supported control adapter",
+                        **questions.unlabeled(field),
                     }
                 )
                 continue

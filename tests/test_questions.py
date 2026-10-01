@@ -382,9 +382,34 @@ def test_how_did_you_hear_takes_a_reasonable_option_and_pronouns_take_none():
     assert answer(heard, ["LinkedIn", "Employee referral", "Other"])[0] == "Other"
     assert answer(heard, ["LinkedIn", "Employee referral"]) == (None, None)
     assert answer(heard, kind="text")[0] == "Online job board"
+    assert answer("Source", ["Indeed", "Online job board", "Other"])[0] == "Online job board"
     assert classify("How did you learn Python?").canonical_id.startswith("q:")
     assert answer("Pronouns", ["He/him", "She/her", "They/them"]) == (None, None)
     assert answer("Preferred pronouns", kind="text") == (None, None)
+
+
+def test_questions_that_look_alike_keep_their_own_identity():
+    # Race and ethnicity are separate fields on many forms: one answer never fills both.
+    ids = [classify(label).canonical_id for label in ("Race", "Ethnicity", "Race/Ethnicity")]
+    assert ids == ["race", "ethnicity", "race_ethnicity"]
+    assert classify("Are you Hispanic or Latino?").canonical_id == "hispanic_latino"
+    # A willingness question that mentions graduating is still the willingness question.
+    assert classify("Are you willing to relocate after graduation?").canonical_id == (
+        "relocate_willing"
+    )
+    # Contacting the applicant is not contacting someone else about him.
+    assert classify("Do you agree to receive emails about your application?").canonical_id == (
+        "contact_consent"
+    )
+    assert not classify("May we contact your current employer?").known
+    assert not classify("May we contact your references?").known
+    # Export-control wording has one id for its class and stays one question per wording.
+    first = classify("Are you subject to U.S. export control regulations?")
+    second = classify("Are you a U.S. person as defined by ITAR?")
+    assert first.canonical_id == second.canonical_id == "export_control"
+    assert first.sensitivity == SENSITIVE and not first.known
+    assert questions.memory_key(first) != questions.memory_key(second)
+    assert questions.ask_each_time(first, PROFILE) and questions.ask_each_time(second, {})
 
 
 def test_a_field_without_a_label_is_answered_by_nobody(state):

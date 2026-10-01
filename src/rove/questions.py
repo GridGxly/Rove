@@ -418,15 +418,6 @@ VOCABULARY_RULES = (
         "are you hispanic latino latina latinx or of origin ethnicity do identify as a i am",
     ),
     (
-        "race_ethnicity",
-        "race ethnicity ethnic racial",
-        (
-            "race ethnicity ethnic racial background origin group category what is your my please"
-            " select identify indicate i as do you how would describe and or the which best"
-            " describes voluntary self identification"
-        ),
-    ),
-    (
         "veteran_status",
         "veteran",
         (
@@ -449,6 +440,12 @@ VOCABULARY_RULES = (
         "pronouns pronoun preferred your my what are personal please select share gender",
     ),
 )
+# Race and ethnicity are two questions on many forms and one on others: three ids.
+RACE_WORDS = _words(
+    "race ethnicity ethnic racial background origin group category what is your my please"
+    " select identify indicate i as do you how would describe and or the which best"
+    " describes voluntary self identification"
+)
 TRUTHFUL_WORDS = _words(
     "i hereby certify attest affirm confirm declare acknowledge that the all information"
     " answers statements provided given submitted in on this my application form resume is are"
@@ -468,7 +465,9 @@ SALARY_WORDS = _words(
     " yearly base range requirement requirements for this role position in usd please provide"
     " hourly rate per hour year target"
 )
-CONTACT_NOUNS = _words("contact contacted text texts sms messages calls communications")
+CONTACT_NOUNS = _words(
+    "contact contacted text texts sms message messages call calls email emails communications"
+)
 CONTACT_VERBS = _words("agree consent opt may can allow like ok okay willing happy")
 CONTACT_WORDS = _words(
     "i do you agree consent to be being contacted contact receive receiving by via text texts"
@@ -487,7 +486,7 @@ MARKETING_WORDS = CONTACT_WORDS | _words(
 
 HEARD = re.compile(
     r"(?:how|where) did you (?:first )?(?:(?:hear|learn|find out) (?:about|of)"
-    r"|find (?=us|this|our)|come across)(?: ?[a-z0-9]+){1,8}"
+    r"|find(?= (?:us|this|our)\b)|come across)(?: [a-z0-9]+){1,8}"
 )
 READ_POSTING = re.compile(
     r"(?:have you|i have|i acknowledge that i have|i confirm that i have) read"
@@ -576,7 +575,9 @@ DEFAULTS = {
     "talent_network_opt_in": "Yes",
     "read_job_description": "Yes",
 }
-# Trivial preference dropdowns: the first tier with exactly one matching option wins.
+# Trivial preference questions: "choose whatever is reasonable".
+PREFERENCES = frozenset({"how_did_you_hear"})
+# For a dropdown, the first tier with exactly one matching option wins.
 HEARD_TIERS = (
     re.compile(r"job ?board|job (?:site|aggregator|search)|online job", re.IGNORECASE),
     re.compile(r"^other\b", re.IGNORECASE),
@@ -593,7 +594,8 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
     """Rules that match a whole label word for word. `text` has place placeholders in."""
     words = text.split()
     if name in EXACT_NAMES:
-        return {"id": EXACT_NAMES[name]}
+        canonical = EXACT_NAMES[name]
+        return {"id": canonical, "default": canonical if canonical in PREFERENCES else ""}
     match = AUTHORIZED.fullmatch(text)
     if match:
         tail = match.group("tail")
@@ -625,6 +627,9 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
     for canonical, need, allowed in VOCABULARY_RULES:
         if _only(words, set(need.split()), set(allowed.split())):
             return {"id": canonical}
+    race, ethnicity = {"race", "racial"} & set(words), {"ethnicity", "ethnic"} & set(words)
+    if (race or ethnicity) and set(words) <= RACE_WORDS:
+        return {"id": "race_ethnicity" if race and ethnicity else "race" if race else "ethnicity"}
     if _only(words, {"certify", "attest", "affirm", "declare", "confirm"}, TRUTHFUL_WORDS) and {
         "true",
         "accurate",
@@ -681,8 +686,6 @@ def _loose(name: str, text: str) -> dict | None:
     if sensitive_topic(name):
         return None
     words = text.split()
-    if any(w.startswith("graduat") for w in words):
-        return {"id": "graduation_date"}
     if HEARD.fullmatch(text):
         return {"id": "how_did_you_hear", "default": "how_did_you_hear"}
     if WORKED_HERE.fullmatch(text):
@@ -690,7 +693,9 @@ def _loose(name: str, text: str) -> dict | None:
     if APPLIED_HERE.fullmatch(text):
         return {"id": "previously_applied_here", "scope": "employer"}
     if not WILLINGNESS.match(text):
-        return None
+        # Any other question about graduating: answered only by an option that states
+        # the approved graduation month.
+        return {"id": "graduation_date"} if any(w.startswith("graduat") for w in words) else None
     # A willingness question: which one decides the profile fact or the default.
     risky = "risky" if RISK_WORDS & set(words) else ""
     if RELOCATE.search(text):
@@ -757,8 +762,12 @@ def classify(label, kind: str = "", options=()) -> Question:
     if canonical == "work_authorization_without_sponsorship" and scope == "us":
         canonical = "work_authorization_us_without_sponsorship"
     fingerprint = hashlib.sha256(wording(label).encode()).hexdigest()[:24]
+    worded = bool(canonical) and (bool(rule.get("tolerant")) or polarity == NEGATED)
     if not canonical:
-        canonical = "q:" + fingerprint
+        # Export-control wording varies too much for a rule: one id for the class, and
+        # each wording stays its own question.
+        canonical = "export_control" if topic == "export_control" else "q:" + fingerprint
+        worded = topic == "export_control"
         text, found = with_places(name)
         if "xplace" in text.split() and topic:
             scope = "other:" + "+".join(sorted(set(found)))
@@ -768,7 +777,6 @@ def classify(label, kind: str = "", options=()) -> Question:
     sensitivity = rule.get("sensitivity") or (SENSITIVE if topic else PLAIN)
     if canonical in SENSITIVE_IDS:
         sensitivity = SENSITIVE
-    worded = bool(rule.get("id")) and (bool(rule.get("tolerant")) or polarity == NEGATED)
     return Question(
         canonical_id=canonical,
         sensitivity=sensitivity,
@@ -802,6 +810,8 @@ TOPIC_OF = {
     "sexual_orientation": "demographics",
     "hispanic_latino": "demographics",
     "race_ethnicity": "demographics",
+    "race": "demographics",
+    "ethnicity": "demographics",
     "pronouns": "demographics",
     "veteran_status": "veteran",
     "disability_status": "disability",
@@ -1097,6 +1107,11 @@ def policy_default(question: Question, options, profile: dict, kind: str = ""):
 
 
 # --- d. the model, and the gate in front of it ---------------------------------------
+def unlabeled(field: dict) -> dict:
+    """The marker a pending question carries when the form gave its field no label."""
+    return {"label_missing": True} if field.get("label_missing") else {}
+
+
 def draft_gate(question: dict | None) -> dict | None:
     """Why a model draft may not answer this question, or None when it may.
 
