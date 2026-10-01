@@ -129,19 +129,22 @@ def db():
 
 # ---------------------------------------------------------------------------
 # The answer store, reached only through these helpers. `workflow.remember_answer`,
-# `recall_answer` and `remembered_answers` are the interface; the delete is the one
-# statement they do not offer yet.
+# `recall_answer`, `forget_answer` and `remembered_answers` are the interface. An answer is
+# kept under what its question means (see questions.py), so two wordings of a question
+# code knows are one answer.
 # ---------------------------------------------------------------------------
 
 
 def stored() -> list[dict]:
-    """Remembered answers, one per question, the newest wording of each."""
+    """Remembered answers, one per question, the newest answer to each."""
     rows, seen = [], set()
     answers = sorted(
         workflow.remembered_answers(), key=lambda r: str(r.get("created_at", "")), reverse=True
     )
     for row in answers:
-        question = workflow.question_fingerprint(row["label"])
+        # One line per question as the owner names it: an answer kept for one employer
+        # and his general answer to the same question are the same line, newest first.
+        question = workflow.question_fingerprint(row["label"]) or row["key"]
         if question in seen:
             continue
         seen.add(question)
@@ -153,9 +156,9 @@ def stored() -> list[dict]:
                 "question": question,
                 "label": str(row["label"]),
                 "options": [str(o) for o in options],
-                # What a form would get today: the latest answer given to this question.
-                "value": str(workflow.recall_answer(row["label"]) or row["value"]),
+                "value": str(row["value"]),
                 "created_at": str(row.get("created_at", "")),
+                # Code's own class for the question, or a private word in its label.
                 "sensitive": bool(row.get("sensitive")) or bool(SENSITIVE.search(row["label"])),
             }
         )
@@ -163,20 +166,21 @@ def stored() -> list[dict]:
 
 
 def store(label: str, options: list, value: str, message_id: str):
-    workflow.remember_answer(label, options, value, f"memory:{message_id}")
-    mark_announced(workflow.question_fingerprint(label), value)
+    """Keep an answer the owner gave here: his general answer, whatever the employer."""
+    if not workflow.remember_answer(label, options, value, f"memory:{message_id}"):
+        raise Reply(
+            "That is one I ask you every time a form brings it up, so I do not keep an "
+            "answer to it."
+        )
+    mark_announced(workflow.question_fingerprint(label), workflow.recall_answer(label) or value)
 
 
 def erase(question: str, keep=()):
-    """Remove every stored wording of one question, then refresh the vault mirror."""
-    with workflow.db() as conn:
-        doomed = [
-            row["fingerprint"]
-            for row in conn.execute("SELECT fingerprint,label FROM answer_memory").fetchall()
-            if workflow.question_fingerprint(row["label"]) == question
-            and row["fingerprint"] not in keep
-        ]
-        conn.executemany("DELETE FROM answer_memory WHERE fingerprint=?", [(f,) for f in doomed])
+    """Remove every stored answer to one question, then refresh the vault mirror."""
+    for row in workflow.remembered_answers():
+        same = (workflow.question_fingerprint(row["label"]) or row["key"]) == question
+        if same and row["key"] not in keep:
+            workflow.forget_answer(key=row["key"])
     try:
         from . import vault
 

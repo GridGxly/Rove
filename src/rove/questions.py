@@ -14,8 +14,7 @@ model draft ever answers them. The rules here are exact on purpose. A legal rule
 only when every word of the label is one the rule knows, so a negation, another country
 or an added condition falls through to the owner instead of being answered for him.
 
-This module is pure: it reads no state. Callers pass the frozen profile and a recall
-function.
+This module reads no state: callers pass the frozen profile and a recall function.
 """
 
 import hashlib
@@ -24,6 +23,8 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlsplit
+
+from . import form_reading
 
 PLAIN, SENSITIVE = "plain", "sensitive"
 POSITIVE, NEGATED = "positive", "negated"
@@ -386,7 +387,7 @@ SPONSORSHIP_WORDS = _words(
     " working authorization permit h1b h1 h 1b 1 b status sponsorship for to of e g i such as"
     " example like legally lawfully continue be employed remain stay order obtain maintain"
     " extend extension type kind form related support opt cpt stem f1 f j1 j tn l1 l o1 o e3"
-    " from this your us u s usa united states america xplace xjobplace"
+    " lawful legal from this your us u s usa united states america xplace xjobplace"
 )
 CITIZEN = re.compile(
     rf"(?:(?:are you|i am) (?:currently )?an? )?(?:(?:{US}|xplace) citizen|citizen of (?:{US}|xplace))"
@@ -788,7 +789,11 @@ def classify(label, kind: str = "", options=()) -> Question:
         detail=rule.get("detail", ""),
         name=name,
         variant=fingerprint if worded else "",
-        answerable=bool(name) and kind not in {"password", "file", "hidden"},
+        # Nothing to go on: no text, an input's name instead of a question, or the
+        # placeholder form reading gives a question it could not read.
+        answerable=not form_reading.unreadable({"label": label})
+        and bool(name)
+        and kind not in {"password", "file", "hidden"},
     )
 
 
@@ -836,21 +841,29 @@ def is_place_label(label) -> bool:
     return plain_name(label) in PLACE_LABELS
 
 
+# For a question whose answer depends on the employer. An answer given outside any
+# application (in `#memory`) holds for every employer; one given for an application whose
+# employer cannot be told is neither kept nor reused.
+ANY_EMPLOYER = "*"
+NO_EMPLOYER = "?"
+
+
 def memory_key(question: Question, employer: str = "") -> str | None:
     """What an owner's answer is remembered under: canonical id, polarity and scope.
 
-    A question whose answer depends on the employer is remembered per employer, and not
-    at all when the employer is unknown. A question matched by a rule that tolerates
-    extra words ("...relocate to Austin?"), and any negated question, is remembered for
-    its own wording: taking a negation out loses which negation it was.
+    A question whose answer depends on the employer is remembered per employer; with no
+    employer given the key is the owner's general answer, and with `NO_EMPLOYER` there is
+    no key. A question matched by a rule that tolerates extra words ("...relocate to
+    Austin?"), and any negated question, is remembered for its own wording: taking a
+    negation out loses which negation it was.
     """
     if not question.answerable:
         return None
     scope = question.scope
     if scope == "employer":
-        if not employer:
+        if employer == NO_EMPLOYER:
             return None
-        scope = "employer:" + employer
+        scope = "employer:" + (employer or ANY_EMPLOYER)
     return hashlib.sha256(
         json.dumps([question.canonical_id, question.polarity, scope, question.variant]).encode()
     ).hexdigest()
@@ -859,18 +872,29 @@ def memory_key(question: Question, employer: str = "") -> str | None:
 TENANT_IN_PATH = ("greenhouse.io", "lever.co", "ashbyhq.com", "workable.com", "smartrecruiters.com")
 
 
+def memory_keys(question: Question, employer: str = "") -> list[str]:
+    """The keys to look an earlier answer up under: this employer's, then the general one."""
+    keys = [memory_key(question, employer)]
+    if question.scope == "employer" and employer:
+        keys.append(memory_key(question))
+    return [key for key in keys if key]
+
+
 def employer_key(url) -> str:
-    """Which employer an application belongs to, for answers that differ per employer."""
+    """Which employer an application belongs to, for answers that differ per employer.
+
+    `NO_EMPLOYER` when the address does not say: a shared board without its tenant.
+    """
     parts = urlsplit(str(url or ""))
     host = (parts.hostname or "").lower()
     if not host:
-        return ""
+        return NO_EMPLOYER
     for suffix in TENANT_IN_PATH:
         if host == suffix or host.endswith("." + suffix):
             tenant = next((p for p in parts.path.split("/") if p), "")
             if tenant in {"", "embed"}:
                 tenant = parse_qs(parts.query).get("for", [""])[0]
-            return f"{suffix}/{tenant.lower()}" if tenant else ""
+            return f"{suffix}/{tenant.lower()}" if tenant else NO_EMPLOYER
     return re.sub(r"^(?:www|careers|jobs|apply)\.", "", host)
 
 
@@ -906,6 +930,19 @@ def match_option(options, value, *, loose: bool = False) -> str | None:
         if len(same) == 1 and other:
             return same[0]
     return None
+
+
+def match_many(options, value) -> list[str] | None:
+    """The boxes of a checkbox group an answer ticks, in the form's order.
+
+    Every part of the answer must name an option. A lone box under a question is ticked
+    by a plain yes.
+    """
+    labels = [str(o) for o in options or []]
+    chosen = form_reading.match_options(value, labels)
+    if chosen is None and len(labels) == 1 and normalized(value) in {"yes", "true"}:
+        return labels
+    return chosen
 
 
 def option_labels(options) -> list[str]:
@@ -1042,11 +1079,11 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
             return None
         when = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
         return [f"{when.strftime('%B')} {when.day}, {when.year}", start], (
-            "availability.earliest_start"
+            "profile.availability.earliest_start"
         )
     if canonical in {"talent_network_opt_in", "marketing_opt_in"}:
         values = _yes_no((profile.get("application_policy") or {}).get(canonical))
-        return (values, "application_policy." + canonical) if values else None
+        return (values, "profile.application_policy." + canonical) if values else None
     return None
 
 
@@ -1099,6 +1136,8 @@ def policy_default(question: Question, options, profile: dict, kind: str = ""):
         styles = (profile.get("preferences") or {}).get("work_styles") or []
         if styles and not {"onsite", "hybrid"} & set(styles):
             return None  # the approved profile says remote only: not a yes by default
+    if kind == "checkbox_group" and len(labels) == 1:
+        return answer, source  # a lone box under the question: yes ticks it
     if labels:
         chosen = match_option(labels, answer, loose=True)
         return (chosen, source) if chosen else None
@@ -1120,11 +1159,11 @@ def draft_gate(question: dict | None) -> dict | None:
     """
     if not question:
         return None
-    if question.get("label_missing") or not plain_name(question.get("label")):
+    if form_reading.unreadable(question) or not plain_name(question.get("label")):
         return {
             "code": "label_missing",
-            "words": "The form shows no label for this field, so only you can say what "
-            "belongs in it.",
+            "words": "The form's text for this question could not be read, so only you can "
+            "say what belongs in it.",
         }
     classified = classify(
         question.get("label"), question.get("kind") or "", option_labels(question.get("options"))

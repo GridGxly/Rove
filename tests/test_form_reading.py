@@ -369,6 +369,13 @@ def test_filling_a_lever_form_asks_real_questions_and_ticks_the_owners_choices(r
     reader.run["profile_hash"] = approved["profile_hash"]
     filled, pending = reader._fill_page(RUN, seen, approved, {})
     assert {f["label"] for f in filled} >= {"Full name✱", "Email✱", "Gender", "Veteran status"}
+    # What the approved profile and the standing defaults answer is filled, not asked.
+    answered = {f["label"]: (f.get("value"), f.get("source")) for f in filled}
+    assert answered[AUTHORIZED] == ("Yes", "eligibility.us_work_authorized")
+    assert answered[SPONSORSHIP] == ("No", "eligibility.sponsorship_future")
+    assert answered["How did you hear about Northwind Labs?"][1] == (
+        "policy.default.how_did_you_hear"
+    )
     asked = {q["label"]: q for q in pending}
     assert set(asked) == {
         "Phone ✱",
@@ -377,9 +384,6 @@ def test_filling_a_lever_form_asks_real_questions_and_ticks_the_owners_choices(r
         "LinkedIn URL",
         "GitHub URL",
         "Street address",
-        "How did you hear about Northwind Labs?",
-        AUTHORIZED,
-        SPONSORSHIP,
         "If yes, what type of sponsorship will you require?",
         "What degree are you currently pursuing?",
         LANGUAGES,
@@ -390,16 +394,16 @@ def test_filling_a_lever_form_asks_real_questions_and_ticks_the_owners_choices(r
         "Additional information",
         MARKETING,
     }
-    assert asked[AUTHORIZED]["options"] == ["Yes", "No"]
+    assert asked[NOTES]["options"] == ["Yes, I consent", "No, I do not consent"]
     assert asked[LANGUAGES]["options"] == ["Python", "Java", "JavaScript", "Other"]
     assert asked[ONE_ROLE]["options"] == ["I understand"] and asked[ONE_ROLE]["required"]
     assert not any(form_reading.unreadable(q) for q in pending)
     # The card the owner reads: numbered questions in form order, no option or key as a question.
     listed = workflow.numbered(worker.question_list(pending, [], {}, set()))
     card = workflow.question_lines(listed, limit=len(listed)).split("\n")
-    assert len(card) == 18 and "cards[" not in "\n".join(card)
-    assert f"8. {AUTHORIZED}  (Yes / No)" in card
-    assert f"12. {LANGUAGES}  (Python / Java / JavaScript / Other)" in card
+    assert len(card) == 15 and "cards[" not in "\n".join(card)
+    assert f"9. {LANGUAGES}  (Python / Java / JavaScript / Other)" in card
+    assert f"13. {NOTES}  (Yes, I consent / No, I do not consent)" in card
     assert not any(line.split(". ", 1)[1].startswith(("Yes", "No ")) for line in card)
     answers = {
         asked[LANGUAGES]["key"]: {

@@ -116,6 +116,11 @@ def is_place_label(label) -> bool:
     return questions.is_place_label(label)
 
 
+# Questions that are several controls, or buttons: they have no input of their own under
+# `data-rove-field`, so account forms never type into them.
+GROUP_KINDS = ("radio_group", "checkbox_group", "choice")
+
+
 def phone_variants(value) -> list[str]:
     """National digits first (sites with their own +1 selector reject a repeated code),
     then the international form; a non-US number is left as written."""
@@ -768,17 +773,27 @@ class RecruitingBrowser:
                 return False
         return True
 
-    def fill_read_question(self, field: dict, answers: dict, filled: list, pending: list) -> bool:
+    def fill_read_question(
+        self,
+        field: dict,
+        answers: dict,
+        filled: list,
+        pending: list,
+        automatic: dict | None = None,
+        resolve=None,
+    ) -> bool:
         """Form reading's part of filling a page; True when the field needs nothing more.
 
-        A grouped checkbox is answered once, as its group. A checkbox group takes the
-        owner's answer, one he gave before, or the form's own decline option for voluntary
-        self-identification. A question whose text could not be read is never answered
-        from a guess or from memory: it goes to the owner as unreadable.
+        A grouped checkbox is answered once, as its group. A checkbox group takes this
+        application's own answer, else what `resolve(field)` finds: the approved profile,
+        an answer the owner gave before, the form's own decline option for voluntary
+        self-identification, or a standing default. A question whose text could not be
+        read is never answered from a guess, a default or memory: it goes to the owner as
+        unreadable. `automatic` is what Rove recorded itself (a used draft, a blank).
         """
         if field["kind"] in {"checkbox", "radio"} and field.get("in_group"):
             return True
-        answer = answers.get(field["key"])
+        answer = questions.application_answer(field, answers, automatic or {})
         if answer and answer["value"].lower() == "skip":
             if field["kind"] == "checkbox_group" and not field["required"]:
                 return True
@@ -792,17 +807,12 @@ class RecruitingBrowser:
         if field["kind"] != "checkbox_group":
             return False
         options = [o["label"] for o in field["options"]]
-        value, source = (answer["value"], answer["source"]) if answer else (None, None)
-        if value is None:
-            value, source = workflow.recall_answer(field["label"]), "your earlier answer"
-        chosen = form_reading.match_options(value, options) if value is not None else None
-        if chosen is None and value is not None and len(options) == 1:
-            # A lone box under a question: the owner's yes ticks it.
-            chosen = options if normalized(str(value)) in {"yes", "true"} else None
-        if chosen is None and not answer:
-            declined = decline_self_identification(field["label"], options)
-            if declined:
-                chosen, source = [declined], "policy.decline_self_identification"
+        if answer:
+            value, source = answer["value"], answer["source"]
+        else:
+            value, source = resolve(field) if resolve else (None, None)
+        # Every part of the answer must name a box; a lone box is ticked by a plain yes.
+        chosen = questions.match_many(options, value) if value is not None else None
         if chosen is not None and self.set_checkboxes(field, chosen):
             filled.append(
                 {
@@ -1181,7 +1191,7 @@ class RecruitingBrowser:
                 if (
                     field["disabled"]
                     or field.get("readonly")
-                    or field["kind"] in {"file", "hidden"}
+                    or field["kind"] in {"file", "hidden", *GROUP_KINDS}
                 ):
                     continue
                 locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
@@ -1197,7 +1207,7 @@ class RecruitingBrowser:
                 ):
                     locator.check()
                     filled.append("accepted: " + (field["label"] or "terms")[:80])
-                elif field["kind"] in {"text", "tel"}:
+                elif field["kind"] in {"text", "tel"} and not field.get("label_missing"):
                     value, _source = resolve_known(field["label"], profile)
                     if value:
                         self.type_value(locator, value)
@@ -1240,7 +1250,7 @@ class RecruitingBrowser:
             if not account:
                 raise PermissionError("No stored account for this site")
             for field in before["fields"]:
-                if field["disabled"] or field["kind"] in {"file", "hidden"}:
+                if field["disabled"] or field["kind"] in {"file", "hidden", *GROUP_KINDS}:
                     continue
                 locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 label = normalized(field["label"] + " " + field["name"])
@@ -1302,7 +1312,18 @@ class RecruitingBrowser:
         filled = []
         # What Rove recorded itself (a used draft, a blank), and whose employer this is.
         automatic = workflow.automatic_answers(run_id)
-        employer = questions.employer_key(workflow.get(run_id)["url"])
+        employer = questions.employer_key(self.run.get("target_url") or before["url"])
+
+        def resolve(field: dict, picker: bool = False):
+            # Approved profile, then the owner's earlier answer, then a standing default.
+            return questions.resolve(
+                field,
+                approved["profile"],
+                recall=workflow.recall_answer,
+                employer=employer,
+                picker=picker,
+            )
+
         grouped = {f["name"] for f in before["fields"] if f["kind"] == "radio_group"}
         for field in before["fields"]:
             if field["disabled"] or field["readonly"]:
@@ -1312,7 +1333,7 @@ class RecruitingBrowser:
             pace()
             if field["kind"] == "radio" and field.get("name") in grouped:
                 continue  # handled once as its group
-            if self.fill_read_question(field, answers, filled, pending):
+            if self.fill_read_question(field, answers, filled, pending, automatic, resolve):
                 continue  # a grouped checkbox, a checkbox group, or an unreadable question
             if field["kind"] in {"radio_group", "choice"}:
                 owner_answer = questions.application_answer(field, answers, automatic)
@@ -1323,13 +1344,7 @@ class RecruitingBrowser:
                 if owner_answer:
                     value, source = owner_answer["value"], owner_answer["source"]
                 else:
-                    # Approved profile, then the owner's earlier answer, then a default.
-                    value, source = questions.resolve(
-                        field,
-                        approved["profile"],
-                        recall=workflow.recall_answer,
-                        employer=employer,
-                    )
+                    value, source = resolve(field)
                 if value is not None and normalized(field.get("value") or "") == normalized(
                     str(value)
                 ):
@@ -1454,13 +1469,7 @@ class RecruitingBrowser:
             if owner_answer:
                 value, source = owner_answer["value"], owner_answer["source"]
             else:
-                value, source = questions.resolve(
-                    field,
-                    approved["profile"],
-                    recall=workflow.recall_answer,
-                    employer=employer,
-                    picker=unread_picker,
-                )
+                value, source = resolve(field, picker=unread_picker)
             if (
                 value is not None
                 and re.search(r"phone|mobile", field["label"], re.IGNORECASE)
@@ -1480,12 +1489,7 @@ class RecruitingBrowser:
                 locator.press("Escape")
             if value is None and choices and unread_picker:
                 # The options are known now: resolve again against them.
-                value, source = questions.resolve(
-                    {**field, "options": [{"label": c} for c in choices]},
-                    approved["profile"],
-                    recall=workflow.recall_answer,
-                    employer=employer,
-                )
+                value, source = resolve({**field, "options": [{"label": c} for c in choices]})
             if field["role"] == "combobox" and value is not None:
                 if self.select_combobox(locator, field, value, approved["profile"]):
                     filled.append(
@@ -1545,7 +1549,7 @@ class RecruitingBrowser:
             ) or value is None:
                 pending.append(
                     {
-                        "label": field["label"] or field["name"],
+                        "label": field["label"],
                         "required": field["required"],
                         "key": field["key"],
                         "options": choices,

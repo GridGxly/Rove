@@ -8,6 +8,7 @@ import hashlib
 import json
 
 import pytest
+import test_form_reading
 import test_live_submission
 import test_workflow
 from test_unattended_failure_modes import (
@@ -31,6 +32,7 @@ from rove.worker import apply_command, thread_command
 
 state = test_workflow.state
 board = test_live_submission.board
+reader = test_form_reading.reader
 
 YES_NO = ["Yes", "No"]
 PROFILE = {
@@ -226,7 +228,7 @@ def test_profile_facts_answer_the_exact_question_and_pick_only_an_offered_option
     assert answer("Country", ["Canada", "United States of America"])[0] == (
         "United States of America"
     )
-    assert answer("When can you start?") == ("June 1, 2027", "availability.earliest_start")
+    assert answer("When can you start?") == ("June 1, 2027", "profile.availability.earliest_start")
     graduation = ["December 2026", "Spring 2027", "December 2027", "Other"]
     assert answer("What is your expected graduation year?", graduation)[0] == "December 2027"
     # A legal fact is matched to an option literally; a longer option is the owner's call.
@@ -372,7 +374,7 @@ def test_defaults_stop_at_negations_conditions_and_the_approved_profile():
     no_marketing = {**PROFILE, "application_policy": {"marketing_opt_in": False}}
     assert answer("I consent to receive marketing emails", YES_NO, profile=no_marketing) == (
         "No",
-        "application_policy.marketing_opt_in",
+        "profile.application_policy.marketing_opt_in",
     )
 
 
@@ -423,6 +425,19 @@ def test_a_field_without_a_label_is_answered_by_nobody(state):
     )
     assert questions.draft_gate({"label": ""})["code"] == "label_missing"
     assert workflow.remember_answer("", [], "Yes", "m1") is False
+    # An input's name, or the placeholder for a question nobody could read, is no question:
+    # nothing is resolved for it, kept under it, or recalled by it.
+    for label in (
+        "question_12345",
+        "cards[6d127747][field3]",
+        "A question on the form that Rove could not read (near “Email”)",
+    ):
+        assert not classify(label).answerable, label
+        assert resolve(field(label), PROFILE, recall=workflow.recall_answer) == (None, None)
+        assert questions.draft_gate({"label": label})["code"] == "label_missing"
+        assert workflow.remember_answer(label, [], "Yes", "m2") is False
+        assert workflow.recall_answer(label) is None
+    assert workflow.remembered_answers() == []
 
 
 # --- b. the owner's earlier answers (M2 and "remember what I told you") ---------------
@@ -523,7 +538,19 @@ def test_an_employer_specific_answer_is_remembered_per_employer(state):
     assert workflow.recall_answer(label, YES_NO, employer=acme) == "Yes"
     assert workflow.recall_answer(label, YES_NO, employer=globex) is None
     assert workflow.recall_answer(label, YES_NO) is None
-    assert workflow.remember_answer("Why us?", [], "Because.", "m2") is False
+    # An application whose employer cannot be told keeps and reuses nothing of this kind.
+    unknown = questions.employer_key("https://job-boards.greenhouse.io/")
+    assert unknown == questions.NO_EMPLOYER
+    assert workflow.remember_answer("Why us?", [], "Because.", "m2", employer=unknown) is False
+    assert workflow.recall_answer(label, YES_NO, employer=unknown) is None
+    # Said outside any application (in the memory channel), it is his answer everywhere,
+    # and an employer's own answer still comes first.
+    assert workflow.remember_answer(label, YES_NO, "No", "m3")
+    assert workflow.recall_answer(label, YES_NO, employer=globex) == "No"
+    assert workflow.recall_answer(label, YES_NO, employer=unknown) == "No"
+    assert workflow.recall_answer(label, YES_NO, employer=acme) == "Yes"
+    scopes = sorted(r["scope"] for r in workflow.remembered_answers())
+    assert scopes == ["employer:*", "employer:greenhouse.io/acme"]
 
 
 def test_answers_remembered_before_canonical_ids_are_kept(state):
@@ -842,3 +869,184 @@ def test_a_form_is_filled_from_each_source_in_order_and_asks_only_once(board, mo
     assert rows[CERTIFY]["canonical_id"] == "certify_truthful"
     assert rows[CERTIFY]["sensitivity"] == SENSITIVE
     assert rows[WHY_HERE]["scope"] == "employer:127.0.0.1"
+
+
+# --- checkbox groups, unreadable questions and account forms --------------------------
+GROUPED_FORM = """<title>Apply</title><form>
+<fieldset><legend>Are you legally authorized to work in the United States?</legend>
+<label><input type="checkbox" name="auth" value="y"> Yes</label>
+<label><input type="checkbox" name="auth" value="n"> No</label></fieldset>
+<fieldset><legend>Race</legend>
+<label><input type="checkbox" name="race" value="a"> Asian</label>
+<label><input type="checkbox" name="race" value="w"> White</label>
+<label><input type="checkbox" name="race" value="d"> Decline to self-identify</label></fieldset>
+<fieldset><legend>Do you agree to be contacted by text message about your application?</legend>
+<label><input type="checkbox" name="sms" value="y"> I agree</label></fieldset>
+<fieldset><legend>Which programming languages have you used?</legend>
+<label><input type="checkbox" name="lang" value="py"> Python</label>
+<label><input type="checkbox" name="lang" value="java"> Java</label>
+<label><input type="checkbox" name="lang" value="js"> JavaScript</label></fieldset>
+<fieldset><legend>I certify that the information provided is true and complete</legend>
+<label><input type="checkbox" name="certify" value="y" required> I certify</label></fieldset>
+<div><input type="text" name="question_4411"></div>
+</form>"""
+LANGUAGES = "Which programming languages have you used?"
+
+
+def checked(runtime, name: str) -> list[bool]:
+    boxes = runtime.page.locator(f"input[name={name}]")
+    return [boxes.nth(i).is_checked() for i in range(boxes.count())]
+
+
+def test_checkbox_groups_take_the_same_sources_as_every_other_question(reader, state, monkeypatch):
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": False, "human_pacing": False})
+    approved = {"profile": PROFILE, "profile_hash": "x"}
+    reader.run["profile_hash"] = "x"
+    seen = reader.read(GROUPED_FORM)
+    groups = {f["label"]: f for f in seen["fields"] if f["kind"] == "checkbox_group"}
+    assert len(groups) == 5
+    filled, pending = reader._fill_page("abcdef012345", seen, approved, {})
+    got = {f["label"]: (f["value"], f["source"]) for f in filled}
+    authorized = "Are you legally authorized to work in the United States?"
+    assert got[authorized] == ("Yes", "eligibility.us_work_authorized")
+    assert got["Race"] == ("Decline to self-identify", "policy.decline_self_identification")
+    contact = "Do you agree to be contacted by text message about your application?"
+    assert got[contact] == ("I agree", "policy.default.contact_consent")
+    assert checked(reader, "auth") == [True, False]
+    assert checked(reader, "race") == [False, False, True]
+    assert checked(reader, "sms") == [True]
+    # No source for the languages, and a certification is never defaulted or declined.
+    asked = {q["label"]: q for q in pending}
+    assert LANGUAGES in asked and CERTIFY in asked
+    assert checked(reader, "lang") == [False, False, False] and checked(reader, "certify") == [
+        False
+    ]
+    # The unlabeled text box is the owner's alone: no profile, memory, default or draft.
+    unread = [q for q in pending if q.get("label_missing")]
+    assert len(unread) == 1 and "question_4411" not in unread[0]["label"]
+    assert questions.draft_gate(unread[0])["code"] == "label_missing"
+    # His answers are remembered as he gave them and tick the boxes on the next form.
+    for label, value in ((LANGUAGES, "python and javascript"), (CERTIFY, "yes")):
+        assert workflow.remember_answer(
+            label, asked[label]["options"], value, "m1", kind="checkbox_group"
+        )
+    kept = {r["label"]: r["value"] for r in workflow.remembered_answers()}
+    assert kept == {LANGUAGES: "Python, JavaScript", CERTIFY: "Yes"}
+    filled, pending = reader._fill_page("abcdef012345", reader.read(GROUPED_FORM), approved, {})
+    got = {f["label"]: (f["value"], f["source"]) for f in filled}
+    assert got[LANGUAGES] == ("Python, JavaScript", questions.REMEMBERED)
+    assert got[CERTIFY] == ("I certify", questions.REMEMBERED)
+    assert checked(reader, "lang") == [True, False, True] and checked(reader, "certify") == [True]
+    assert [q for q in pending if not q.get("label_missing")] == []
+    # A remembered answer that names a box this form does not offer is not used.
+    fewer = ["Python", "Go"]
+    assert workflow.recall_answer(LANGUAGES, fewer, kind="checkbox_group") is None
+    # A sensitive group keeps only an answer that names its own boxes.
+    race = [o["label"] for o in groups["Race"]["options"]]
+    assert workflow.remember_answer("Race", race, "Martian", "m2", kind="checkbox_group") is False
+
+
+def test_an_account_form_with_a_question_group_does_not_break(board, monkeypatch):
+    runtime, base, _state = board
+    grouped = test_live_submission.REGISTER.replace(
+        b'<button type="button" id="go">',
+        b"<fieldset><legend>Account type</legend>"
+        b'<label><input type="radio" name="kind" value="s"> Student</label>'
+        b'<label><input type="radio" name="kind" value="g"> Graduate</label></fieldset>'
+        b'<button type="button" id="go">',
+    )
+    monkeypatch.setattr(test_live_submission, "REGISTER", grouped)
+    opened = runtime.open(f"{base}/acme/jobs/11")
+    assert opened["auth_page"] == "register"
+    assert any(f["kind"] == "radio_group" and f["ref"] is None for f in opened["fields"])
+    after = runtime.register(opened["run_id"])
+    assert "Verify your email" in after["text"]
+
+
+# --- an approved draft, the skipped line and the form card ----------------------------
+def test_an_approved_draft_is_remembered_for_a_plain_question_only(state, monkeypatch):
+    from rove.onboarding import read_approved
+
+    owner_channels(monkeypatch)
+    app = workflow.enqueue("https://job-boards.greenhouse.io/acme/jobs/2002")["application_id"]
+    plain = {"label": "What is your favorite editor?", "kind": "text", "options": []}
+    legal = {"label": "Salary expectations", "kind": "text", "options": []}
+    for item in (plain, legal):
+        item.update(name="q", required=True)
+        item["key"] = workflow.field_key(item)
+    directory = state / "applications" / app
+    directory.mkdir(parents=True)
+    (directory / "observation.json").write_text(json.dumps({"fields": [plain, legal]}))
+    drafts = [
+        {"key": item["key"], "kind": "proposal", "proposal_hash": digit * 64, "value": value}
+        for item, digit, value in ((plain, "1", "A synthetic one"), (legal, "2", "30 USD an hour"))
+    ]
+    (directory / "answer-proposals.json").write_text(
+        json.dumps({"profile_hash": read_approved()["profile_hash"], "answers": drafts})
+    )
+    for number, draft_ in enumerate(drafts, start=1):
+        apply_command(
+            {
+                "kind": "use",
+                "application_id": app,
+                "field_key": draft_["key"],
+                "proposal_hash": draft_["proposal_hash"],
+            },
+            f"m-{number}",
+        )
+    # Both drafts answer this application; only the plain one is a fact for later forms.
+    assert len(workflow.approved_answers(app)) == 2
+    rows = workflow.remembered_answers()
+    assert [(r["label"], r["value"], r["origin"]) for r in rows] == [
+        ("What is your favorite editor?", "A synthetic one", "approved_draft")
+    ]
+    assert workflow.recall_answer("Favorite editor? *") is None  # another wording, another question
+    assert workflow.recall_answer("What is your favorite editor? (Optional)") == "A synthetic one"
+    assert workflow.recall_answer("Salary expectations") is None
+
+
+def test_the_left_blank_line_names_questions_never_keys(state, monkeypatch):
+    owner_channels(monkeypatch)
+    app = feed_job("blank")
+    worker.skip_optional(
+        app,
+        [
+            {"key": "aaaaaaaaaaa1", "label": "Middle name"},
+            {"key": "aaaaaaaaaaa2", "label": ""},
+            {"key": "aaaaaaaaaaa3", "label": "question_12345"},
+        ],
+    )
+    with workflow.db() as conn:
+        row = conn.execute(
+            "SELECT data FROM application_events WHERE kind='optional_skipped'"
+        ).fetchone()
+    labels = json.loads(row["data"])["labels"]
+    assert labels[0] == "Middle name"
+    assert labels[1] == labels[2] == "A question on the form that Rove could not read"
+    assert "aaaaaaaaaaa" not in json.dumps(labels) and "question_12345" not in json.dumps(labels)
+    assert set(workflow.automatic_answers(app)) == {"aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3"}
+
+
+def test_the_form_card_says_where_the_values_came_from():
+    def card(*sources):
+        filled = [{"label": "Field", "value": "x", "source": s} for s in sources]
+        return workflow.event_embeds("app", "fields_prepared", {"filled": filled})[0]["description"]
+
+    resume = {"label": "Resume", "source": "frozen approved base resume", "sha256": "a" * 64}
+    assert (
+        workflow.filled_from([resume, {"source": "identity.email"}]) == "All from approved facts."
+    )
+    assert card("identity.email", "education.schools.0.school") == "All from approved facts."
+    assert card("identity.email", questions.REMEMBERED, "policy.default.onsite_willing") == (
+        "From your profile, your earlier answers and your standing defaults."
+    )
+    assert card("policy.decline_self_identification") == "From your standing defaults."
+    assert card("owner Discord message 123", questions.USED_DRAFT, "identity.email") == (
+        "From your profile, your replies and Qwen's drafts."
+    )
+    assert card("profile.availability.earliest_start") == "All from approved facts."
+    for source in (
+        "profile.availability.earliest_start",
+        "profile.application_policy.marketing_opt_in",
+    ):
+        assert workflow.source_words(source) == "your profile"

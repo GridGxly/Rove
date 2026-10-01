@@ -620,6 +620,41 @@ def source_words(source) -> str:
     return text.replace("_", " ") or "—"
 
 
+# Where a form's values came from, as the owner would say it, in the order he reads them.
+FILLED_FROM = (
+    "your profile",
+    "your resume",
+    "your replies",
+    "your earlier answers",
+    "your standing defaults",
+    "Qwen's drafts",
+)
+
+
+def filled_from(filled) -> str:
+    """One true sentence for the "Form filled" card: which kinds of source the values had."""
+    seen = set()
+    for field in filled or []:
+        source = str(field.get("source") or "").lower()
+        words = source_words(source)
+        if "sha256" in field or words == "your resume":
+            seen.add("your resume")
+        elif words == "your profile":
+            seen.add("your profile")
+        elif words == "your reply":
+            seen.add("your replies")
+        elif source.startswith("your earlier answer"):
+            seen.add("your earlier answers")
+        elif source.startswith(("policy.", "default.")):
+            seen.add("your standing defaults")
+        elif "draft" in source:
+            seen.add("Qwen's drafts")
+    named = [name for name in FILLED_FROM if name in seen]
+    if not named or set(named) <= {"your profile", "your resume"}:
+        return "All from approved facts."
+    return "From " + (", ".join(named[:-1]) + " and " if named[:-1] else "") + named[-1] + "."
+
+
 def sources_line(sources) -> str:
     return ", ".join(dict.fromkeys(source_words(s) for s in list(sources or [])[:5]))
 
@@ -647,8 +682,8 @@ def question_fingerprint(label, options=(), *, kind: str = "", employer: str = "
     is asked, and its scope. The options take no part, and neither does the wording of a
     question code knows: "Gender" and "What is your gender?" share a key, "authorized to
     work in Canada" never shares the US one. A question code does not know is keyed by
-    its wording. Empty when the question cannot be remembered (no label, or
-    employer-specific without an employer).
+    its wording. Without `employer`, a question whose answer depends on the employer gets
+    the key of the owner's general answer. Empty when the question cannot be remembered.
     """
     from . import questions
 
@@ -676,8 +711,7 @@ def migrate_answer_memory(conn):
     ).fetchall()
     for row in legacy:
         question = questions.classify(row["label"], "", json.loads(row["options"]))
-        # An employer-specific answer from before employers were recorded stays listed
-        # under its old key; nothing recalls it.
+        # Old answers were never tied to an employer: they stay the owner's general answer.
         key = questions.memory_key(question) or row["fingerprint"]
         options = row["options"]
         twin = conn.execute(
@@ -701,11 +735,19 @@ def migrate_answer_memory(conn):
                 row["owner_message_id"],
                 question.canonical_id,
                 question.polarity,
-                question.scope,
+                _memory_scope(question, ""),
                 question.sensitivity,
                 "owner",
             ),
         )
+
+
+def _memory_scope(question, employer: str) -> str:
+    from . import questions
+
+    if question.scope != "employer":
+        return question.scope
+    return f"employer:{employer or questions.ANY_EMPLOYER}"
 
 
 def policy_profile() -> dict:
@@ -717,17 +759,29 @@ def policy_profile() -> dict:
 
 
 def remember_answer(
-    label, options, value, owner_message_id: str, *, kind: str = "", employer: str = ""
+    label,
+    options,
+    value,
+    owner_message_id: str,
+    *,
+    kind: str = "",
+    employer: str = "",
+    origin: str = "owner",
 ) -> bool:
     """An answer the owner gave once is a fact for every later form that asks the same.
 
-    It is stored under the question's canonical id, polarity and scope, marked as given
-    by the owner. Returns whether it was stored. Not stored: `skip`, a field without a
-    label, a class the profile keeps as ask-each-time (export control), an
-    employer-specific question when `employer` is unknown, and a sensitive answer that
-    is not one of the options the form offered.
+    It is stored under the question's canonical id, polarity and scope, marked with where
+    it came from (`owner`, or `approved_draft` for a draft he approved). `kind` is the
+    field's kind; a `checkbox_group` answer may name several options. `employer` is
+    `questions.employer_key(url)` for an answer given in an application; without it the
+    answer to an employer-specific question is the owner's general one.
+
+    Returns whether the answer is kept. Not kept: `skip`, a question without a label, a
+    class the profile keeps as ask-each-time (export control), an employer-specific
+    question when the employer cannot be told, and a sensitive answer that is not one of
+    the options the form offered. An unchanged answer is left as it was first given.
     """
-    from . import questions
+    from . import form_reading, questions
 
     text = str(value or "").strip()
     if not text or text.lower() == "skip":
@@ -741,14 +795,32 @@ def remember_answer(
         question, policy_profile()
     ):
         return False
-    if choices:
+    sensitive = question.sensitivity == questions.SENSITIVE
+    if choices and kind == "checkbox_group":
+        ticked = questions.match_many(choices, text)
+        if ticked is None and sensitive:
+            return False
+        if ticked is not None:
+            # A lone box ticked by "yes" is remembered as that yes, whatever the box says.
+            named = form_reading.match_options(text, choices)
+            text = ", ".join(named) if named else "Yes"
+    elif choices:
         offered = questions.match_option(choices, text)
-        if offered is None and question.sensitivity == questions.SENSITIVE:
+        if offered is None and sensitive:
             return False
         text = offered or text
-    scope = f"employer:{employer}" if question.scope == "employer" else question.scope
     with db() as conn:
         migrate_answer_memory(conn)
+        kept = conn.execute(
+            "SELECT value,options FROM answer_memory WHERE fingerprint=?", (key,)
+        ).fetchone()
+        if kept and kept["value"] == text:
+            if kept["options"] == "[]" and choices:
+                conn.execute(
+                    "UPDATE answer_memory SET options=? WHERE fingerprint=?",
+                    (json.dumps(choices[:60]), key),
+                )
+            return True
         conn.execute(
             "INSERT OR REPLACE INTO answer_memory(fingerprint,label,options,value,created_at,"
             "owner_message_id,canonical_id,polarity,scope,sensitivity,origin) "
@@ -762,9 +834,9 @@ def remember_answer(
                 owner_message_id,
                 question.canonical_id,
                 question.polarity,
-                scope,
+                _memory_scope(question, employer),
                 question.sensitivity,
-                "owner",
+                origin,
             ),
         )
     try:
@@ -782,15 +854,17 @@ def recall_answer(
     """The owner's earlier answer to this canonical question, only when it still fits.
 
     With options offered, the remembered value must be one of them; for a plain question
-    a remembered yes or no also fits the single option that starts with it. A negated
-    form, another country, or another employer's question never matches.
+    a remembered yes or no also fits the single option that starts with it, and for a
+    `checkbox_group` every part must name an option. A negated form or another country
+    never matches. An employer-specific question gets this employer's answer, else the
+    general one the owner gave outside any application.
     """
     from . import questions
 
     choices = [str(o) for o in options or []]
     question = questions.classify(label, kind, choices)
-    key = questions.memory_key(question, employer)
-    if key is None:
+    keys = questions.memory_keys(question, employer)
+    if not keys:
         return None
     if question.topic in questions.POLICY_KEYS and questions.ask_each_time(
         question, policy_profile() if profile is None else profile
@@ -798,34 +872,58 @@ def recall_answer(
         return None
     with db() as conn:
         migrate_answer_memory(conn)
-        row = conn.execute("SELECT value FROM answer_memory WHERE fingerprint=?", (key,)).fetchone()
-    if row is None:
-        return None
-    if choices:
-        return questions.match_option(
+        rows = [
+            conn.execute("SELECT value FROM answer_memory WHERE fingerprint=?", (key,)).fetchone()
+            for key in keys
+        ]
+    for row in rows:
+        if row is None:
+            continue
+        if not choices:
+            return row["value"]
+        if kind == "checkbox_group":
+            ticked = questions.match_many(choices, row["value"])
+            if ticked is not None:
+                return ", ".join(ticked)
+            continue
+        fitting = questions.match_option(
             choices, row["value"], loose=question.sensitivity == questions.PLAIN
         )
-    return row["value"]
+        if fitting is not None:
+            return fitting
+    return None
 
 
-def forget_answer(label, options=(), *, kind: str = "", employer: str = "") -> bool:
-    """Drop the remembered answer for this canonical question; True when there was one."""
-    key = question_fingerprint(label, options, kind=kind, employer=employer)
+def forget_answer(
+    label=None, options=(), *, kind: str = "", employer: str = "", key: str = ""
+) -> bool:
+    """Drop one remembered answer: the one for this canonical question, or the row named
+    by `key` (as `remembered_answers` lists it). True when there was one."""
+    key = key or question_fingerprint(label, options, kind=kind, employer=employer)
     with db() as conn:
         migrate_answer_memory(conn)
         removed = conn.execute("DELETE FROM answer_memory WHERE fingerprint=?", (key,)).rowcount
+    if removed:
+        try:
+            from . import vault
+
+            vault.sync_answers()
+        except Exception as error:  # noqa: BLE001 -- the readable copy never blocks the change
+            delivery_failed("vault", "answers", error)
     return bool(removed)
 
 
 def remembered_answers() -> list[dict]:
-    """Every remembered answer, oldest first, with the canonical identity it is kept under."""
+    """Every remembered answer, oldest first: `label`, `options` (JSON text), `value`,
+    `created_at`, the canonical identity it is kept under (`canonical_id`, `polarity`,
+    `scope`, `sensitivity`, `origin`), its row `key`, and `sensitive` as a boolean."""
     with db() as conn:
         migrate_answer_memory(conn)
         rows = conn.execute(
             "SELECT label,options,value,created_at,canonical_id,polarity,scope,sensitivity,"
-            "origin FROM answer_memory ORDER BY created_at"
+            "origin,fingerprint AS key FROM answer_memory ORDER BY created_at"
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [{**dict(row), "sensitive": row["sensitivity"] == "sensitive"} for row in rows]
 
 
 def display_title(item: dict) -> str:
@@ -954,7 +1052,7 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
                     f"Form filled · {len(filled)} fields"
                     if start == 0
                     else "Form filled (continued)",
-                    "All from approved facts." if start == 0 else "",
+                    filled_from(filled) if start == 0 else "",
                     color="preparing",
                     fields=fields,
                 )

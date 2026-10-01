@@ -265,18 +265,26 @@ def skip_optional(application_id: str, questions: list):
     """Record a blank for optional fields with no approved fact or draft; never asks.
 
     The blank is Rove's own record (`auto-skip:`), not an owner answer, and it is never
-    remembered: the same question on a later form is resolved afresh.
+    remembered: the same question on a later form is resolved afresh. The thread line
+    names each field by its question, never by a key.
     """
+    from . import form_reading
+
     with workflow.db() as conn:
         for question in questions:
             conn.execute(
                 "INSERT OR IGNORE INTO application_answers VALUES(?,?,?,?)",
                 (application_id, question["key"], "skip", f"auto-skip:{question['key']}"),
             )
+
+    def named(question: dict) -> str:
+        label = form_reading.squash(question.get("label"))
+        if not label or form_reading.looks_like_key(label):
+            return form_reading.unreadable_label()
+        return label[:80]
+
     workflow.record(
-        application_id,
-        "optional_skipped",
-        {"labels": [str(q.get("label") or q.get("key"))[:80] for q in questions[:12]]},
+        application_id, "optional_skipped", {"labels": [named(q) for q in questions[:12]]}
     )
     workflow.flush_events(application_id)
 
@@ -963,17 +971,23 @@ def apply_command(command: dict, message_id: str):
                 "INSERT OR REPLACE INTO application_answers VALUES(?,?,?,?)",
                 (application_id, field["key"], command["value"], message_id),
             )
-            if command["kind"] == "answer" and not field.get("label_missing"):
-                # The owner's own answer becomes a fact for the same question anywhere; an
-                # answer to a question Rove could not read is for this form only.
-                remembered = [
-                    o.get("label", "") if isinstance(o, dict) else str(o)
-                    for o in field.get("options") or []
-                ]
+            remembered = [
+                o.get("label", "") if isinstance(o, dict) else str(o)
+                for o in field.get("options") or []
+            ]
+            # The owner's own answer becomes a fact for the same question anywhere; an
+            # answer to a question Rove could not read is for this form only. A draft he
+            # approves counts the same way for a plain question, never for a legal or
+            # personal one: those are remembered only in his own words.
+            approved_draft = command["kind"] == "use" and not questions.is_sensitive(
+                label, field.get("kind") or "", remembered
+            )
+            if (command["kind"] == "answer" or approved_draft) and not field.get("label_missing"):
                 remember_later = (label, remembered, command["value"])
                 remember_how = {
                     "kind": field.get("kind") or "",
                     "employer": questions.employer_key(item["url"]),
+                    "origin": "approved_draft" if approved_draft else "owner",
                 }
         conn.execute(
             "INSERT INTO owner_commands VALUES(?,?,?,?,?,?)",
