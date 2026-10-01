@@ -41,7 +41,13 @@ def fit_hold(application_id: str, fit: dict) -> dict:
     items = [f"conflict · {r['requirement'][:110]}" for r in conflicts] + [
         f"unchecked · {r['requirement'][:110]}" for r in unchecked
     ]
-    if conflicts:
+    excluded = [r for r in conflicts if "excluded_title_keywords" in str(r.get("evidence", ""))]
+    if excluded:
+        # Qwen matched the role against the owner's excluded kinds (AI/ML and the like).
+        summary = "This looks like a role your rules exclude. " + workflow.brief(
+            fit.get("rationale", ""), 200
+        )
+    elif conflicts:
         summary = "Conflicts with your approved facts: " + "; ".join(
             r["requirement"][:80] for r in conflicts[:2]
         )
@@ -1115,17 +1121,18 @@ def next_queued(max_waiting: int):
         ).fetchone()
         if resumed:
             return resumed[0]
-        waiting = conn.execute(
-            "SELECT COUNT(*) FROM application_queue WHERE status IN ('NEEDS_USER','READY_FOR_REVIEW')"
-        ).fetchone()[0]
-        if waiting >= max_waiting:
-            return None
         pasted = conn.execute(
             "SELECT id FROM application_queue WHERE status='QUEUED' AND source='owner_link' "
             "ORDER BY created_at LIMIT 1"
         ).fetchone()
         if pasted:
+            # A link the owner pasted is worked next, however many holds are waiting.
             return pasted[0]
+        waiting = conn.execute(
+            "SELECT COUNT(*) FROM application_queue WHERE status IN ('NEEDS_USER','READY_FOR_REVIEW')"
+        ).fetchone()[0]
+        if waiting >= max_waiting:
+            return None
         settings = workflow.config()
         if settings.get("auto_submit"):
             # Unattended sending is paced: a daily cap the owner sets, counted from attempts.
