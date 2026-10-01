@@ -11,7 +11,11 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from .onboarding import read_approved
+from .reasoning import posting_text_for
 from .runtime import state_root, write_private
+
+# Erga rejects supplied job text above its 2 MiB page-snapshot limit.
+ERGA_JOB_TEXT_MAX_BYTES = 2 * 1024 * 1024
 
 
 async def erga_call(name: str, arguments: dict) -> dict:
@@ -63,6 +67,20 @@ def base_resume_manifest(directory: Path, url: str, warning: str, erga_id=None) 
     return manifest
 
 
+def intake_arguments(application_id: str, url: str, directory: Path) -> dict:
+    """Erga's intake request, carrying the posting the browser captured when there is one.
+
+    Careers sites that refuse Erga's own fetch still served the page to the recruiting
+    browser; the text the job-fit review saw lets Erga tailor from that instead.
+    """
+    arguments = {"job_url": url, "application_slug": application_id}
+    text = posting_text_for(directory, {})
+    if text.strip():
+        bounded = text.encode("utf-8")[:ERGA_JOB_TEXT_MAX_BYTES]
+        arguments["job_text"] = bounded.decode("utf-8", errors="ignore")
+    return arguments
+
+
 def prepare_resume(application_id: str, url: str) -> dict:
     directory = state_root() / "applications" / application_id
     saved = directory / "erga-result.json"
@@ -71,7 +89,7 @@ def prepare_resume(application_id: str, url: str) -> dict:
     else:
         try:
             result = asyncio.run(
-                erga_call("intake_job_url", {"job_url": url, "application_slug": application_id})
+                erga_call("intake_job_url", intake_arguments(application_id, url, directory))
             )
         except RuntimeError as error:
             # Erga could not build a role-specific proposal at all (for example the

@@ -12,7 +12,7 @@ See [Runtime measurements](runtime-benchmarks.md) for measured throughput, cache
 | MLX | 0.32.0, bundled with oMLX; Metal inference verified |
 | Qwen | `orcarouter/Qwen3.8-27B-Uncensored-MLX` at `14963e70f886455cf93090ac95bdbf4c8730cbe1` |
 | Hermes | 0.21.5+4343.g226eeeb, source commit `226eeeb4c21ca6d9fb3880bf6aa3b9093f69530a` |
-| Erga | 0.1.0 at `c4164558d7ec450e893ddd5f793b2d870eab782c` |
+| Erga | 0.1.0 from the [GridGxly/erga-mcp](https://github.com/GridGxly/erga-mcp) fork, branch `fetch-headers-and-job-text` at `f1de320514da9eaa3b7f3390ad3f8f3fc6e7939e` (upstream `c4164558d7ec450e893ddd5f793b2d870eab782c` plus one commit) |
 | QMD | 2.8.3, scoped local npm installation |
 | Obsidian | 1.13.7, existing private vault |
 | Tectonic | 0.17.0, local resume compilation |
@@ -76,7 +76,13 @@ The Discord integration authorizes one numeric owner ID and the configured `agen
 
 ## Erga and QMD
 
-Erga is installed in its own managed tool environment. The adapter calls its supported MCP interface using an isolated synthetic configuration under the private runtime root, with `ERGA_MCP_TOOL_PROFILE=read`. It selects an approved synthetic evidence source and cannot select another database or write Erga facts.
+Erga is installed in its own managed tool environment as the `erga-mcp` `uv` tool, from the
+project's fork branch rather than upstream; the install and upgrade recipe is in
+[Requirements](requirements.md#which-erga-to-install). The fork commit adds browser-like fetch
+headers and a `job_text` intake argument; `prepare_resume` passes the posting the recruiting
+browser captured (`job-reasoning-input.json`) through that argument when it exists, so Erga
+tailors from the same text the job-fit review saw instead of fetching a page that may refuse it.
+The adapter calls its supported MCP interface using an isolated synthetic configuration under the private runtime root, with `ERGA_MCP_TOOL_PROFILE=read`. It selects an approved synthetic evidence source and cannot select another database or write Erga facts.
 
 Real career evidence uses separate private Erga state and the bounded
 `read_career_evidence` adapter described in the onboarding guide. Managed masters

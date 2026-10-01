@@ -168,6 +168,46 @@ Erga remains the foundation for career evidence, project evidence, resume tailor
 
 Rove should integrate through Erga's supported interfaces rather than reaching directly into its database from browser code.
 
+#### Which Erga to install
+
+The reference setup installs Erga from the project's own fork,
+[GridGxly/erga-mcp](https://github.com/GridGxly/erga-mcp), branch
+`fetch-headers-and-job-text`, as a `uv` tool. That branch is upstream `main` plus one
+commit: Erga's job fetch sends ordinary browser request headers, and `intake_job_url`
+accepts a `job_text` argument so Autopilot can hand over the posting its own browser
+already captured when a careers site refuses Erga's direct fetch. The fork's `main`
+tracks upstream and carries nothing of its own.
+
+```bash
+uv tool install --force --python 3.12 \
+  "git+https://github.com/GridGxly/erga-mcp@fetch-headers-and-job-text"
+erga review --config ~/.config/erga-autopilot/erga/config.toml
+```
+
+That installs `erga`, `erga-mcp`, and `erga-tokens` under `~/.local/bin`, which is where
+Autopilot's Erga bridge expects `erga-mcp`.
+
+To pull Adrian's updates into the fork and reinstall:
+
+```bash
+git clone https://github.com/GridGxly/erga-mcp.git && cd erga-mcp
+git remote add upstream https://github.com/Adr1an04/erga-mcp.git
+git fetch upstream
+git checkout main && git merge --ff-only upstream/main && git push origin main
+git checkout fetch-headers-and-job-text && git merge main
+# resolve conflicts if any, then run Erga's own gate before pushing:
+uv lock --check && uv run ruff format --check && uv run ruff check && uv run mypy src \
+  && uv run coverage run -m unittest discover -s tests
+git push origin fetch-headers-and-job-text
+uv tool install --force --python 3.12 \
+  "git+https://github.com/GridGxly/erga-mcp@fetch-headers-and-job-text"
+erga review --config ~/.config/erga-autopilot/erga/config.toml
+.venv/bin/pytest -q   # Autopilot's suite, from this repository
+```
+
+Keep the fork's `main` fast-forward only so later upstream merges stay clean. Record the
+installed commit in [Local runtime](local-runtime.md) when it changes.
+
 ### Fast browser runtime
 
 The production browser path uses a dedicated Playwright/Chromium recruiting browser.

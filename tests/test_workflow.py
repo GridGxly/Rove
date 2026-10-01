@@ -348,6 +348,56 @@ def test_failed_erga_intake_keeps_the_approved_base_resume_with_a_warning(
     ).exists()
 
 
+def test_erga_intake_passes_the_captured_posting_text_only_when_it_exists(
+    state, monkeypatch, tmp_path
+):
+    from erga_autopilot import resumes
+    from erga_autopilot.onboarding import read_approved
+
+    pdf = tmp_path / "approved.pdf"
+    pdf.write_bytes(b"%PDF-1.4 approved base")
+    propose("evidence", {"resume_path": str(pdf)}, digest(draft()))
+    approve(digest(draft()))
+    assert read_approved()["profile"]["evidence"]["resume_path"] == str(pdf)
+    (state / "erga").mkdir(parents=True)
+    (state / "erga" / "config.toml").write_text(
+        f'[resume]\noutput_root = "{tmp_path / "erga-output"}"\n'
+    )
+    calls = []
+
+    async def recording(name, arguments):
+        calls.append((name, arguments))
+        return {"result": {}}
+
+    monkeypatch.setattr(resumes, "erga_call", recording)
+    # 14 bytes ends inside the two-byte "\u00e9", so the cut must drop the partial character.
+    monkeypatch.setattr(resumes, "ERGA_JOB_TEXT_MAX_BYTES", 14)
+
+    captured = workflow.enqueue("https://jobs.example.com/4")["application_id"]
+    directory = state / "applications" / captured
+    directory.mkdir(parents=True)
+    (directory / "job-reasoning-input.json").write_text(
+        json.dumps({"job_text": "Posting text \u00e9 beyond the bound"})
+    )
+    resumes.prepare_resume(captured, "https://jobs.example.com/4")
+
+    uncaptured = workflow.enqueue("https://jobs.example.com/5")["application_id"]
+    (state / "applications" / uncaptured).mkdir(parents=True)
+    resumes.prepare_resume(uncaptured, "https://jobs.example.com/5")
+
+    assert [name for name, _ in calls] == ["intake_job_url", "intake_job_url"]
+    # The text rides along, cut at Erga's limit without a torn UTF-8 sequence.
+    assert calls[0][1] == {
+        "job_url": "https://jobs.example.com/4",
+        "application_slug": captured,
+        "job_text": "Posting text ",
+    }
+    assert calls[1][1] == {
+        "job_url": "https://jobs.example.com/5",
+        "application_slug": uncaptured,
+    }
+
+
 def test_tracking_parameters_do_not_create_duplicate_applications(state):
     from erga_autopilot.jobs import public_link
 
