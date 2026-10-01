@@ -1,6 +1,6 @@
 # Reference Mac runtime measurements
 
-Measured September 28–29, 2026 on a 14-inch M5 Pro MacBook Pro, 18 CPU / 20 GPU cores, 48GB unified memory, with normal desktop applications open. The runtime and pinned versions are in [Local runtime](local-runtime.md). These are individual observed trials, not guaranteed throughput or a long-duration stability certification. Raw requests, private process snapshots and transcripts remain outside Git.
+Measured on September 28 and 29, 2026 on a 14-inch M5 Pro MacBook Pro, 18 CPU / 20 GPU cores, 48GB unified memory, with normal desktop applications open. The runtime and pinned versions are in [Local runtime](local-runtime.md). These are individual observed trials, not guaranteed throughput or a long-duration stability certification. Raw requests, private process snapshots and transcripts remain outside Git.
 
 ## Direct baseline
 
@@ -19,7 +19,7 @@ Most samples in this initial run showed warning pressure. Swap grew from about 2
 
 ## Hermes comparison
 
-September 29, MTP on. Each Hermes request had the same payload replayed directly, with 234–242 output tokens and one Hermes API call. The actual prompts contained 4,102 / 8,162 / 15,555 tokens.
+September 29, MTP on. Each Hermes request had the same payload replayed directly, with 234 to 242 output tokens and one Hermes API call. The actual prompts contained 4,102 / 8,162 / 15,555 tokens.
 
 | Input | Hermes decode tok/s | Direct decode tok/s | Hermes TTFT s | Direct TTFT s |
 |---:|---:|---:|---:|---:|
@@ -45,7 +45,7 @@ The 8-bit path really converted 15 cache layers, as confirmed by runtime logs. I
 
 The Discord synthetic workflow completed in 78.5 seconds with three model calls and four narrow MCP tools. It verified ten fields, used approved Erga evidence, retrieved a malicious test note through QMD, saved an unapproved answer draft and asked for unknown facts. No submission or profile mutation occurred. Browser mechanics used zero model calls. A later verified PDF upload fixture took 1.29 seconds.
 
-A deliberate overlap test held the visible browser open while Qwen generated and QMD/Erga retrieval ran. Qwen produced 512 tokens from 8,192 input at **23.50 tokens/second**. QMD retrieval took 3.65 seconds and returned the correct project. Its process exited afterward.
+A deliberate overlap test held the visible browser open while Qwen generated and QMD/Erga retrieval ran. Qwen produced 512 tokens from 8,192 input at 23.50 tokens/second. QMD retrieval took 3.65 seconds and returned the correct project. Its process exited afterward.
 
 Activity Monitor showed 40.15GB Memory Used, 23.68GB Wired, 10.28GB Compressed, 6.00GB Cached Files and 4.18GB Swap, with a green graph. The model footprint was 18.77GB; an earlier long-request snapshot showed 20.37GB. During overlap, swap stayed flat and 16 of 18 pressure samples were normal; two were warnings. Dedicated browser aggregate RSS peaked at 1,000MiB; QMD worker RSS peaked at 1,778MiB. These process RSS figures are not Metal allocation totals.
 
@@ -53,4 +53,4 @@ The broader four-minute workflow/retrieval window included 101 normal and 19 war
 
 A temporary 30-second idle TTL triggered an actual model unload and freed 17.87GB. The final TTL is restored to 600 seconds. Normal requests reload an idle model. Keep one active request and the 16K ceiling while collecting further real-workload evidence.
 
-The runtime remains synthetic and prepare-only. Real ATS submission, applicant onboarding, CAPTCHA/MFA handling and optional recruiting mail are outside this certification.
+These measurements used the synthetic, prepare-only workflow. Real submission, applicant onboarding, CAPTCHA and MFA handling, and recruiting mail were outside this certification. Timing of real applications has not been measured yet.
