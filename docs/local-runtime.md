@@ -74,9 +74,59 @@ The lightweight Hermes launchd gateway starts at login and can restart after a c
 
 ## How the worker calls Qwen
 
-The worker does not go through the Discord agent. It runs `scripts/recruiting_reasoning.py` with the Hermes Python named by `hermes_python` in the workflow config. Each call is one non-streamed request with no tools, thinking off, temperature zero, a 2,048-token output ceiling, and `max_iterations=2` so Hermes can continue once a response that hit the ceiling. Hermes memory and context files are skipped.
+The worker does not go through the Discord agent. Its structured prompts (the job-fit review, answer drafting, the writing cleanup, the pop-up choice and the recruiting-mail label) go to oMLX's OpenAI-compatible endpoint as one streamed `POST /v1/chat/completions` each, from `src/rove/model_client.py`:
 
-The caller accepts only a completed text turn. A harness stop such as `max_iterations_reached`, or a dropped connection, is retried once and then recorded as a failure. It is never parsed as a draft. Stopping oMLX while a request is in flight produces exactly that failure.
+- The system prompt comes from `scripts/recruiting_reasoning.py`; the user turn is the context as JSON, then `/no_think`.
+- Temperature zero, a 2,048-token output ceiling, no tools, and `chat_template_kwargs.enable_thinking: false`. `/no_think` is the second switch.
+- If the answer starts with reasoning instead of the answer (a `reasoning_content` delta, `<think>`, or prose where JSON is expected), the request is dropped at once and the call fails. oMLX cancels a request when its client disconnects. Reported reasoning tokens fail the call as well.
+- A prompt is held under 12,500 tokens, system prompt included. The estimate counts 2.8 characters a token, which errs high for this JSON. Page text is trimmed first, then evidence excerpts. A prompt that is still over is never sent.
+- A drafting call carries at most eight questions; a longer form goes as several requests whose answers are merged. The questions come last, and everything before them is padded to a block boundary too, so the second request on reads only its own questions.
+- oMLX down, a 5xx, a streamed error, a dropped connection or a timeout counts as the model being unavailable. The application goes back to the queue without a card and the next tick tries again. Anything else, such as invalid JSON twice or a reasoning start, is recorded as a failure.
+
+The caller accepts only a finished answer. One that stopped at the output ceiling is never parsed as a draft.
+
+Each context puts what every job shares first: the system prompt, the profile, the approved evidence excerpts and, for drafting, the voice note. The job's own text and questions come after. oMLX reuses a prompt prefix in whole 2,048-token blocks, so this shared part is read from the cache from the second job on, for the life of a profile version. A `cache_padding` field of digits (one token each) marks where the shared part ends. The first request of a profile version asks oMLX's `/v1/messages/count_tokens` for the exact size of the shared part and pads it to the next block boundary when that boundary is at most half a block away. The count is kept in `prompt-prefix-tokens.json` under the state root. Evidence is read from Erga once per pass and serves both the fit review and the drafting.
+
+`model_transport: "hermes"` in `config/workflow.json` sends the same prompts through the Hermes harness instead. That path runs `scripts/recruiting_reasoning.py` with the Hermes Python named by `hermes_python`: one non-streamed request with no tools, thinking off, temperature zero, a 2,048-token ceiling and `max_iterations=2`, with Hermes memory and context files skipped. A harness stop such as `max_iterations_reached` is retried once and then recorded as a failure.
+
+### Why the worker calls the model server directly
+
+`AGENTS.md` names Hermes as the agent harness, and changing that needs documented evidence. These are the measurements from 2026-10-03 on the reference Mac (oMLX 0.6.4, Qwen3.8-27B 4-bit with the external MTP drafter):
+
+| Measured | Through Hermes | Direct |
+| --- | ---: | ---: |
+| Trivial prompt, model warm, wall time (three runs) | 4.68, 3.91, 3.98 s | 2.46, 2.33, 2.43 s |
+| Fit-review prompt, tokens the server prefilled | 3,933 | 3,059 |
+
+- Each Hermes call starts the Hermes Python, imports it and builds an agent: about 1.5 to 2.3 seconds before the request.
+- Hermes puts about 2,000 characters (about 500 tokens) of its own identity prompt in front of Rove's on every call. That costs about 1.5 seconds of prefill, and its "You are Hermes Agent" contradicts the prompt that follows.
+- Together that is about 3.5 seconds a call and 7 to 10 seconds an application, for a harness these calls do not use: they have no tools, no memory and one turn.
+- Thinking stays off only because one request override reaches the chat template. Without it a fit review ran 105 seconds and returned 1,200 tokens of reasoning and no JSON. The direct path sets the switch itself, adds `/no_think`, and drops a reasoning start at once.
+- A 40,000-character context was rejected with HTTP 400 at 17,170 tokens. The old budget counted characters; the direct path counts tokens.
+- Decode ran at 12 to 28 tokens a second and prefill at 330 to 460 tokens a second under the owner's normal desktop load. Every output token and every prefilled token counts, which is why the contexts lead with what is shared and the answers are compact.
+
+The same prompts after the change, replayed from stored real inputs on the same evening. The before column replays the old prompts and context order directly, so it leaves out the Hermes overhead above. Another client's requests shared the server during these runs, so the wall times are rough; the token counts are not.
+
+| Call | Before | After |
+| --- | --- | --- |
+| Fit review, first job | 52.4 s · 3,432 in, 0 cached · 949 out | 47.4 s · 3,346 in, 0 cached · 483 out |
+| Fit review, next job | 58.5 s · 4,362 in, 0 cached · 851 out | 26.4 s · 4,068 in, 2,048 cached · 351 out |
+| Drafting, one question | 24.2 s · 5,015 in · 111 out | 12.4 s · 5,020 in, 2,048 cached · 58 out |
+| Drafting, three questions | 39.3 s · 5,300 in · 375 out | 36.1 s · 5,737 in, 0 cached · 331 out |
+| Drafting, 19 questions | 98.6 s · 7,056 in · 1,693 out, one request | 145 s · three requests, 6,144 cached on the second and third · 1,411 out in all |
+
+A 19-question form costs more as three requests than as one: each request has its own fixed cost, and the server ran these without its MTP drafter while the other client's requests waited. Eight questions a request keeps a long form under the output ceiling. Most forms should reach the model with only a few questions once the profile answers the rest in code.
+
+Hermes remains the Discord agent harness and the MCP and session layer. Its gateway, its Rove MCP server and its tool policy are unchanged.
+
+### Model work while the worker waits
+
+When the worker has nothing it may start (pacing, the daily cap, holds), its tick does two things:
+
+- Background fit reviews: queued applications whose posting text is already kept are reviewed in queue order, one per tick, and stored under the same key a pass reads: the posting hash, the profile snapshot and the fit prompt version. Nothing is posted; the fit card reaches the thread with the first pass that uses it. A pass whose posting reads the same uses the stored review without a model call; different text is reviewed live. The kept text is `posting.json` in the application's directory, written whenever a fit review runs. Postings from an earlier pass are kept, so a new profile version or a new fit prompt is reviewed before the browser opens again. A feed job that has never been opened has no posting text yet and is reviewed live.
+- Keepalive: while jobs are queued and nothing has used the model for 8 minutes, a one-token request keeps oMLX from unloading the weights at its 600-second idle limit. `model_keepalive: false` in `config/workflow.json` turns it off. It keeps about 16GB resident while the queue waits.
+
+Neither runs while oMLX reports a request in progress or waiting (`/api/status`), whoever sent it, and neither starts oMLX. Both wait for the first model request from the state root.
 
 ## Erga and QMD
 
