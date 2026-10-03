@@ -8,8 +8,10 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-C8792A.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/status-experimental-F2A93B.svg" alt="Experimental" />
+  <img src="https://img.shields.io/badge/status-pre--alpha-F2A93B.svg" alt="Pre-alpha" />
+  <img src="https://img.shields.io/badge/python-3.12%2B-3776AB.svg" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-171717.svg" alt="macOS Apple Silicon" />
+  <a href="https://github.com/GridGxly/Rove/actions/workflows/ci.yml"><img src="https://github.com/GridGxly/Rove/actions/workflows/ci.yml/badge.svg?branch=docs-initial-setup" alt="CI" /></a>
 </p>
 
 ## Why this exists
@@ -108,7 +110,7 @@ Read [SECURITY.md](SECURITY.md), [Browser automation](docs/browser-automation.md
 
 ## Getting started
 
-Rove is experimental and has no one-command installer.
+Rove is pre-alpha and has no one-command installer.
 
 ```bash
 git clone https://github.com/GridGxly/Rove.git

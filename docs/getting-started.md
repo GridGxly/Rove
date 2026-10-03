@@ -1,6 +1,6 @@
 # Getting started
 
-Rove is experimental and is set up by hand. The steps below are in the order that keeps real data out until the earlier pieces work. [Requirements](requirements.md) is the full checklist these steps refer to.
+Rove is pre-alpha and is set up by hand. The steps below are in the order that keeps real data out until the earlier pieces work. [Requirements](requirements.md) is the full checklist these steps refer to.
 
 Work with synthetic data first, then with real data and submission off, and enable sending last.
 

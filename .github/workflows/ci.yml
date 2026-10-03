@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main, docs-initial-setup]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: install
+        run: uv sync --frozen
+
+      - name: browser for fixture tests
+        run: uv run patchright install --with-deps chromium
+
+      - name: lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: tests
+        run: uv run pytest -q
