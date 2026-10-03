@@ -102,9 +102,7 @@ def test_no_email_address_outside_synthetic_domains():
     found = []
     for path, text in text_files().items():
         for m in EMAIL.finditer(text):
-            if text[max(m.start() - 3, 0) : m.start()] == "://" or text[: m.start()].endswith(
-                "://"
-            ):
+            if text[max(m.start() - 3, 0) : m.start()] == "://":
                 continue  # a URL's user part, not an address
             if SYNTHETIC_DOMAINS.search(m.group(1)) or m.group().lower() in REVIEWED_EMAILS:
                 continue
@@ -115,10 +113,7 @@ def test_no_email_address_outside_synthetic_domains():
 def test_no_absolute_path_from_a_machine():
     pattern = re.compile(r"/(?:Users|home)/(?!example\b|username\b|runner\b|user\b)[^/\s\"'`]+/")
     found = [
-        where(path, text, m)
-        for path, text in text_files().items()
-        for m in pattern.finditer(text)
-        if path.name != "test_repo_hygiene.py"
+        where(path, text, m) for path, text in text_files().items() for m in pattern.finditer(text)
     ]
     assert found == [], "write ~/... or a placeholder such as /Users/example/..."
 
