@@ -328,7 +328,34 @@ IDENTITY_NAMES = {
     "|nationality|what is your nationality",
     "how_did_you_hear": "source|referral source|application source|how did you find us",
 }
-EXACT_NAMES = {name: key for key, names in IDENTITY_NAMES.items() for name in names.split("|")}
+# Common questions with one meaning however a form words them, none an identity fact.
+# The warm-up in `#memory` (common_questions.py) asks each once; the answer then fills
+# every wording here. Bare "end date" or "languages" are left out on purpose: in a work
+# history or on a developer form they mean something else.
+COMMON_NAMES = {
+    "street_address": "address|street address|address line 1|street address line 1|home address"
+    "|mailing address|current address|residential address|address 1",
+    "languages_spoken": "languages spoken|spoken languages|what languages do you speak"
+    "|which languages do you speak|languages you speak|what languages are you fluent in"
+    "|which languages are you fluent in|fluent languages|languages you are fluent in",
+    "work_style_preference": "preferred work arrangement|work arrangement preference"
+    "|what is your preferred work arrangement|preferred work style|work style preference"
+    "|preferred work setting|which work setting do you prefer|preferred work environment"
+    "|work location preference|preferred work location type|work mode|preferred work mode"
+    "|preferred working arrangement|remote hybrid or on site|remote hybrid or onsite"
+    "|do you prefer remote hybrid or on site|do you prefer remote hybrid or onsite"
+    "|are you looking for remote hybrid or on site work|remote or on site|remote or onsite",
+    "preferred_locations": "preferred location|preferred locations|preferred work location"
+    "|preferred work locations|preferred office location|preferred office locations"
+    "|preferred office|which office location do you prefer|location preference"
+    "|location preferences|what is your preferred location|what are your preferred locations"
+    "|where would you like to work|preferred city|preferred cities",
+}
+EXACT_NAMES = {
+    name: key
+    for key, names in (*IDENTITY_NAMES.items(), *COMMON_NAMES.items())
+    for name in names.split("|")
+}
 PLACE_LABELS = frozenset(
     {"location", "current location", "location city", "city", "city state", "where are you located"}
 )
@@ -560,6 +587,61 @@ EMPLOYER_RELATIVE = re.compile(
     r"\b(?:here|us|our|this (?:company|organization|firm|employer|role|position|job|opportunity"
     r"|internship|team|program)|the (?:company|role|position))\b"
 )
+# More common questions (see COMMON_NAMES), matched whole. Each names what it asks:
+# a bare "end date" or "references" field is never taken for one of these.
+HOURS_PER_WEEK = re.compile(
+    r"(?:(?:how many |what )?hours (?:per|a|each) week(?: (?:of )?availab\w*)?"
+    r"(?: (?:are|can|could|would|will) you"
+    r" (?:be )?(?:available|work|working|commit|dedicate)(?: to (?:work|working))?)?"
+    r"|(?:how many|what) hours (?:are|can|could|would|will) you (?:be )?"
+    r"(?:available|work|working|commit)(?: to work)? (?:per|a|each) week"
+    r"|(?:desired|preferred|expected|available|weekly) hours(?: (?:per|a|each) week)?"
+    r"|availability (?:in )?hours (?:per|a|each) week|hours of availability (?:per|a|each) week"
+    r"|number of hours (?:per|a|each) week(?: (?:you are |you re )?available)?)"
+    r"(?: (?:during|in|for|over) the (?:summer|semester|term|school year|internship))?"
+)
+AVAILABILITY_END = re.compile(
+    r"(?:(?:your |my )?availability end date|end (?:date )?of (?:your |my )?availability"
+    r"|when does your availability end"
+    r"|(?:what is )?(?:the )?(?:last|latest) (?:day|date) (?:you are|you will be|you can be"
+    r"|of your) availab\w*"
+    r"|(?:until|through) (?:when|what date) (?:are|will) you (?:be )?available"
+    r"|(?:what date )?are you available (?:until|through)|available (?:until|through)(?: date)?"
+    r"|how long (?:are|will) you (?:be )?available(?: for)?"
+    r"|(?:what is your )?(?:(?:preferred|desired|latest|internship|program|term|co ?op) )+end date"
+    r"|end of (?:internship|term|program) date|(?:internship|term|program) end"
+    r"|(?:what is your )?(?:latest|last) possible end date)"
+)
+REFERENCES = re.compile(
+    r"(?:(?:are |do you have )?(?:professional |work )?references available"
+    r"(?: (?:upon|on) request)?"
+    r"|(?:can|could|are you able to|are you willing to|will you be able to|would you be able to)"
+    r" (?:you )?provide (?:professional |work |us with )*references(?: (?:upon|on|if) request(?:ed)?)?"
+    r"|do you have (?:professional |work )?references(?: (?:we|i) (?:can|may|could) contact)?)"
+)
+BACKGROUND_CHECK = re.compile(
+    r"(?:(?:do you |would you |i )?(?:consent|agree|are you willing|are willing|am willing"
+    r"|willing)(?: to)? (?:undergo |submit to |complete |participate in |authorize |take"
+    r" |a |an |the )*(?:pre employment |pre hire |criminal |standard |routine )*"
+    r"background (?:check|checks|screening|screen|investigation)"
+    r"(?: (?:and|or|and or) (?:a )?drug (?:test|screen|screening))?"
+    r"(?: (?:if|when|as|upon) (?:required|hired|offered employment|a condition of employment"
+    r"|offer))?"
+    r"|background check (?:consent|authorization|authorisation|acknowledgement|acknowledgment)"
+    r"|consent to (?:a )?background check)"
+)
+ESSENTIAL_FUNCTIONS = re.compile(
+    r"(?:are you able to|can you|are you capable of|would you be able to) perform(?:ing)? "
+    r"(?:all |each of )?(?:the |all the )?essential (?:functions|duties|job functions"
+    r"|responsibilities)(?: of (?:this|the) (?:job|position|role)(?: (?:for which you are"
+    r" applying|you are applying for))?)?"
+    r"(?: (?:with or without|with|without) (?:a |any )?(?:reasonable )?accommodations?)?"
+)
+DRIVERS_LICENSE = re.compile(
+    r"do you (?:currently )?(?:have|hold|possess) (?:a |an )?(?:valid |current |active"
+    r" |unrestricted )*(?:driver s|drivers|driving|driver) licen[cs]e"
+    r"(?: and (?:reliable |your own |access to a )?(?:transportation|vehicle|car))?"
+)
 
 # The owner's rule for plain questions: yes across the board for willingness and
 # acknowledgement questions that are not legal. Each row names a canonical id (or the
@@ -674,7 +756,20 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
         return {"id": "located_in_us", "scope": "us"}
     if RELOCATION_HELP.fullmatch(text):
         return {"id": "relocation_assistance_needed"}
+    for canonical, pattern in COMMON_RULES:
+        if pattern.fullmatch(text):
+            return {"id": canonical}
     return None
+
+
+COMMON_RULES = (
+    ("hours_per_week", HOURS_PER_WEEK),
+    ("availability_end", AVAILABILITY_END),
+    ("references_available", REFERENCES),
+    ("background_check_consent", BACKGROUND_CHECK),
+    ("essential_functions", ESSENTIAL_FUNCTIONS),
+    ("drivers_license", DRIVERS_LICENSE),
+)
 
 
 def _loose(name: str, text: str) -> dict | None:
@@ -825,6 +920,9 @@ TOPIC_OF = {
     "salary_expectation": "salary",
     "salary_expectation_hourly": "salary",
     "salary_expectation_annual": "salary",
+    "background_check_consent": "background_check",
+    "essential_functions": "disability",
+    "drivers_license": "identity_document",
 }
 SENSITIVE_IDS = frozenset(TOPIC_OF) | {
     f"sponsorship{place}_{tense}"
@@ -909,9 +1007,14 @@ def ask_each_time(question: Question, profile: dict | None) -> bool:
 
 
 def option_matches(option_label, value) -> bool:
-    """Exact option text, or the same country written differently."""
+    """Exact option text, the same words run together ("On-site", "Onsite"), or the same
+    country written differently."""
     a, b = normalized(option_label), normalized(value)
-    return a == b or (a in COUNTRY_ALIASES and b in COUNTRY_ALIASES)
+    return (
+        a == b
+        or a.replace(" ", "") == b.replace(" ", "")
+        or (a in COUNTRY_ALIASES and b in COUNTRY_ALIASES)
+    )
 
 
 def match_option(options, value, *, loose: bool = False) -> str | None:
@@ -964,6 +1067,14 @@ IDENTITY_KEYS = {
     "linkedin_url": "linkedin",
     "github_url": "github",
     "portfolio_url": "portfolio",
+}
+
+
+# How forms spell the approved work styles; the first spelling is the one for a text box.
+WORK_STYLE_WORDS = {
+    "remote": ("Remote", "Fully remote", "Work from home"),
+    "hybrid": ("Hybrid",),
+    "onsite": ("On-site", "Onsite", "In office", "In-office", "In person", "In-person"),
 }
 
 
@@ -1073,14 +1184,30 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
         if not country:
             return None
         return _yes_no(country in COUNTRY_ALIASES), "identity.country"
-    if canonical == "start_availability":
-        start = (profile.get("availability") or {}).get("earliest_start")
-        if not start:
+    availability = profile.get("availability") or {}
+    if canonical in {"start_availability", "availability_end"}:
+        key = "earliest_start" if canonical == "start_availability" else "latest_end"
+        day = availability.get(key)
+        if not day:
             return None
-        when = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
-        return [f"{when.strftime('%B')} {when.day}, {when.year}", start], (
-            "profile.availability.earliest_start"
+        when = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=UTC)
+        return [f"{when.strftime('%B')} {when.day}, {when.year}", day], (
+            "profile.availability." + key
         )
+    if canonical == "hours_per_week":
+        hours = availability.get("hours_per_week")
+        return ([str(hours)], "profile.availability.hours_per_week") if hours else None
+    if canonical == "preferred_locations":
+        places = [str(p) for p in prefs.get("preferred_locations") or [] if p]
+        # The joined list for a text box first; one place alone fits an office option.
+        return ([", ".join(places), *places], "preferences.preferred_locations") if places else None
+    if canonical == "work_style_preference":
+        styles = [s for s in prefs.get("work_styles") or [] if s in WORK_STYLE_WORDS]
+        if not styles:
+            return None
+        words = [WORK_STYLE_WORDS[s][0] for s in styles]
+        spellings = [spelling for s in styles for spelling in WORK_STYLE_WORDS[s]]
+        return [", ".join(words), *spellings], "preferences.work_styles"
     if canonical in {"talent_network_opt_in", "marketing_opt_in"}:
         values = _yes_no((profile.get("application_policy") or {}).get(canonical))
         return (values, "profile.application_policy." + canonical) if values else None
