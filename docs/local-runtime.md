@@ -80,12 +80,16 @@ The worker does not go through the Discord agent. Its structured prompts (the jo
 - Temperature zero, a 2,048-token output ceiling, no tools, and `chat_template_kwargs.enable_thinking: false`. `/no_think` is the second switch.
 - If the answer starts with reasoning instead of the answer (a `reasoning_content` delta, `<think>`, or prose where JSON is expected), the request is dropped at once and the call fails. oMLX cancels a request when its client disconnects. Reported reasoning tokens fail the call as well.
 - A prompt is held under 12,500 tokens, system prompt included. The estimate counts 2.8 characters a token, which errs high for this JSON. Page text is trimmed first, then evidence excerpts. A prompt that is still over is never sent.
-- A drafting call carries at most eight questions; a longer form goes as several requests whose answers are merged. The questions come last, and everything before them is padded to a block boundary too, so the second request on reads only its own questions.
+- A form's questions go in one drafting request unless their answers may not fit under the output ceiling. Each question carries its control (a one-line field, a text area, a list). Code estimates the output each answer may need, erring high, measured on drafting replays:
+  - a reason for the owner: 40 tokens
+  - a short answer or a choice: 60 tokens
+  - a written answer: 45 tokens plus 2.9 tokens per word of its target. The target is a word count the question names, else what its character limit holds, else 130 words.
+- When the estimate is over 1,600 tokens, the form is split into the fewest requests in form order, and their answers are merged. The questions come last, and everything before them is padded to a block boundary too, so the second request on reads only its own questions.
 - oMLX down, a 5xx, a streamed error, a dropped connection or a timeout counts as the model being unavailable. The application goes back to the queue without a card and the next tick tries again. Anything else, such as invalid JSON twice or a reasoning start, is recorded as a failure.
 
 The caller accepts only a finished answer. One that stopped at the output ceiling is never parsed as a draft.
 
-Each context puts what every job shares first: the system prompt, the profile, the approved evidence excerpts and, for drafting, the voice note. The job's own text and questions come after. oMLX reuses a prompt prefix in whole 2,048-token blocks, so this shared part is read from the cache from the second job on, for the life of a profile version. A `cache_padding` field of digits (one token each) marks where the shared part ends. The first request of a profile version asks oMLX's `/v1/messages/count_tokens` for the exact size of the shared part and pads it to the next block boundary when that boundary is at most half a block away. The count is kept in `prompt-prefix-tokens.json` under the state root. Evidence is read from Erga once per pass and serves both the fit review and the drafting.
+Each context puts what every job shares first: the system prompt, the profile, the approved evidence excerpts and, for drafting, the voice note. The job's own text and questions come after. oMLX reuses a prompt prefix in whole 2,048-token blocks, so this shared part is read from the cache from the second job on, for the life of a profile version. A `cache_padding` field of digits (one token each) marks where the shared part ends. The first request of a profile version asks oMLX's `/v1/messages/count_tokens` for the exact size of the shared part and pads it to the next block boundary when that boundary is at most half a block away. The count is kept in `prompt-prefix-tokens.json` under the state root. The fit review and the drafting read the same evidence with one query; inside a pass both reads go through the pass's one Erga process.
 
 `model_transport: "hermes"` in `config/workflow.json` sends the same prompts through the Hermes harness instead. That path runs `scripts/recruiting_reasoning.py` with the Hermes Python named by `hermes_python`: one non-streamed request with no tools, thinking off, temperature zero, a 2,048-token ceiling and `max_iterations=2`, with Hermes memory and context files skipped. A harness stop such as `max_iterations_reached` is retried once and then recorded as a failure.
 
@@ -113,20 +117,30 @@ The same prompts after the change, replayed from stored real inputs on the same 
 | Fit review, next job | 58.5 s · 4,362 in, 0 cached · 851 out | 26.4 s · 4,068 in, 2,048 cached · 351 out |
 | Drafting, one question | 24.2 s · 5,015 in · 111 out | 12.4 s · 5,020 in, 2,048 cached · 58 out |
 | Drafting, three questions | 39.3 s · 5,300 in · 375 out | 36.1 s · 5,737 in, 0 cached · 331 out |
-| Drafting, 19 questions | 98.6 s · 7,056 in · 1,693 out, one request | 145 s · three requests, 6,144 cached on the second and third · 1,411 out in all |
+| Drafting, 19 questions, same prompt replayed | 98.8 s · 7,056 in, 6,144 cached · 1,693 out | 70.8 s · 7,122 in, 6,144 cached · 1,212 out |
+| Drafting, 19 questions, nothing cached | 98.6 s · 7,056 in · 1,693 out | 97.9 s · 7,122 in · 1,212 out |
 
-A 19-question form costs more as three requests than as one: each request has its own fixed cost, and the server ran these without its MTP drafter while the other client's requests waited. Eight questions a request keeps a long form under the output ceiling. Most forms should reach the model with only a few questions once the profile answers the rest in code.
+An earlier version split every form into requests of eight questions. The same 19 questions took 145 seconds as three requests, because each request has its own fixed cost. That is why a form now goes as one request unless its expected answers pass 1,600 tokens; the estimate for these 19 was 1,422.
 
 Hermes remains the Discord agent harness and the MCP and session layer. Its gateway, its Rove MCP server and its tool policy are unchanged.
 
 ### Model work while the worker waits
 
-When the worker has nothing it may start (pacing, the daily cap, holds), its tick does two things:
+When the worker has nothing it may start (pacing, the daily cap, holds), its tick does three things:
 
-- Background fit reviews: queued applications whose posting text is already kept are reviewed in queue order, one per tick, and stored under the same key a pass reads: the posting hash, the profile snapshot and the fit prompt version. Nothing is posted; the fit card reaches the thread with the first pass that uses it. A pass whose posting reads the same uses the stored review without a model call; different text is reviewed live. The kept text is `posting.json` in the application's directory, written whenever a fit review runs. Postings from an earlier pass are kept, so a new profile version or a new fit prompt is reviewed before the browser opens again. A feed job that has never been opened has no posting text yet and is reviewed live.
+- Posting text from the board: the next queued job in queue order that has no kept text is read from its board's public API, one read a tick. This only happens when the job's link is a Greenhouse (`boards.greenhouse.io`, `job-boards.greenhouse.io`), Lever (`jobs.lever.co`) or Ashby (`jobs.ashbyhq.com`) posting.
+  - The reads are plain GETs to `boards-api.greenhouse.io/v1/boards/<board>/jobs/<id>`, `api.lever.co/v0/postings/<company>/<id>` or `api.ashbyhq.com/posting-api/job-board/<board>`.
+  - They go through the same HTTP client and destination check as company research: no proxies, no cookies, no redirects followed, nothing about the owner in the request. Responses are capped at 5MB.
+  - The visible text, with hidden elements dropped, is kept in `posting.json` with its identity: the board, the job id and a hash of the text.
+  - A read that fails is tried again after 12 hours. Any other host is never read and its job is reviewed in its pass.
+- Background fit reviews: queued applications whose posting text is kept are reviewed in queue order, one per tick, and stored under the same key a pass reads: the posting hash, the profile snapshot and the fit prompt version. Nothing is posted; the fit card reaches the thread with the first pass that uses it.
+  - A pass whose page text hashes the same uses the stored review without a model call.
+  - For a posting read from its board, the pass reads the board once more (at most 5 seconds) and uses the review when the board still shows the same posting word for word. The browser's own page text can differ.
+  - Otherwise the pass reviews live, as before.
+  - Postings captured by an earlier pass are kept too, so a new profile version or a new fit prompt is reviewed before the browser opens again.
 - Keepalive: while jobs are queued and nothing has used the model for 8 minutes, a one-token request keeps oMLX from unloading the weights at its 600-second idle limit. `model_keepalive: false` in `config/workflow.json` turns it off. It keeps about 16GB resident while the queue waits.
 
-Neither runs while oMLX reports a request in progress or waiting (`/api/status`), whoever sent it, and neither starts oMLX. Both wait for the first model request from the state root.
+No review or ping starts while oMLX reports a request in progress or waiting (`/api/status`), whoever sent it, and none of the three starts oMLX. All three wait for the first model request from the state root.
 
 ## Erga and QMD
 
