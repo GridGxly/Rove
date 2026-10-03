@@ -2,9 +2,12 @@
 
 import contextlib
 import json
+import os
 import sqlite3
+import threading
 import time
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -27,51 +30,171 @@ def private_env() -> dict:
     return values
 
 
+# ---------------------------------------------------------------------------
+# One HTTPS client per process for every Discord call: the worker's tick, the browser
+# service and the mail and feed services each keep theirs, so a tick pays one TLS
+# handshake instead of one per request. A transport error drops the client (a connection
+# that went stale over sleep is not reused) and the next call opens a fresh one.
+# ---------------------------------------------------------------------------
+API = "https://discord.com/api/v10"
+_client: dict = {}
+_client_lock = threading.Lock()
+# Per thread: Discord's own clock from the latest response this thread received.
+_seen = threading.local()
+# A bucket Discord said is empty is left alone until its reset, up to this long.
+_quiet: dict = {}
+QUIET_WAIT_LIMIT = 5.0
+DISCORD_EPOCH_MS = 1420070400000
+
+
+def client() -> httpx.Client:
+    """The process's Discord client, opened on first use and again after a fork or error."""
+    with _client_lock:
+        current = _client.get("client")
+        if current is None or current.is_closed or _client.get("pid") != os.getpid():
+            current = httpx.Client(
+                base_url=API,
+                timeout=30,
+                trust_env=False,
+                limits=httpx.Limits(
+                    max_connections=8, max_keepalive_connections=4, keepalive_expiry=20
+                ),
+            )
+            _client.update(client=current, pid=os.getpid())
+        return current
+
+
+def drop_client():
+    """Forget the client after a transport error; a forked child never closes its parent's."""
+    with _client_lock:
+        current = _client.pop("client", None)
+        owned = _client.pop("pid", None) == os.getpid()
+    if current is not None and owned:
+        with contextlib.suppress(Exception):
+            current.close()
+
+
+def server_time() -> datetime | None:
+    """Discord's clock from this thread's latest response, or None when there was none."""
+    return getattr(_seen, "date", None)
+
+
+def empty_cursor() -> str:
+    """The cursor for a channel with no messages: a minute before Discord's own clock, or
+    zero when that clock is unknown. Never the local clock: a Mac whose clock runs ahead
+    of Discord's would skip the owner's next messages."""
+    seen = server_time()
+    if seen is None:
+        return "0"
+    millis = int(seen.timestamp() * 1000) - 60_000 - DISCORD_EPOCH_MS
+    return str(max(millis, 0) << 22)
+
+
+def _bucket(method: str, path: str) -> tuple:
+    parts = path.split("?")[0].strip("/").split("/")
+    return (method, *parts[:2])
+
+
+def _wait_for_bucket(key: tuple):
+    wait = _quiet.get(key, 0.0) - time.monotonic()
+    if 0 < wait <= QUIET_WAIT_LIMIT:
+        time.sleep(wait)
+
+
+def _note(key: tuple, response: httpx.Response):
+    date = response.headers.get("date")
+    if date:
+        with contextlib.suppress(TypeError, ValueError, IndexError):
+            _seen.date = parsedate_to_datetime(date)
+    if response.headers.get("x-ratelimit-remaining") == "0":
+        with contextlib.suppress(TypeError, ValueError):
+            reset = float(response.headers.get("x-ratelimit-reset-after", ""))
+            _quiet[key] = time.monotonic() + min(max(reset, 0.0), QUIET_WAIT_LIMIT)
+
+
+def _replayable(method: str, payload, error: httpx.TransportError) -> bool:
+    """Whether one more try cannot post twice: nothing reached Discord, or the request is
+    idempotent, or Discord itself drops a repeated nonce."""
+    if isinstance(error, httpx.ConnectError | httpx.ConnectTimeout | httpx.PoolTimeout):
+        return True
+    if isinstance(error, httpx.ReadTimeout | httpx.WriteTimeout):
+        return False  # it may have been applied; a timed-out call is not paid for twice
+    if method in {"GET", "PATCH", "DELETE", "PUT"}:
+        return True
+    return isinstance(payload, dict) and bool(payload.get("enforce_nonce"))
+
+
+def _request(method: str, path: str, *, payload=None, send=None) -> httpx.Response:
+    """One Discord request through the shared client: a stale connection is replaced once,
+    a definite rate limit is waited out up to three times, anything else is the caller's."""
+    token = private_env().get("DISCORD_BOT_TOKEN")
+    if not token:
+        raise ValueError("Discord bot credential is missing")
+    headers = {"Authorization": "Bot " + token}
+    key = _bucket(method, path)
+
+    def once() -> httpx.Response:
+        _seen.date = None
+        _wait_for_bucket(key)
+        for attempt in range(2):
+            try:
+                if send is not None:
+                    response = send(client(), headers)
+                else:
+                    response = client().request(method, path, headers=headers, json=payload)
+            except httpx.TransportError as error:
+                drop_client()
+                if attempt or not _replayable(method, payload, error):
+                    raise
+                continue
+            _note(key, response)
+            return response
+        raise RuntimeError("unreachable")
+
+    response = once()
+    for _ in range(3):
+        if response.status_code != 429:
+            break
+        # Only a definite rate-limit rejection is retryable. Timeouts are ambiguous.
+        try:
+            delay = float(response.json().get("retry_after", 1))
+        except ValueError:
+            delay = 1.0
+        if not 0 <= delay <= 30:
+            break
+        time.sleep(delay + 0.05)
+        response = once()
+    response.raise_for_status()
+    return response
+
+
 @timing.call("discord")
 def discord_upload(channel: str, path, payload: dict) -> dict:
     """One message with one private file attached (a screenshot or the resume as sent)."""
     import mimetypes
     from pathlib import Path
 
-    token = private_env().get("DISCORD_BOT_TOKEN")
-    if not token:
-        raise ValueError("Discord bot credential is missing")
     file_path = Path(path)
     kind = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-    with (
-        httpx.Client(base_url="https://discord.com/api/v10", timeout=60, trust_env=False) as c,
-        file_path.open("rb") as handle,
-    ):
-        response = c.post(
-            f"/channels/{channel}/messages",
-            headers={"Authorization": "Bot " + token},
-            data={"payload_json": json.dumps(payload)},
-            files={"files[0]": (file_path.name, handle, kind)},
-        )
-    response.raise_for_status()
-    return response.json()
+
+    def send(http: httpx.Client, headers: dict) -> httpx.Response:
+        # The file is opened per attempt, so a retry after a rate limit sends it whole.
+        with file_path.open("rb") as handle:
+            return http.post(
+                f"/channels/{channel}/messages",
+                headers=headers,
+                data={"payload_json": json.dumps(payload)},
+                files={"files[0]": (file_path.name, handle, kind)},
+                timeout=60,
+            )
+
+    return _request("POST", f"/channels/{channel}/messages", payload=payload, send=send).json()
 
 
 @timing.call("discord")
 def discord(method: str, path: str, payload: dict | None = None):
-    token = private_env().get("DISCORD_BOT_TOKEN")
-    if not token:
-        raise ValueError("Discord bot credential is missing")
-    with httpx.Client(base_url="https://discord.com/api/v10", timeout=30, trust_env=False) as c:
-        response = c.request(method, path, headers={"Authorization": "Bot " + token}, json=payload)
-        for _ in range(3):
-            if response.status_code != 429:
-                break
-            # Only a definite rate-limit rejection is retryable. Timeouts are ambiguous.
-            delay = float(response.json().get("retry_after", 1))
-            if not 0 <= delay <= 30:
-                break
-            time.sleep(delay + 0.05)
-            response = c.request(
-                method, path, headers={"Authorization": "Bot " + token}, json=payload
-            )
-        response.raise_for_status()
-        return response.json() if response.content else {}
+    response = _request(method, path, payload=payload)
+    return response.json() if response.content else {}
 
 
 def feed_db():
