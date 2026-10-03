@@ -1142,6 +1142,7 @@ def student(**changes) -> dict:
         ("Cumulative GPA", "gpa"),
         ("GPA on a 4.0 scale", "gpa"),
         ("What is your cumulative GPA?", "gpa"),
+        ("GPA (if applicable)", "gpa"),
         ("School", "school"),
         ("College/University", "school"),
         ("Which university do you attend?", "school"),
@@ -1208,6 +1209,7 @@ def test_sponsored_hackathons_are_not_a_sponsorship_question():
     hackathons = classify("Which sponsored hackathons have you attended?")
     assert hackathons.sensitivity == PLAIN and hackathons.topic == ""
     assert questions.draft_gate({"label": "Which sponsored hackathons have you attended?"}) is None
+    assert not questions.is_sensitive("Have you worked on any sponsored research projects?")
     for label in (
         "Do you need a sponsor for your visa?",
         "Will your employment require sponsorship?",
@@ -1651,3 +1653,19 @@ def test_a_greenhouse_form_leaves_only_the_essays_for_the_model(reader, state, m
     assert sorted(q["label"] for q in pending) == sorted(ESSAYS)
     counts = fastpath.drafting_counts(pending, seen["fields"])
     assert counts == {"questions": 2, "writing": 2, "choices": 0, "short": 0, "owner_only": 0}
+
+
+def test_a_draft_that_picks_the_placeholder_goes_to_the_owner(state, monkeypatch):
+    from test_security_inbound import KEYS, drafting
+    from test_security_inbound import proposal as drafted
+
+    from rove.onboarding import read_approved
+
+    sent = drafting(monkeypatch, [[drafted(KEYS[0], "Select...")]])
+    app = workflow.enqueue("https://jobs.example.com/placeholder")["application_id"]
+    (state / "applications" / app).mkdir(parents=True)
+    asked = {"key": KEYS[0], "label": "Favorite course area", "options": ["Select...", "A", "B"]}
+    page = {"profile_hash": read_approved()["profile_hash"], "pending": [asked], "text": ""}
+    (refused,) = reasoning.review_application(app, page)["answers"]
+    assert len(sent) == 1 and refused["kind"] == "needs_user" and refused["value"] == ""
+    assert "choose one of: A, B" in refused["explanation"]

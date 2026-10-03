@@ -83,6 +83,8 @@ REQUIRED_IDS = {
     "preferred_name",
     "street_address",
     "country",
+    "school_start",
+    "past_employers",
 }
 # Left out on purpose: per employer, a policy already answers it better, or free text.
 LEFT_OUT = {"previously_applied_here", "previously_employed_here", "how_did_you_hear", "gender"}
@@ -332,3 +334,19 @@ def test_the_profile_fills_the_new_questions_as_text_and_as_an_option():
     assert questions.resolve({"label": "Preferred work arrangement", "kind": "text"}, two_styles)[
         0
     ] == ("On-site, Hybrid")
+
+
+def test_the_school_start_and_past_employers_are_asked_once_and_kept_as_written():
+    start, employers = BY_ID["school_start"], BY_ID["past_employers"]
+    assert common_questions.normalize(start, "aug 2024") == "August 2024"
+    with pytest.raises(Unreadable, match="year"):
+        common_questions.normalize(start, "August")
+    assert common_questions.normalize(employers, " Globex Robotics,  Initech ") == (
+        "Globex Robotics, Initech"
+    )
+    assert common_questions.normalize(employers, "none") == "none"
+    # Answered by the profile's enrollment month; asked only of a profile with one school.
+    assert start.id not in {e.id for e in common_questions.open_questions(FULL_PROFILE, NOBODY)}
+    two = {"education": {"schools": [{"school": "A"}, {"school": "B"}]}}
+    assert not common_questions.applies(start, two)
+    assert employers.id in {e.id for e in common_questions.open_questions(FULL_PROFILE, NOBODY)}

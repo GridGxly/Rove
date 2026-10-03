@@ -191,7 +191,8 @@ POLICY_KEYS = {
 # "Sponsor" is the authorization question only next to visa, work or employment words, or
 # when something requires or needs it: "sponsored hackathons" is a plain question.
 SPONSOR_CONTEXT = re.compile(
-    r"\b(?:visas?|immigra\w*|work\w*|employ\w*|authori[sz]\w*|permits?|status|h ?1 ?b|green card"
+    r"\b(?:visas?|immigra\w*|work(?:s|ing)?|employ\w*|authori[sz]\w*|permits?|status|h ?1 ?b"
+    r"|green card"
     r"|citizen\w*|residen\w*|legal\w*|lawful\w*|opt|cpt|stem|countr\w*|nationals?|foreign"
     r"|united states|u s a?|usa|us|transfer\w*|petition\w*)\b"
     r"|\b(?:require|requires|required|requiring|need|needs|needed|needing)\b(?: [a-z0-9]+){0,4}"
@@ -635,6 +636,7 @@ GPA = re.compile(
     r"(?:(?:current|cumulative|overall|undergraduate|college|university|unweighted|latest"
     r"|most recent) )*(?:gpa|grade point average)(?: (?:cumulative|undergraduate|overall))?"
     r"(?: (?:on a |out of |on |scale |of )?(?P<scale>4 0|4|5 0|5|10|100)(?: point)?(?: scale)?)?"
+    r"(?: if applicable)?"
 )
 GRADUATION_DATE = frozenset(
     {
@@ -709,6 +711,8 @@ def worked_here_employer(text: str) -> list[str] | None:
     while company and company[-1] in CORPORATE_SUFFIX:
         company = company[:-1]
     return company or None
+
+
 APPLIED_HERE = re.compile(
     r"have you (?:(?:ever|previously) )*applied(?: previously| before| in the past)?"
     r" (?:to|at|with|for)(?: [a-z0-9]+){1,6}"
@@ -1377,9 +1381,11 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
             # The month of the earliest start, with its year; a bare month only from a
             # list of months.
             values = [when.strftime("%B %Y"), when.strftime("%b %Y")]
-            return (values + [when.strftime("%B"), when.strftime("%b")], source) if (
-                has_options
-            ) else (values, source)
+            return (
+                (values + [when.strftime("%B"), when.strftime("%b")], source)
+                if (has_options)
+                else (values, source)
+            )
         values = [f"{when.strftime('%B')} {when.day}, {when.year}", day]
         if has_options and canonical == "start_availability":
             values += [when.strftime("%B %Y"), when.strftime("%b %Y")]  # a list of months
@@ -1518,7 +1524,11 @@ def degree_choice(labels: list[str], degree: str) -> str | None:
 # Majors as boards list them. Only names that mean the same field of study; a near field
 # ("Engineering" for "Computer Engineering") is the owner's call, never a guess.
 DISCIPLINES = {
-    "computer science": ("Computer Science", "Computer and Information Science", "Computer Sciences"),
+    "computer science": (
+        "Computer Science",
+        "Computer and Information Science",
+        "Computer Sciences",
+    ),
     "computer sciences": ("Computer Science",),
     "cs": ("Computer Science",),
     "computing": ("Computing", "Computer Science"),
@@ -1576,7 +1586,9 @@ GPA_RANGE = re.compile(r"(\d(?:\.\d+)?)\s*(?:-|–|to)\s*(\d(?:\.\d+)?)")
 
 def gpa_choice(labels: list[str], gpa: str, scale) -> str | None:
     """The option that is the GPA, or the one 4.0-scale range that holds it."""
-    exact = [o for o in labels if re.fullmatch(r"\d(?:\.\d+)?", o.strip()) and float(o) == float(gpa)]
+    exact = [
+        o for o in labels if re.fullmatch(r"\d(?:\.\d+)?", o.strip()) and float(o) == float(gpa)
+    ]
     if len(exact) == 1:
         return exact[0]
     if scale is None or float(scale) != 4.0:
@@ -1643,7 +1655,12 @@ def education_date(
     if unit == "year":
         candidates = [str(when.year)]
     else:
-        candidates = [when.strftime("%B"), when.strftime("%b"), f"{when.month:02d}", str(when.month)]
+        candidates = [
+            when.strftime("%B"),
+            when.strftime("%b"),
+            f"{when.month:02d}",
+            str(when.month),
+        ]
     if labels:
         return first_listed(labels, candidates), source
     if unit == "month" and field.get("kind") == "number":
@@ -1662,7 +1679,9 @@ NEVER_OPTION = re.compile(r"^no\b|\bnever\b|\bhave not\b|\bnot previously\b")
 def employer_names(question: Question, employer: str) -> list[str] | None:
     """The names the employer goes by on this form: the label's, then the address's.
     None when there is none to check, or the label reaches past the employer itself."""
-    if re.search(r"\b(?:subsidiar\w*|affiliat\w*|parent|partners?|vendors?|clients?)\b", question.name):
+    if re.search(
+        r"\b(?:subsidiar\w*|affiliat\w*|parent|partners?|vendors?|clients?)\b", question.name
+    ):
         return None
     named = worked_here_employer(question.name)
     names = [" ".join(named)] if named else []

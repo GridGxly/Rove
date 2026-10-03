@@ -768,6 +768,8 @@ def review_application(application_id: str, page: dict) -> dict:
         if cached.get("context_hash") == context_hash:
             return cached
     try:
+        from .questions import real_options  # a select's "Select..." is no option to propose
+
         generated, result = None, None
         for attempt in range(2):
             generated = generate(directory, context, "reasoning")
@@ -775,7 +777,7 @@ def review_application(application_id: str, page: dict) -> dict:
                 result = parse_review(
                     completed_response(generated),
                     {q["key"] for q in questions},
-                    {q["key"]: q.get("options") or [] for q in questions},
+                    {q["key"]: real_options(q.get("options")) for q in questions},
                     questions,
                 )
                 leaks = draft_guard.problems(result, private, voice)
