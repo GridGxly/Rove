@@ -10,6 +10,13 @@ from pathlib import Path
 import httpx
 import pytest
 
+# Browser tests are marked e2e and launches from unmarked tests refused; see ci_marks.py.
+from ci_marks import (  # noqa: F401 -- pytest reads hooks from this module
+    pytest_collection_modifyitems,
+    pytest_configure,
+    pytest_runtest_protocol,
+)
+
 from rove import research
 from rove.jobs import public_link
 
