@@ -79,8 +79,10 @@ def raise_card(key: str, channel: str, headline: str, text: str) -> bool:
         raise ValueError("Unknown alert channel")
     with db() as conn:
         row = conn.execute("SELECT delivery FROM owner_alerts WHERE key=?", (key,)).fetchone()
-        if row and row["delivery"] in LIVE:
-            return False
+    if row and row["delivery"] in LIVE:
+        flush()  # a card Discord did not take last time is tried again
+        return False
+    with db() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO owner_alerts(key,channel,data,delivery,message_id,raised_at,"
             "cleared_at) VALUES(?,?,?,'pending',NULL,?,NULL)",
@@ -150,9 +152,21 @@ def flush():
         with db() as conn:
             conn.execute(
                 "UPDATE owner_alerts SET delivery='sent',message_id=? WHERE key=? "
-                "AND delivery='pending'",
-                (str(sent.get("id", "")), row["key"]),
+                "AND delivery='pending' AND raised_at=?",
+                (str(sent.get("id", "")), row["key"], row["raised_at"]),
             )
+            now = conn.execute(
+                "SELECT delivery,raised_at FROM owner_alerts WHERE key=?", (row["key"],)
+            ).fetchone()
+        cleared = (
+            now is None or now["delivery"] == "withdrawn" or now["raised_at"] != row["raised_at"]
+        )
+        if cleared and sent.get("id"):
+            # The concern cleared while the card was on its way: it leaves at once.
+            try:
+                workflow.discord("DELETE", f"/channels/{channel}/messages/{sent['id']}")
+            except (httpx.HTTPError, OSError) as error:
+                workflow.delivery_failed("alert-withdraw", row["key"], error)
 
 
 def check(

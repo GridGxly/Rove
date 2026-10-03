@@ -1610,3 +1610,34 @@ def test_more_shows_the_next_batch_and_the_rest_carry_over_in_score_order(
         "1. **Example Labs**",
         "2. **Hooli Example**",
     ]
+
+
+def test_an_owner_card_waits_out_a_discord_outage_and_is_never_doubled(state, monkeypatch):
+    from rove import alerts
+
+    log = channels(monkeypatch)
+    working = workflow.discord
+
+    def down(*_args, **_kwargs):
+        raise httpx.ConnectError("discord is unreachable")
+
+    monkeypatch.setattr(workflow, "discord", down)
+    assert alerts.raise_card("probe", "action", "Something stopped", "Plain words.") is True
+    assert alerts.live("probe") and posts(log, "action") == []
+    monkeypatch.setattr(workflow, "discord", working)
+    # Raised again on the next run: the waiting card goes out once, not a second card.
+    assert alerts.raise_card("probe", "action", "Something stopped", "Plain words.") is False
+    alerts.flush()
+    (card,) = [p["embeds"][0] for p in posts(log, "action")]
+    assert (card["title"], card["description"]) == ("Something stopped", "Plain words.")
+    assert alerts.clear("probe") and not alerts.live("probe") and not alerts.clear("probe")
+    assert ("DELETE", "/channels/action/messages/w1", None) in log
+    # Cleared before Discord ever took it: nothing is posted later.
+    monkeypatch.setattr(workflow, "discord", down)
+    alerts.raise_card("quiet", "action", "Brief trouble", "Gone again.")
+    assert alerts.clear("quiet")
+    monkeypatch.setattr(workflow, "discord", working)
+    alerts.flush()
+    assert len(posts(log, "action")) == 1
+    with pytest.raises(ValueError, match="Unknown alert channel"):
+        alerts.raise_card("probe", "elsewhere", "x", "y")
