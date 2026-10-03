@@ -649,7 +649,8 @@ class RecruitingBrowser:
         self.warmed = set()
         self.hops = []
         self.secrets = set()
-        self.lost_tabs = False
+        self.lost = set()  # applications whose tab died with a browser that was restarted
+        self.port = None
         self.launcher = ChromeLauncher()
         # Per application: the child frame its form lives in, and the tab address it was
         # chosen on. No entry means the tab's own document.
@@ -784,8 +785,7 @@ class RecruitingBrowser:
             if self.browser is not None:
                 if not self.browser.is_connected():
                     return False
-                port_check = getattr(self.launcher, "running_port", None)
-                if port_check is not None and port_check() is None:
+                if self.port and not devtools_alive(self.port):
                     return False
                 if self.cdp is not None:
                     self.cdp.send("Browser.getVersion")
@@ -805,7 +805,9 @@ class RecruitingBrowser:
             with contextlib.suppress(Exception):
                 closer()
         self.playwright = self.browser = self.context = self.cdp = None
+        self.port = None
         self.page = self.run = self.observation = None
+        self.lost |= set(self.pages)
         self.pages.clear()
         self.runs.clear()
         self.dns.clear()
@@ -817,11 +819,11 @@ class RecruitingBrowser:
             return False
         restarted = self.context is not None
         self.reset()
-        if restarted:
-            self.lost_tabs = True  # whatever tabs the dead browser held are gone
         try:
             self.launch()
         except Exception as error:
+            if not restarted:
+                raise  # the first launch says in its own words what is missing
             raise RuntimeError(BROWSER_DOWN) from error
         if restarted:
             with contextlib.suppress(Exception):  # a log line never blocks the recovery
@@ -858,6 +860,7 @@ class RecruitingBrowser:
             self.browser = self.playwright.chromium.connect_over_cdp(
                 f"http://127.0.0.1:{port}", timeout=20000
             )
+            self.port = port
             self.context = (
                 self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
             )
@@ -1506,6 +1509,7 @@ class RecruitingBrowser:
                 resume_is_tailored=manifest.get("tailored", False),
             )
         self.runs[run_id], self.pages[run_id] = self.run, self.page
+        self.lost.discard(run_id)
         workflow.set_state(run_id, "PREPARING", run_id=run_id)
         workflow.ensure_forum(run_id)
         self.save()
@@ -1583,8 +1587,9 @@ class RecruitingBrowser:
     def check(self, run_id: str):
         page = self.pages.get(run_id)
         if page is None or page.is_closed() or run_id not in self.runs:
-            if getattr(self, "lost_tabs", False):
+            if run_id in self.lost:
                 # The browser was closed and started again: its tabs did not come back.
+                self.lost.discard(run_id)
                 raise ValueError(BROWSER_GONE)
             # Never act on another application's tab: a missing tab is reopened, not reused.
             raise ValueError("This application's tab is not open; reopen it before continuing")
