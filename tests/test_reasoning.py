@@ -127,8 +127,14 @@ def test_harness_stop_is_not_a_model_answer():
 
 
 def test_generate_retries_once_then_reports_the_harness_reason(tmp_path, monkeypatch):
-    monkeypatch.setattr(workflow, "config", lambda: {"hermes_python": __import__("sys").executable})
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {"hermes_python": __import__("sys").executable, "model_transport": "hermes"},
+    )
     monkeypatch.setattr(reasoning, "ensure_model", lambda: None)
+    monkeypatch.setattr(reasoning, "model_alive", lambda: True)
     calls = []
 
     def fake_run(command, **kwargs):
@@ -270,19 +276,29 @@ def test_cached_review_is_re_evaluated_by_current_code_rules(state, monkeypatch)
     assert kinds.count("qwen_job_review") == 1
 
 
-def test_context_budget_trims_long_text_and_evidence_first():
+def test_context_budget_counts_tokens_and_trims_page_text_before_evidence():
+    from rove import model_client
+
     context = {
         "profile": {"identity": {"legal_first_name": "Alex"}},
         "job_text": "x" * 30000,
         "career_evidence": {"results": [{"evidence_id": "e", "excerpt": "y" * 30000}]},
     }
-    fitted = reasoning.fit_budget(context, limit=20000)
-    assert len(json.dumps(fitted)) <= 20000
+    system = "s" * 2800  # 1,000 tokens of system prompt count against the budget too
+    fitted = reasoning.fit_budget(context, system, tokens=13000)
+    assert model_client.prompt_tokens(system, fitted) <= 13000
     assert fitted["profile"] == context["profile"]
-    assert (
-        len(fitted["job_text"]) < 30000
-        and len(fitted["career_evidence"]["results"][0]["excerpt"]) < 30000
-    )
+    # Page text went first: the evidence is whole while the posting is cut.
+    assert len(fitted["job_text"]) < 30000
+    assert len(fitted["career_evidence"]["results"][0]["excerpt"]) == 30000
+    tighter = reasoning.fit_budget(context, system, tokens=6000)
+    assert model_client.prompt_tokens(system, tighter) <= 6000
+    assert len(tighter["job_text"]) <= 500
+    assert len(tighter["career_evidence"]["results"][0]["excerpt"]) < 30000
+    # 40,000 characters of JSON is about 14,300 tokens: over the 12,500 default budget.
+    big = {"job_context": "z" * 40000}
+    assert model_client.prompt_tokens("", big) > model_client.PROMPT_TOKEN_BUDGET
+    assert model_client.prompt_tokens("", reasoning.fit_budget(big)) <= 12_500
 
 
 def test_proposed_value_outside_the_options_becomes_a_question():

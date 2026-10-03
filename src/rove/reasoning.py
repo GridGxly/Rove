@@ -5,7 +5,10 @@ Qwen interprets postings and drafts answers. Trusted code owns exact comparisons
 """
 
 import asyncio
+import copy
+import functools
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -17,32 +20,40 @@ from typing import Annotated, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from . import draft_guard, fastpath, timing, unslop, vault, workflow
+from . import draft_guard, fastpath, model_client, timing, unslop, vault, workflow
 from .evidence import career_evidence
+from .model_client import ModelUnavailable, PromptTooLong
 from .onboarding import read_approved
 from .research import company_context
 from .research import quoted as quoted_research
-from .runtime import state_root, write_private
+from .runtime import MODEL, state_root, write_private
 
 # The prompts in scripts/recruiting_reasoning.py are versioned apart, so work done under
 # an older prompt is never reused silently and work done under an unchanged one is kept.
 # Bump FIT_PROMPT_VERSION when JOB_FIT_PROMPT changes: stored job-fit reviews are keyed by
 # it and every job is reviewed again. Bump ANSWERS_PROMPT_VERSION when ANSWER_PROMPT or
 # the writing rules change: cached drafts are keyed by it, stored fit reviews are not.
-FIT_PROMPT_VERSION = "2026-10-01.1"
-ANSWERS_PROMPT_VERSION = "2026-10-01.1"
+FIT_PROMPT_VERSION = "2026-10-03.1"
+ANSWERS_PROMPT_VERSION = "2026-10-03.1"
 # The drafting version under its earlier name, for existing callers.
 PROMPT_VERSION = ANSWERS_PROMPT_VERSION
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
+REPOSITORY = Path(__file__).resolve().parents[2]
+# A drafting request carries at most this many questions; more go as several requests,
+# so a long form never runs into the output ceiling.
+QUESTION_BATCH = 8
+# The Hermes path puts its own system prompt in front of Rove's.
+HERMES_PROMPT_TOKENS = 600
 
 
 class Answer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     key: str = Field(pattern=r"^[a-f0-9]{12}$")
     kind: Literal["proposal", "needs_user"]
-    value: str = Field(max_length=3000)
-    sources: list[str] = Field(max_length=10)
-    explanation: str = Field(max_length=1000)
+    # A proposal carries a value and sources; a needs_user answer only its short reason.
+    value: str = Field(default="", max_length=3000)
+    sources: list[str] = Field(default_factory=list, max_length=10)
+    explanation: str = Field(default="", max_length=1000)
 
 
 class Review(BaseModel):
@@ -63,7 +74,10 @@ class Requirement(BaseModel):
         "skills",
         "other",
     ]
+    # In English; `original` keeps a non-English posting's own words beside it.
     requirement: str = Field(min_length=1, max_length=300)
+    original: str = Field(default="", max_length=400)
+    # Only on a conflict: the approved profile field it contradicts, as a path.
     evidence: str = Field(default="", max_length=400)
     status: Literal["satisfied", "unknown", "conflict"]
     graduation_start: Month | None = None
@@ -113,80 +127,236 @@ def completed_response(generated: dict) -> str:
     return text
 
 
-# The local server holds 16K tokens; leave room for the system prompt and 2K of output.
-INPUT_BUDGET_CHARS = 40_000
+@functools.cache
+def prompts():
+    """The prompt texts, from the one file both transports read them from."""
+    spec = importlib.util.spec_from_file_location(
+        "recruiting_reasoning", REPOSITORY / "scripts/recruiting_reasoning.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def fit_budget(context: dict, limit: int = INPUT_BUDGET_CHARS) -> dict:
-    """Keep a request inside the model's window by trimming long text, largest first."""
+def system_prompt(kind) -> str:
+    return prompts().system_prompt(kind)
+
+
+# Page text goes first when a prompt is over its budget, then evidence excerpts.
+PAGE_TEXT = ("job_context", "job_text")
+
+
+def fit_budget(
+    context: dict, system: str = "", tokens: int = model_client.PROMPT_TOKEN_BUDGET
+) -> dict:
+    """Keep a request inside the model's window: page text is trimmed before evidence.
+
+    Sizes are estimated in tokens (`model_client.estimate_tokens`, which errs high) and
+    include the system prompt. What cannot be trimmed stays; the caller refuses to send a
+    prompt that is still over.
+    """
     context = json.loads(json.dumps(context))
-    trimmable = ("job_text", "job_context", "company_research")
 
-    def size() -> int:
-        return len(json.dumps(context))
+    def over() -> bool:
+        return model_client.prompt_tokens(system, context) > tokens
 
-    while size() > limit:
-        excerpts = [
-            item
-            for item in (context.get("career_evidence") or {}).get("results", [])
-            if isinstance(item, dict) and len(item.get("excerpt", "")) > 1500
-        ]
-        texts = [k for k in trimmable if isinstance(context.get(k), str) and len(context[k]) > 1000]
-        longest_excerpt = max(excerpts, key=lambda i: len(i["excerpt"]), default=None)
-        longest_text = max(texts, key=lambda k: len(context[k]), default=None)
-        if longest_excerpt is not None and (
-            longest_text is None or len(longest_excerpt["excerpt"]) >= len(context[longest_text])
-        ):
+    while over():
+        texts = [k for k in PAGE_TEXT if isinstance(context.get(k), str) and len(context[k]) > 500]
+        research = context.get("company_research")
+        quotes = research.get("quotes") if isinstance(research, dict) else None
+        if texts:
+            longest = max(texts, key=lambda k: len(context[k]))
+            context[longest] = context[longest][: int(len(context[longest]) * 0.7)]
+        elif isinstance(quotes, list) and quotes:
+            research["quotes"] = quotes[: int(len(quotes) * 0.7)]
+        else:
+            excerpts = [
+                item
+                for item in (context.get("career_evidence") or {}).get("results", [])
+                if isinstance(item, dict) and len(item.get("excerpt", "")) > 1500
+            ]
+            if not excerpts:
+                break
+            longest_excerpt = max(excerpts, key=lambda i: len(i["excerpt"]))
             longest_excerpt["excerpt"] = longest_excerpt["excerpt"][
                 : int(len(longest_excerpt["excerpt"]) * 0.7)
             ]
-        elif longest_text is not None:
-            context[longest_text] = context[longest_text][: int(len(context[longest_text]) * 0.7)]
-        else:
-            break
     return context
 
 
-class ModelUnavailable(RuntimeError):
-    """The local model server is down; the queue waits instead of failing applications."""
+def static_first(system: str, static: dict, dynamic: dict) -> dict:
+    """A context whose leading part is the same for every job of a profile version.
+
+    The server reuses a prompt prefix in whole 2,048-token blocks, so the system prompt,
+    profile, evidence and voice note go first and the job's own text after them. When
+    that leading part may be short of one block, `cache_padding` (one token per digit)
+    fills it, so the block is reused from the second job on instead of never.
+    """
+    context = dict(static)
+    lacking = (
+        model_client.CACHE_BLOCK_TOKENS
+        + 64
+        - model_client.at_least_tokens(system + model_client.user_content(context))
+    )
+    if lacking > 0:
+        context["cache_padding"] = "0" * lacking
+    context.update(dynamic)
+    return context
+
+
+# One read of Erga's approved evidence serves the fit review and the drafting of a pass,
+# and the same excerpts make the same leading cache block for every job.
+EVIDENCE_QUERY = "skills experience projects TransferTrack OBI PayPals"
+EVIDENCE_SECONDS = 600
+_evidence: dict = {}
+
+
+def approved_evidence(profile_hash: str) -> dict:
+    key = (str(state_root()), str(profile_hash))
+    held = _evidence.get(key)
+    if held is None or time.monotonic() - held[0] > EVIDENCE_SECONDS:
+        held = (time.monotonic(), asyncio.run(career_evidence(EVIDENCE_QUERY)))
+        _evidence.clear()
+        _evidence[key] = held
+    return copy.deepcopy(held[1])
+
+
+def model_alive() -> bool:
+    from .runtime import client
+
+    try:
+        with client() as c:
+            return c.get("/models", timeout=5).is_success
+    except httpx.HTTPError:
+        return False
 
 
 def ensure_model():
-    from .runtime import client
-
-    def alive() -> bool:
-        try:
-            with client() as c:
-                return c.get("/models", timeout=5).is_success
-        except httpx.HTTPError:
-            return False
-
-    if alive():
+    if model_alive():
         return
     launcher = Path.home() / ".omlx/bin/omlx"
     if launcher.is_file():
         subprocess.run([str(launcher), "start"], check=False, capture_output=True, timeout=60)
         for _ in range(60):
             time.sleep(1)
-            if alive():
+            if model_alive():
                 return
     raise ModelUnavailable("Local model server is not running")
 
 
-@timing.call("model", result=timing.tokens)
+def transport() -> str:
+    """`direct` (the default) or `hermes`, from `model_transport` in the workflow config."""
+    return "hermes" if workflow.config().get("model_transport") == "hermes" else "direct"
+
+
+def model_facts(generated) -> dict:
+    facts = timing.tokens(generated)
+    if isinstance(generated, dict) and generated.get("transport"):
+        facts["transport"] = str(generated["transport"])
+    return facts
+
+
 def generate(directory: Path, context: dict, basename: str, attempts: int = 2) -> dict:
-    ensure_model()
+    """The model's answer to one structured prompt, through the configured transport.
+
+    A drafting context with more than QUESTION_BATCH questions goes as several requests
+    whose answers come back as one.
+    """
+    questions = context.get("questions")
+    if isinstance(questions, list) and len(questions) > QUESTION_BATCH:
+        return generate_batches(directory, context, basename, attempts)
+    return request(directory, context, basename, attempts)
+
+
+def generate_batches(directory: Path, context: dict, basename: str, attempts: int) -> dict:
+    questions = context["questions"]
+    answers: list = []
+    usage: dict = {}
+    generated: dict = {}
+    batches = range(0, len(questions), QUESTION_BATCH)
+    for number, start in enumerate(batches, start=1):
+        part = {**context, "questions": questions[start : start + QUESTION_BATCH]}
+        name = basename if number == 1 else f"{basename}-{number}"
+        generated = request(directory, part, name, attempts)
+        try:
+            parsed = load_json(completed_response(generated))
+        except (RuntimeError, ValueError):
+            return generated  # the caller's own check names the defect
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("answers"), list):
+            return generated
+        answers += parsed["answers"]
+        for name, value in ((generated.get("result") or {}).get("usage") or {}).items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                usage[name] = usage.get(name, 0) + value
+    merged = copy.deepcopy(generated)
+    merged["batches"] = len(batches)
+    merged["result"]["final_response"] = json.dumps({"answers": answers}, ensure_ascii=False)
+    merged["result"]["usage"] = usage
+    return merged
+
+
+@timing.call("model", result=model_facts)
+def request(directory: Path, context: dict, basename: str, attempts: int = 2) -> dict:
+    """One model request. A prompt over the token budget is trimmed, and never sent when
+    trimming cannot bring it under."""
+    system = system_prompt(context.get("review_type"))
+    hermes = transport() == "hermes"
+    budget = model_client.PROMPT_TOKEN_BUDGET - (HERMES_PROMPT_TOKENS if hermes else 0)
+    context = fit_budget(context, system, budget)
     write_private(directory / f"{basename}-input.json", context)
+    if model_client.prompt_tokens(system, context) > budget:
+        raise PromptTooLong(
+            f"The {context.get('review_type') or 'answers'} prompt is over the model's "
+            f"{model_client.PROMPT_TOKEN_BUDGET}-token budget even after trimming"
+        )
+    ensure_model()
+    try:
+        if hermes:
+            return hermes_request(directory, basename, attempts)
+        return direct_request(directory, system, context, basename)
+    finally:
+        model_client.mark_used()
+
+
+def direct_request(directory: Path, system: str, context: dict, basename: str) -> dict:
+    reply = model_client.chat(
+        system,
+        model_client.user_content(context),
+        expects_json=context.get("review_type") != "cleanup",
+    )
+    finished = reply["finish_reason"] == "stop"
+    generated = {
+        "model": MODEL,
+        "harness": "direct",
+        "transport": "direct",
+        "tool_count": 0,
+        "streaming": True,
+        "result": {
+            "completed": finished,
+            "turn_exit_reason": "text_response(finish_reason=stop)"
+            if finished
+            else f"output_stopped({reply['finish_reason']})",
+            "final_response": reply["content"],
+            "usage": reply["usage"],
+            "api_calls": 1,
+            "seconds": reply["seconds"],
+        },
+    }
+    write_private(directory / f"{basename}-result.json", generated)
+    return generated
+
+
+def hermes_request(directory: Path, basename: str, attempts: int) -> dict:
+    """The review inside the installed Hermes harness (`model_transport: "hermes"`)."""
     python = workflow.config().get("hermes_python")
     if not python or not Path(python).is_file():
         raise ValueError("Configure the installed Hermes Python path before running Qwen")
-    repository = Path(__file__).resolve().parents[2]
     failure = "not started"
     for _ in range(attempts):
         run = subprocess.run(
             [
                 python,
-                str(repository / "scripts/recruiting_reasoning.py"),
+                str(REPOSITORY / "scripts/recruiting_reasoning.py"),
                 "--hermes-checkout",
                 str(Path.home() / ".hermes/hermes-agent"),
                 "--input",
@@ -198,7 +368,7 @@ def generate(directory: Path, context: dict, basename: str, attempts: int = 2) -
             capture_output=True,
             text=True,
             timeout=900,
-            env=dict(os.environ, PYTHONPATH=str(repository / "src"), HERMES_AUTOPILOT_16K="1"),
+            env=dict(os.environ, PYTHONPATH=str(REPOSITORY / "src"), HERMES_AUTOPILOT_16K="1"),
         )
         if run.returncode != 0:
             # Keep the last meaningful line only; owner cards never carry file paths.
@@ -217,7 +387,10 @@ def generate(directory: Path, context: dict, basename: str, attempts: int = 2) -
         except RuntimeError as error:
             failure = str(error)
             continue
-        return generated
+        return {**generated, "transport": "hermes"}
+    if not model_alive():
+        # The server went away under the harness: the queue waits, nothing failed.
+        raise ModelUnavailable("The model server stopped answering: " + failure)
     raise RuntimeError(failure)
 
 
@@ -500,50 +673,33 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     cache_key = fastpath.review_key(job_text, approved["profile_hash"], FIT_PROMPT_VERSION)
     directory = state_root() / "applications" / application_id
     path = directory / "job-review.json"
+    keep_posting(application_id, job_text, page.get("url") or item["url"])
     prior = fastpath.stored_review(application_id, cache_key)
     timing.note(cached=bool(prior))
     if prior:
+        timing.note(background=bool(prior.get("background")))
         current = {
             **prior,
             **evaluate_review(prior["qwen_output"], approved["profile"], job_text),
         }
-        if current["decision"] != prior.get("decision"):
+        changed = current["decision"] != prior.get("decision")
+        if changed:
             current["note"] = "Re-evaluated by updated code rules; Qwen output unchanged"
             write_private(path, current)
             fastpath.store_review(application_id, cache_key, current)
+        if changed or not fit_card_posted(application_id):
+            # A review made in the background reaches the thread with its first pass.
             workflow.record(application_id, "qwen_job_review", current)
             workflow.flush_events(application_id)
         return {**current, "cached": True}
     timing.note(changed=fastpath.review_change(application_id, cache_key))
-    context = {
-        "review_type": "job_fit",
-        "prompt_version": FIT_PROMPT_VERSION,
-        "profile": {
-            key: approved["profile"][key]
-            for key in ("identity", "education", "eligibility", "availability", "preferences")
-        },
-        "career_evidence": asyncio.run(career_evidence("skills experience projects")),
-        "expected_job_title": item["title"],
-        "job_url": page["url"],
-        "job_text": job_text,
-        # Form labels help Qwen tell questions from requirements. They are not part of the
-        # stored review's key: how a label is read must not ask Qwen again.
-        "form_questions": [f["label"][:120] for f in page.get("fields", []) if f.get("label")][:60],
-    }
-    context = fit_budget(context)
-    context_hash = fingerprint({k: v for k, v in context.items() if k != "form_questions"})
+    # Form labels help Qwen tell questions from requirements. They are not part of the
+    # stored review's key: how a label is read must not ask Qwen again.
+    labels = [f["label"][:120] for f in page.get("fields", []) if f.get("label")][:60]
     try:
-        generated, parsed = None, None
-        for attempt in range(2):
-            generated = generate(directory, context, "job-reasoning")
-            try:
-                parsed = JobReview.model_validate(load_json(completed_response(generated)))
-                break
-            except (ValueError, ValidationError) as error:
-                if attempt:
-                    raise
-                # One retry with the defect named; a second bad answer is a failure.
-                context = {**context, "previous_output_problem": str(error)[:300]}
+        result = fit_review(application_id, approved, item, job_text, page["url"], labels)
+    except ModelUnavailable:
+        raise  # the queue waits for the server; nothing to tell the owner
     except Exception as error:
         workflow.record(
             application_id,
@@ -552,24 +708,132 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
         )
         workflow.flush_events(application_id)
         raise
-    qwen_output = parsed.model_dump()
-    result = {
-        "qwen_output": qwen_output,
-        **evaluate_review(qwen_output, approved["profile"], job_text),
-    }
-    result.update(
-        context_hash=context_hash,
-        posting_hash=cache_key[0],
-        prompt_version=FIT_PROMPT_VERSION,
-        profile_hash=approved["profile_hash"],
-        model=generated["model"],
-        harness="Hermes",
-    )
     # Stored before anything is posted: a Discord failure must not cost a second review.
     fastpath.store_review(application_id, cache_key, result)
     write_private(path, result)
     workflow.record(application_id, "qwen_job_review", result)
     workflow.flush_events(application_id)
+    return result
+
+
+def fit_context(approved: dict, item: dict, job_text: str, url: str, labels: list) -> dict:
+    """The fit review's input: what every job shares first, this job after it."""
+    static = {
+        "review_type": "job_fit",
+        "prompt_version": FIT_PROMPT_VERSION,
+        "profile": {
+            key: approved["profile"][key]
+            for key in ("identity", "education", "eligibility", "availability", "preferences")
+        },
+        "career_evidence": approved_evidence(approved["profile_hash"]),
+    }
+    dynamic = {
+        "expected_job_title": item["title"],
+        "job_url": url,
+        "job_text": job_text,
+        "form_questions": labels,
+    }
+    return static_first(system_prompt("job_fit"), static, dynamic)
+
+
+def fit_review(
+    application_id: str, approved: dict, item: dict, job_text: str, url: str, labels: list
+) -> dict:
+    """One model review of a posting, checked by code. Stores and posts nothing."""
+    directory = state_root() / "applications" / application_id
+    context = fit_context(approved, item, job_text, url, labels)
+    context_hash = fingerprint(
+        {k: v for k, v in context.items() if k not in ("form_questions", "cache_padding")}
+    )
+    generated, parsed = None, None
+    for attempt in range(2):
+        generated = generate(directory, context, "job-reasoning")
+        try:
+            parsed = JobReview.model_validate(load_json(completed_response(generated)))
+            break
+        except (ValueError, ValidationError) as error:
+            if attempt:
+                raise
+            # One retry with the defect named; a second bad answer is a failure.
+            context = {**context, "previous_output_problem": str(error)[:300]}
+    qwen_output = parsed.model_dump()
+    return {
+        "qwen_output": qwen_output,
+        **evaluate_review(qwen_output, approved["profile"], job_text),
+        "context_hash": context_hash,
+        "posting_hash": fastpath.posting_hash(job_text),
+        "prompt_version": FIT_PROMPT_VERSION,
+        "profile_hash": approved["profile_hash"],
+        "model": generated["model"],
+        "harness": generated.get("harness", "Hermes"),
+    }
+
+
+def fit_card_posted(application_id: str) -> bool:
+    with workflow.db() as conn:
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM application_events WHERE application_id=? "
+                "AND kind='qwen_job_review' LIMIT 1",
+                (application_id,),
+            ).fetchone()
+        )
+
+
+# The posting as it was keyed for the fit review, kept so a later review (a new profile
+# version or fit prompt) can run before the browser opens again.
+POSTING_FILE = "posting.json"
+
+
+def keep_posting(application_id: str, text: str, url: str):
+    if not text.strip():
+        return
+    path = state_root() / "applications" / application_id / POSTING_FILE
+    try:
+        if json.loads(path.read_text()).get("text") == text:
+            return
+    except (OSError, ValueError, AttributeError):
+        pass
+    write_private(path, {"text": text, "url": url, "captured_at": workflow.now()})
+
+
+def stored_posting(application_id: str) -> str:
+    """The posting text kept for this application, or "" when none is kept yet.
+
+    `posting.json` holds the text a fit review was keyed on. An application reviewed
+    before that file existed has the text in its last fit review input instead.
+    """
+    directory = state_root() / "applications" / application_id
+    for name, key in ((POSTING_FILE, "text"), ("job-reasoning-input.json", "job_text")):
+        try:
+            text = json.loads((directory / name).read_text()).get(key)
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(text, str) and text.strip():
+            return text[:12000]
+    return ""
+
+
+@timing.stage(None, "background_review")
+def prereview_job(application_id: str, job_text: str) -> dict | None:
+    """A fit review made while the worker waits, stored under the same key a pass reads.
+
+    Nothing is posted: the review reaches the thread with the application's first pass,
+    which uses it only when the posting it reads has this text's hash. None when the
+    application is no longer queued under the approved profile, or already reviewed.
+    """
+    approved = read_approved()
+    item = workflow.get(application_id)
+    if item["status"] != "QUEUED" or approved["profile_hash"] != item["profile_hash"]:
+        return None
+    cache_key = fastpath.review_key(job_text, approved["profile_hash"], FIT_PROMPT_VERSION)
+    if fastpath.stored_review(application_id, cache_key):
+        return None
+    timing.note(changed=fastpath.review_change(application_id, cache_key))
+    result = fit_review(application_id, approved, item, job_text, item["url"], [])
+    result["background"] = True
+    fastpath.store_review(application_id, cache_key, result)
+    write_private(state_root() / "applications" / application_id / "job-review.json", result)
     return result
 
 
@@ -724,17 +988,24 @@ def review_application(application_id: str, page: dict) -> dict:
     # What no written answer may carry: contact details, an undisclosed GPA, pay floors.
     # They are kept out of the context below and checked for in every draft after it.
     private = draft_guard.private_facts(profile, application_id)
-    context = {
-        "application_id": application_id,
+    # What every job of this profile version shares goes first, so the server reuses it.
+    static = {
+        "review_type": "answers",
         "prompt_version": PROMPT_VERSION,
+        "source_meaning": "keryx means discovered automatically in the Keryx GitHub jobs feed; this is trusted intake metadata, not a claimed employee referral",
+        "profile": draft_guard.drafting_profile(profile),
+        "career_evidence": draft_guard.scrub(approved_evidence(approved["profile_hash"]), private),
+    }
+    voice = vault.voice_samples()
+    if voice:
+        # The owner's own writing, bounded by the vault reader; a style sample the
+        # prompt must not copy or cite, never a source of facts.
+        static["owner_voice"] = draft_guard.scrub(voice, private)
+    dynamic = {
+        "application_id": application_id,
         "questions": questions,
         "intake_source": item["source"],
-        "source_meaning": "keryx means discovered automatically in the Keryx GitHub jobs feed; this is trusted intake metadata, not a claimed employee referral",
         "intake_url": draft_guard.scrub(item["source_url"], private),
-        "profile": draft_guard.drafting_profile(profile),
-        "career_evidence": draft_guard.scrub(
-            asyncio.run(career_evidence("TransferTrack OBI PayPals")), private
-        ),
         "owner_answers": {
             key: answer
             for key, answer in workflow.approved_answers(application_id).items()
@@ -743,11 +1014,6 @@ def review_application(application_id: str, page: dict) -> dict:
         # A form page can show the applicant's own details back (a review step).
         "job_context": draft_guard.scrub(page.get("text", "")[:5500], private),
     }
-    voice = vault.voice_samples()
-    if voice:
-        # The owner's own writing, bounded by the vault reader; a style sample the
-        # prompt must not copy or cite, never a source of facts.
-        context["owner_voice"] = draft_guard.scrub(voice, private)
     research = quoted_research(
         company_context(application_id, posting_text_for(directory, page), item["url"])
     )
@@ -756,12 +1022,12 @@ def review_application(application_id: str, page: dict) -> dict:
         # Public text from the employer's own site, bounded, stripped of anything that
         # reads as an instruction and handed over as quoted sentences. It steers a "why
         # this company" draft; it is never a fact about the applicant.
-        context["company_research"] = research
+        dynamic["company_research"] = research
     directions = directory / "owner-context.json"
     if directions.exists():
-        context["owner_directions"] = draft_guard.scrub(json.loads(directions.read_text()), private)
-    context = fit_budget(context)
-    context_hash = fingerprint(context)
+        dynamic["owner_directions"] = draft_guard.scrub(json.loads(directions.read_text()), private)
+    context = static_first(system_prompt("answers"), static, dynamic)
+    context_hash = fingerprint({k: v for k, v in context.items() if k != "cache_padding"})
     cached_path = directory / "answer-proposals.json"
     if cached_path.exists():
         cached = json.loads(cached_path.read_text())
@@ -796,6 +1062,8 @@ def review_application(application_id: str, page: dict) -> dict:
                 if attempt:
                     raise
                 context = {**context, "previous_output_problem": str(error)[:300]}
+    except ModelUnavailable:
+        raise  # the queue waits for the server; nothing to tell the owner
     except Exception as error:
         workflow.record(
             application_id,
@@ -807,7 +1075,7 @@ def review_application(application_id: str, page: dict) -> dict:
     result.update(
         approved=False,
         model=generated["model"],
-        harness="Hermes",
+        harness=generated.get("harness", "Hermes"),
         profile_hash=page["profile_hash"],
         context_hash=context_hash,
         prompt_version=PROMPT_VERSION,
