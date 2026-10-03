@@ -113,12 +113,12 @@ def _note(key: tuple, response: httpx.Response):
 
 
 def _replayable(method: str, payload, error: httpx.TransportError) -> bool:
-    """Whether one more try cannot post twice: nothing reached Discord, or the request is
-    idempotent, or Discord itself drops a repeated nonce."""
-    if isinstance(error, httpx.ConnectError | httpx.ConnectTimeout | httpx.PoolTimeout):
-        return True
-    if isinstance(error, httpx.ReadTimeout | httpx.WriteTimeout):
-        return False  # it may have been applied; a timed-out call is not paid for twice
+    """Whether to try once more at once: only a kept-alive connection that went stale
+    (Discord closed it while idle, or the Mac slept), and only when a second try cannot
+    post twice: the request is idempotent, or Discord drops a repeated nonce. No
+    connection at all is an outage, and a timeout is not paid for twice."""
+    if not isinstance(error, httpx.RemoteProtocolError | httpx.ReadError | httpx.WriteError):
+        return False
     if method in {"GET", "PATCH", "DELETE", "PUT"}:
         return True
     return isinstance(payload, dict) and bool(payload.get("enforce_nonce"))

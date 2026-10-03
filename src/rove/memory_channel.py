@@ -1365,8 +1365,9 @@ def read(channel: str, owner: str):
             continue
         handle(str(message["id"]), text)
     if messages or not checkpoint:
-        empty_cursor = str((int(datetime.now(UTC).timestamp() * 1000) - 1420070400000) << 22)
-        newest = max(messages, key=lambda m: int(m["id"]))["id"] if messages else empty_cursor
+        from .discord_feed import empty_cursor  # Discord's clock, never this Mac's
+
+        newest = max(messages, key=lambda m: int(m["id"]))["id"] if messages else empty_cursor()
         with db() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO workflow_checkpoints VALUES(?,?)", (channel, str(newest))
