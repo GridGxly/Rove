@@ -1,6 +1,6 @@
 # Browser automation
 
-Rove fills application forms in a Chrome instance of its own. Code observes the page, resolves fields from approved data, fills them, and reads the values back. Qwen is asked only about questions the approved data does not answer. It never drives the browser.
+Rove fills application forms in a browser of its own: the Rove Browser, a copy of the owner's Google Chrome under its own name. Code observes the page, resolves fields from approved data, fills them, and reads the values back. Qwen is asked only about questions the approved data does not answer. It never drives the browser.
 
 The path of a whole application, including sending, is in [Application workflow](application-workflow.md).
 
@@ -12,13 +12,49 @@ The socket accepts ten actions: `open`, `observe`, `follow`, `prepare`, `registe
 
 The worker is the daemon's normal client. If the socket is missing, the worker asks launchd to start the service and waits for it.
 
-## The recruiting Chrome
+The service starts at login, but the browser does not. The first action that needs it (`open`, `observe`, `follow`, `prepare`, `register`, `login`, `reopen` or `submit`) launches it; `status` and `close` only reconnect to a browser that is already running. After a reboot there is no Rove Browser until a job starts.
 
-The daemon starts Google Chrome as a separate app instance with a dedicated profile under `browser/recruiting-profile` in the state root, and a DevTools port on localhost. It then connects to that port with [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python), a Playwright fork. Because the daemon starts Chrome itself, the browser runs without an automation flag. When `browser_app` is not `chrome`, or Chrome is not installed, Patchright's Chrome for Testing is used.
+## The Rove Browser
 
-Keep this profile for recruiting only. It should hold no banking sessions, no personal password manager and no browser sync.
+The recruiting browser used to be `/Applications/Google Chrome.app` itself, started with a separate profile. macOS treats every instance of one app bundle as the same app, so a click on Chrome in the Dock, or a link opened from another app, could land in the recruiting profile. The owner saw his own Chrome open with the recruiting profile's shortcuts and a sign-in prompt.
 
-Chrome is launched once, when the service starts. Launching brings Chrome to the front, so the daemon notes which app had focus and hands focus back for a few seconds afterward. This needs no macOS permission.
+The recruiting browser is now its own app. `rove browser install` copies `/Applications/Google Chrome.app` to `browser/Rove Browser.app` in the state root and changes only its identity:
+
+- `CFBundleIdentifier` becomes `dev.rove.browser`, `CFBundleName` and `CFBundleDisplayName` become `Rove Browser`.
+- `Contents/Resources/app.icns` is replaced with Rove's icon, built from `src/rove/assets/rove-app-icon.png` with `sips` and `iconutil`, and `CFBundleIconName` is dropped so the icon file applies instead of Chrome's asset catalog. The Dock shows the ring mark.
+- `KSUpdateURL`, `KSVersion` and `KSBrandID` are removed. Chrome registers with Google's updater only when those are present, so the copy is never updated or touched by it. `KSProductID` and `KSChannelID` stay: Chrome reads its channel from them, and without them it reports an unknown channel.
+- The framework versions that Chrome keeps around after an update are dropped; only the one the binary loads stays.
+- Every other key, the framework and the helper apps are untouched.
+
+The copy is then signed ad hoc, deepest code first. Chrome's own signature carries entitlements that need Google's certificate (the application identifier, keychain groups, `com.apple.developer.*`) and the hardened runtime with library validation; a binary that keeps any of them under an ad-hoc signature is killed at launch, so the copy keeps neither. Nested code keeps its identifiers. `codesign --verify --deep --strict` must pass before the copy replaces the previous one. Nothing is downloaded, and the whole build takes a few seconds because the copy is a clone on APFS.
+
+A record in `browser/rove-browser.json` holds the Chrome version the copy was built from, the source path and the time. `rove browser status` names the app in use, its version and whether it is the shared Chrome. `rove browser install --check` reports without building, and a second `install` on the same Chrome version does nothing.
+
+### Same binary, same fingerprint
+
+The copy is the owner's Chrome: the same engine, version, codecs, Widevine module and component set, started with the same flags. That matters because sites that block automation compare what they see with real Chrome, and a different build (Chrome for Testing, for example, lacks Widevine and has its own brand strings) is a tell.
+
+Parity was checked on the reference Mac with stock Chrome and the copy each in a fresh profile, both driven through Patchright over the DevTools port on a local page: `navigator.userAgent`, `userAgentData.brands` and the high-entropy values (`fullVersionList`, `platformVersion`, `architecture`, `model`, `uaFullVersion`, `bitness`), plugin and MIME lists, `pdfViewerEnabled`, WebGL vendor and renderer, `requestMediaKeySystemAccess("com.widevine.alpha")`, `navigator.webdriver`, `window.chrome`, screen, time zone, languages, hardware concurrency, device memory, codec support, a canvas hash and the CDP version were identical. The public bot-detection pages used for the project's earlier check report the copy the same way they report stock Chrome.
+
+### Following Chrome updates
+
+Chrome updates itself; the copy does not. At every daemon start and before every launch the daemon compares `CFBundleShortVersionString` of `/Applications/Google Chrome.app` with the record and rebuilds the copy when they differ, with one line in `system-log`. It never rebuilds while the Rove Browser is running; `rove browser status` then shows the lag, and the rebuild happens after the browser quits. `rove browser install` does the same by hand.
+
+### The profile
+
+The Rove Browser opens `browser/recruiting-profile-rove` in the state root. It is launched with `--use-mock-keychain`: a bundle the Keychain has never seen would otherwise ask for "Chrome Safe Storage" at every start. With the flag, the profile's cookies and passwords are encrypted with a fixed key, which is acceptable for an isolated recruiting profile protected by its own permissions. Because that changes how stored cookies are encrypted, the copy does not reuse the old `browser/recruiting-profile`; that folder is left as it is.
+
+Keep the profile for recruiting only. It should hold no banking sessions, no personal password manager and no browser sync.
+
+### The shared Chrome, by name only
+
+`browser_app: "shared-chrome"` in the private workflow config runs `/Applications/Google Chrome.app` the old way, with the old `recruiting-profile` and without the mock keychain. The daemon then writes one warning line to `system-log` and to its error log at every start, because the Dock problem above is back. Nothing falls back to the shared Chrome on its own: when the Rove Browser is missing, the daemon fails with "run `rove browser install`".
+
+When the daemon starts and finds a recruiting profile held by a browser that is not the configured app (the shared Chrome from before the switch), it stops that instance with SIGTERM, Chrome's clean shutdown, so the configured app can take over. The holder is read from the profile's own lock file.
+
+### Launching and tabs
+
+The daemon starts the app as a separate instance with `open`, with a DevTools port on localhost, and connects to that port with [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python), a Playwright fork. Because the daemon starts the browser itself, it runs without an automation flag. Launching brings the browser to the front for a moment, so the daemon notes which app had focus and hands focus back for a few seconds afterward. This needs no macOS permission.
 
 Every application gets its own tab, created in the background through the DevTools protocol. Tabs do not take focus. The window stays behind the owner's work and can be opened from the Dock.
 
@@ -26,9 +62,11 @@ Every application gets its own tab, created in the background through the DevToo
 - At most `max_open_tabs` tabs stay open (default 5). The oldest is closed first, and a closed tab reopens on `go`.
 - The browser outlives the daemon. After a restart the daemon reconnects to the same port, keeps the tabs that belong to applications still waiting, and closes the rest.
 
-Drive that Chrome with one client only. During development a second Playwright client attached to the same instance stalled it.
+Drive that browser with one client only. During development a second Playwright client attached to the same instance stalled it.
 
-After changing browser code, restart the service with `launchctl kickstart -k gui/$UID/dev.rove.browser`. The Chrome window and its tabs survive.
+After changing browser code, restart the service with `launchctl kickstart -k gui/$UID/dev.rove.browser`. The browser window and its tabs survive.
+
+Patchright's own Chromium build, installed by `patchright install chromium`, runs the tests and the synthetic fixture only. It is never the recruiting browser.
 
 ### Pacing
 
@@ -145,7 +183,7 @@ Sending checks the live page against this package field by field. See [Applicati
 
 ## The submit guard
 
-Every page in the recruiting Chrome gets a script that blocks form submission events unless a flag on the document is set. Submission code sets the flag for one click and removes it afterward. The guard stops accidental submits during preparation, including the Enter key in a field. It is not a network-level guarantee against a page script that posts on its own.
+Every page in the Rove Browser gets a script that blocks form submission events unless a flag on the document is set. Submission code sets the flag for one click and removes it afterward. The guard stops accidental submits during preparation, including the Enter key in a field. It is not a network-level guarantee against a page script that posts on its own.
 
 ## Sign-in and account pages
 
@@ -175,7 +213,7 @@ Keep Qwen out of mechanics. A known field with an approved value, a checkbox alr
 
 Keep the daemon's actions narrow. The model and the Hermes agent must not receive Playwright, DevTools, JavaScript, shell or filesystem execution, even though the daemon uses those APIs itself.
 
-Wait for a concrete state with a bound. The code's fixed pauses are the pacing pauses, short polls while Chrome launches or a place picker loads, and the pause before retrying a blocked site.
+Wait for a concrete state with a bound. The code's fixed pauses are the pacing pauses, short polls while the browser launches or a place picker loads, and the pause before retrying a blocked site.
 
 Add a site-specific adapter only when repeated evidence justifies it, keep it small and versioned, and keep the generic path working. An adapter may recognise a site, read its widgets and verify a result. It must not bypass authentication, weaken the destination checks, invent an answer, or bypass the package and the submission checks.
 

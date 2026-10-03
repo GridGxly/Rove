@@ -24,7 +24,7 @@ uv sync
 uv run patchright install chromium
 ```
 
-The last command installs Patchright's Chromium build. The synthetic fixture and the browser tests use it. The recruiting browser uses Google Chrome when it is installed and falls back to that build otherwise.
+The last command installs Patchright's Chromium build. The synthetic fixture and the browser tests use it. The recruiting browser is a copy of your own Google Chrome, built in step 12; Google Chrome must be installed at `/Applications/Google Chrome.app`.
 
 Keep hardware-specific changes in your own clone or fork.
 
@@ -119,15 +119,18 @@ Create `config/workflow.json` and `config/feed.json` in the state root from the 
 - leave `submission_enabled`, `auto_submit` and `auto_use_drafts` unset
 - set `enabled` to `false` in `feed.json` until you want feed jobs queued
 
-## 12. Install the services
+## 12. Build the Rove Browser and install the services
 
 ```sh
+uv run rove browser install
 uv run rove install-services
 uv run rove browser status
 uv run rove workflow status
 ```
 
-This installs the four launchd agents listed in [Requirements](requirements.md#services). The browser service starts the recruiting Chrome in the background. Its profile is separate from your everyday browser, and it should stay that way: no personal logins, no password manager, no sync.
+`rove browser install` copies `/Applications/Google Chrome.app` to `browser/Rove Browser.app` in the state root under its own bundle id, name and icon, so clicking Chrome in the Dock or opening a link from another app never lands in the recruiting profile. Nothing is downloaded; the copy is the same binary as your Chrome and is rebuilt by the browser service when Chrome updates. [Browser automation](browser-automation.md#the-rove-browser) has the details.
+
+The second command installs the four launchd agents listed in [Requirements](requirements.md#services). The browser service starts at login and opens the Rove Browser in the background when the first application needs it. Its profile is separate from your everyday browser, and it should stay that way: no personal logins, no password manager, no sync.
 
 To stop a service, unload it:
 
@@ -145,7 +148,7 @@ Paste a job link in `agent-control`, or queue it from the shell:
 uv run rove workflow enqueue --url https://jobs.example.com/internship
 ```
 
-The worker picks it up on a following tick and opens a forum thread. Follow it there: the job-fit card, the resume, the filled form, the drafts and any question for you. With submission off, a complete form ends with a "Ready · send it yourself" card, and you press Submit in the recruiting Chrome.
+The worker picks it up on a following tick and opens a forum thread. Follow it there: the job-fit card, the resume, the filled form, the drafts and any question for you. With submission off, a complete form ends with a "Ready · send it yourself" card, and you press Submit in the Rove Browser.
 
 Check the filled values against what you approved. Read [Application workflow](application-workflow.md) for what each stop means and [Discord](discord.md#replies) for the replies.
 
@@ -170,7 +173,7 @@ uv run rove install-services
 launchctl kickstart -k gui/$UID/dev.rove.browser
 ```
 
-The last command restarts the browser daemon so it runs the new code. The Chrome window and its tabs survive. After updating Hermes, review and reapply the 16K patch. After updating Erga, follow the recipe in [Requirements](requirements.md#which-erga-to-install).
+The last command restarts the browser daemon so it runs the new code. The Rove Browser window and its tabs survive. When Google Chrome itself updates, the daemon rebuilds the Rove Browser from it on its own, once the browser is not running; `uv run rove browser install` does the same by hand. After updating Hermes, review and reapply the 16K patch. After updating Erga, follow the recipe in [Requirements](requirements.md#which-erga-to-install).
 
 ## Where to look when something is wrong
 

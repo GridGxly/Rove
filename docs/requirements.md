@@ -23,8 +23,8 @@ Different hardware may need a smaller context window, another quantization or an
 | Tectonic 0.17.0 | resume compilation | `~/.local/bin/tectonic` |
 | Obsidian, or any Markdown vault | the approved profile and readable notes | a folder outside the checkout |
 | QMD, with Node.js 22 or newer | search over the approved profile copy | `~/.local/share/rove/qmd` |
-| Google Chrome | the recruiting browser | `/Applications/Google Chrome.app` |
-| Patchright's Chromium build | the synthetic fixture and the browser tests, and the recruiting browser when Google Chrome is absent | installed by `uv run patchright install chromium` |
+| Google Chrome | the source of the Rove Browser: `rove browser install` copies it under the state root with its own bundle id and Rove's icon. The owner's own Chrome is never used | `/Applications/Google Chrome.app` |
+| Patchright's Chromium build | the synthetic fixture and the browser tests only | installed by `uv run patchright install chromium` |
 | [Unslop](https://github.com/theclaymethod/unslop) clone, optional | its scanners for draft cleanup | the folder named by `unslop_path` |
 
 Rove's Python dependencies are locked in `uv.lock`: `httpx`, `pydantic`, `mcp`, `pyyaml`, `psutil`, `patchright` and `cryptography`. [Local runtime](local-runtime.md) lists the tested versions of everything above.
@@ -111,8 +111,8 @@ Configuration is a handful of private JSON files and one env file under `config/
 | `max_submissions_per_day` | `10` | Cap on submission attempts per UTC day under `auto_submit`. |
 | `min_minutes_between_submissions` | `8` | Minimum gap after the last attempt under `auto_submit`. |
 | `max_waiting_applications` | `1` | How many applications may wait on the owner before the worker stops starting feed jobs. |
-| `browser_app` | `chrome` | `chrome` for Google Chrome. Any other value uses Chrome for Testing. |
-| `max_open_tabs` | `5` | Tabs kept open in the recruiting Chrome. |
+| `browser_app` | unset | Leave unset for the Rove Browser. `shared-chrome` runs `/Applications/Google Chrome.app` itself, with the old profile and a warning in `system-log` at every daemon start. |
+| `max_open_tabs` | `5` | Tabs kept open in the Rove Browser. |
 | `human_pacing` | `true` | Paced typing, clicks and navigation. |
 | `unslop_path` | none | A local Unslop clone whose scanners replace the built-in Unslop list. |
 
@@ -245,7 +245,7 @@ The variable names are safe to document. Their values are not, the refresh token
 
 | Service | Runs | Schedule |
 | --- | --- | --- |
-| `dev.rove.browser` | `rove browser serve` | at login, long-running |
+| `dev.rove.browser` | `rove browser serve` | at login, long-running; the browser itself opens with the first job |
 | `dev.rove.feed` | `rove feed tick` | every 15 minutes |
 | `dev.rove.workflow` | `rove workflow tick` | every 30 seconds |
 | `dev.rove.mail` | `rove mail tick` | every 15 minutes |
@@ -253,6 +253,8 @@ The variable names are safe to document. Their values are not, the refresh token
 Each agent runs the checkout's `.venv/bin/rove` with a fixed `PATH` and `ROVE_STATE_DIR`, and writes `<name>.out.log` and `<name>.err.log` under `logs/` in the state root. Running the installer again leaves an unchanged, loaded service alone and reloads one whose definition changed.
 
 Each timed service checks its own switch on every run, so an installed service does nothing until its config file enables it.
+
+The browser service needs the Rove Browser, built once with `uv run rove browser install` from your installed Google Chrome. The copy lives at `browser/Rove Browser.app` in the state root and is rebuilt by the daemon when Chrome updates. [Browser automation](browser-automation.md#the-rove-browser) describes what the copy changes and what it keeps.
 
 ## Hermes
 
@@ -268,7 +270,7 @@ Employer accounts are created only when a board requires one and you reply `crea
 
 ## macOS permissions
 
-Rove's code asks for no Accessibility, Screen Recording or Full Disk Access permission. The daemon starts Chrome with `open` and reads the frontmost app with `lsappinfo`, and screenshots come from Chrome itself. macOS may still ask for folder access if the vault sits in a protected folder such as Documents.
+Rove's code asks for no Accessibility, Screen Recording or Full Disk Access permission. The daemon starts the Rove Browser with `open` and reads the frontmost app with `lsappinfo`, and screenshots come from the browser itself. `rove browser install` uses `ditto`, `sips`, `iconutil`, `codesign` and `xattr`, which need no permission either. macOS may still ask for folder access if the vault sits in a protected folder such as Documents.
 
 Do not grant a broad permission because a tool asks for it. If a future feature needs one, it should document the reason and scope.
 
@@ -278,13 +280,13 @@ The stack is local-first, not offline. A normal run reaches:
 
 - Discord's API
 - GitHub, for the Keryx job list
-- employer and applicant-tracking sites, in the recruiting Chrome
+- employer and applicant-tracking sites, in the Rove Browser
 - employer home pages, for company research
 - Zoho's API, when mail tracking is on
 
 Setup also downloads dependencies, the model weights and QMD's helper models.
 
-The model server listens on `127.0.0.1` only. The browser daemon listens on a Unix socket, and Chrome's DevTools port is bound to localhost. Anything running as your macOS user can reach those, which is why the local account is trusted in this design.
+The model server listens on `127.0.0.1` only. The browser daemon listens on a Unix socket, and the Rove Browser's DevTools port is bound to localhost. Anything running as your macOS user can reach those, which is why the local account is trusted in this design.
 
 ## Data Rove does not handle
 
