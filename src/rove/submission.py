@@ -725,7 +725,7 @@ def fill_hold(application_id: str, url: str, conn=None) -> dict | None:
         return _card(
             "MANUAL_TAKEOVER",
             "This site cannot take the application",
-            f"The form lives on `{host}`, and {never}. Rove will not enter your details "
+            f"The form lives on `{host}`, and {never}. I will not enter your details "
             "there. If you still want this one, apply in your own browser and reply "
             "`applied`; otherwise `park it`.",
             ["applied", "park it"],
@@ -764,7 +764,7 @@ def fill_hold(application_id: str, url: str, conn=None) -> dict | None:
     return _card(
         "NEEDS_USER",
         "First time on this site",
-        f"Rove has not applied on `{host}` before, and it is not one of the job boards I "
+        f"I have not applied on `{host}` before, and it is not one of the job boards I "
         "know. This first application there waits for you; nothing was entered. Reply "
         "`go` to fill and send it (later jobs on this site go on their own), or `park it`.",
         ["go", "park it"],

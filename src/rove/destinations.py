@@ -432,13 +432,21 @@ SHARED_HOSTS = frozenset(
         "glitch.me",
         "surge.sh",
         "azurewebsites.net",
+        "azurestaticapps.net",
         "appspot.com",
+        "run.app",
+        "cloudfunctions.net",
+        "elasticbeanstalk.com",
         "cloudfront.net",
+        "pythonanywhere.com",
+        "000webhostapp.com",
         "trycloudflare.com",
         "ngrok.io",
         "ngrok.app",
         "ngrok-free.app",
+        "ngrok-free.dev",
         "loca.lt",
+        "serveo.net",
         # Object storage
         "amazonaws.com",
         "s3.amazonaws.com",
@@ -454,6 +462,7 @@ SHARED_HOSTS = frozenset(
         "wixsite.com",
         "squarespace.com",
         "wordpress.com",
+        "weebly.com",
         "blogspot.com",
         "substack.com",
         "carrd.co",
@@ -469,6 +478,10 @@ SHARED_HOSTS = frozenset(
         "dropbox.com",
         "jotform.com",
         "tally.so",
+        "wufoo.com",
+        "formsite.com",
+        "formspree.io",
+        "hsforms.com",
         "formstack.com",
         "cognitoforms.com",
         "paperform.co",
@@ -522,10 +535,17 @@ NON_PUBLIC_TLDS = frozenset(
     }
 )
 LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+# The registry's own second level under a country code ("co.uk", "com.au"): a suffix that
+# names nobody, never a site of its own.
+REGISTRY_LABELS = frozenset({"co", "com", "net", "org", "ac", "edu", "gov", "gob", "ne", "or"})
 
 
 def _under(host: str, domains: Iterable[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def _bare_suffix(labels: list[str]) -> bool:
+    return len(labels) == 2 and len(labels[1]) == 2 and labels[0] in REGISTRY_LABELS
 
 
 def ineligible(url: str) -> str:
@@ -561,6 +581,7 @@ def ineligible(url: str) -> str:
         or not all(LABEL.fullmatch(label) for label in labels)
         or labels[-1] in NON_PUBLIC_TLDS
         or not (re.fullmatch(r"[a-z]{2,24}", labels[-1]) or labels[-1].startswith("xn--"))
+        or _bare_suffix(labels)
     ):
         return "it is not a public site name"
     if any(pattern.fullmatch(host) for pattern in STORAGE_PATTERNS) or _under(host, SHARED_HOSTS):

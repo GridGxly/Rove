@@ -298,7 +298,7 @@ def test_a_feed_job_on_a_site_off_the_table_waits_once_per_host_for_go(state):
     )
     # The hold is a plain-word error for the browser daemon and the one click.
     words = submission.fill_hold_words(other, "https://jobs.contoso-robotics.com/openings/7")
-    assert owner_words(words).startswith("Rove has not applied on")
+    assert owner_words(words).startswith("I have not applied on")
 
 
 def test_links_the_owner_decided_on_never_wait_and_make_the_site_familiar(state):
@@ -389,6 +389,10 @@ def test_the_off_policy_holds_nothing_but_still_refuses_hosts_that_never_qualify
         ("https://storage.googleapis.com/northwind/apply.html", "hosting that anyone can rent"),
         ("https://docs.google.com/forms/d/e/1FAIpQLSd/viewform", "hosting that anyone can rent"),
         ("https://northwind-labs.notion.site/apply", "hosting that anyone can rent"),
+        ("https://apply-northwind-abc123-uc.a.run.app/", "hosting that anyone can rent"),
+        ("https://northwind.wufoo.com/forms/apply/", "hosting that anyone can rent"),
+        ("https://co.uk/apply", "not a public site name"),
+        ("https://com.au/jobs/1", "not a public site name"),
         ("https://bit.ly/3xyz", "link shortener"),
         ("https://grnh.se/abc123", "link shortener"),
         ("https://apply.northwind.local/", "not a public site name"),
@@ -426,6 +430,8 @@ def test_boards_and_employer_sites_are_eligible():
         GREENHOUSE,
         OFF_TABLE,
         "https://careers.northwind-labs.co.uk/jobs/1",
+        "https://northwind.co.uk/jobs/1",
+        "https://go.dev/careers/1",
         "https://xn--nrdlabs-9wa.de/jobs/1",
         "https://recruiting.ultipro.com/NOR1001/JobBoard/abc/OpportunityDetail?opportunityId=1",
         "https://northwind.wd5.myworkdayjobs.com/External/job/x_R1",
@@ -444,7 +450,7 @@ def test_the_one_click_refuses_a_form_on_a_site_the_owner_never_let_in(state, mo
     auto = worker.queue_auto_submit(app, package_hash)
     with pytest.raises(PermissionError) as refused:
         submission.claim_attempt(app, package_hash, auto)
-    assert owner_words(str(refused.value)).startswith("Rove has not applied on")
+    assert owner_words(str(refused.value)).startswith("I have not applied on")
     assert attempts() == [] and workflow.get(app)["status"] == "READY_FOR_REVIEW"
     went_ahead(app)
     workflow.set_state(app, "READY_FOR_REVIEW", package_hash=package_hash)
@@ -1375,7 +1381,7 @@ def test_an_apply_link_to_another_site_is_not_followed(board, site, monkeypatch)
     ]
     for link, why in zip(
         opened["application_links"],
-        ("not a public site name", "hosting that anyone can rent", "Rove has not applied on"),
+        ("not a public site name", "hosting that anyone can rent", "I have not applied on"),
         strict=True,
     ):
         with pytest.raises(PermissionError) as refused:
@@ -1482,7 +1488,7 @@ def test_a_form_off_the_board_table_is_filled_and_sent_once_the_site_is_familiar
     )
     held = runtime.prepare(run_id)
     assert held["status"] == "NEEDS_EMPLOYER_LINK"
-    assert held["reason"].startswith("Rove has not applied on `127.0.0.1` before")
+    assert held["reason"].startswith("I have not applied on `127.0.0.1` before")
     assert runtime.page.locator("#f").input_value() == ""  # nothing was typed
     assert runtime.page.locator("#e").input_value() == ""
     assert not (directory / "package.json").exists()
