@@ -792,7 +792,7 @@ def seed_feed(state, monkeypatch, config: dict, count: int) -> list:
                 "company": "Example Labs",
                 "title": "Software Intern",
                 "program": "internship",
-                "location": "Remote",
+                "location": f"Town {index}, TX",
                 "url": f"https://jobs.example.com/batch/{index}",
                 "cycle": "summer-2027",
             }

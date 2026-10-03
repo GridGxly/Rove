@@ -7,12 +7,14 @@ a list of recorded calls, and dates are built from today so the suite does not a
 
 import inspect
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 
 from rove import discord_feed, intake, jobs, worker, workflow
-from rove.onboarding import approve, digest, draft, propose
+from rove.onboarding import approve, digest, draft, propose, vault_note
 
 NOW = datetime.now().astimezone().date()
 SUMMER = f"summer-{NOW.year + 1}"
@@ -665,13 +667,21 @@ def test_an_expired_digest_is_withdrawn_and_its_open_lines_return_with_new_numbe
     with pytest.raises(ValueError, match="No list is open right now"):
         intake.digest_reply(owner("2 yes"), "owner", "short")
     assert len(queue()) == 1
-    # Lines nobody answers lapse after the keep window instead of returning forever.
+    # Lines shown and left unanswered lapse after the keep window instead of returning
+    # forever; a line that was never shown is not dropped for waiting its turn.
     with workflow.db() as conn:
         conn.execute(
-            "UPDATE intake_decisions SET status='digest',decided_at='2020-01-01T00:00:00+00:00'"
+            "UPDATE intake_decisions SET status='digest',decided_at='2020-01-01T00:00:00+00:00',"
+            "offered_at='2020-01-01T00:00:00+00:00'"
         )
+        conn.execute("UPDATE intake_decisions SET offered_at=NULL WHERE job_id='job_fw'")
     intake.run_digest({}, now=tomorrow + timedelta(days=1))
-    assert set(decisions().values()) == {"lapsed"}
+    assert decisions() == {
+        "job_ml": "lapsed",
+        "job_it": "lapsed",
+        "job_qa": "lapsed",
+        "job_fw": "offered",
+    }
 
 
 def test_the_worker_reads_digest_replies_before_anything_else_in_the_shortlist(
@@ -1199,3 +1209,404 @@ def test_the_platform_column_is_added_once_and_old_attempts_are_kept(state):
         json.dumps({"page": {"url": "https://jobs.lever.co/example/role-one/apply"}})
     )
     assert intake.attempt_platform(old, workflow.get(old)["url"]) == "lever"
+
+
+# --- the database under load -------------------------------------------------
+
+
+def test_the_database_runs_in_wal_mode_and_the_import_commits_in_chunks(
+    state, monkeypatch, tmp_path
+):
+    with jobs.database() as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    with jobs.database() as db:  # switched once; every later connection just reads it
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    monkeypatch.setattr(jobs, "IMPORT_CHUNK", 2)
+    path = snapshot(
+        tmp_path / "keryx.json", *(job(f"c{n}", location=f"Town {n}, TX") for n in range(5))
+    )
+    real = jobs.import_row
+    calls = []
+
+    def interrupted(db, record, *rest):
+        calls.append(record.id)
+        if len(calls) == 3:
+            # Between chunks another writer (the worker) gets in at once, no waiting.
+            other = sqlite3.connect(state / "recruiting.sqlite3", timeout=0)
+            other.execute("CREATE TABLE IF NOT EXISTS probe(x)")
+            other.execute("INSERT INTO probe VALUES(1)")
+            other.commit()
+            other.close()
+        if len(calls) == 4:
+            raise RuntimeError("the import was cut short")
+        return real(db, record, *rest)
+
+    monkeypatch.setattr(jobs, "import_row", interrupted)
+    with pytest.raises(RuntimeError):
+        jobs.ingest(path, "a" * 40)
+    with jobs.database() as db:
+        # The first chunk stayed; the cut chunk left nothing; the revision is not recorded.
+        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 2
+        assert db.execute("SELECT COUNT(*) FROM job_sources").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM probe").fetchone()[0] == 1
+    monkeypatch.setattr(jobs, "import_row", real)
+    result = jobs.ingest(path, "a" * 40)
+    assert (result["new"], result["unchanged"], result["imported"]) == (3, 2, 5)
+    with jobs.database() as db:
+        # Run again, the import repeats no event and records the revision last.
+        assert db.execute("SELECT COUNT(*) FROM job_events WHERE event='new'").fetchone()[0] == 5
+        assert db.execute("SELECT revision FROM job_sources").fetchone()[0] == "a" * 40
+
+
+# --- the pause switch and the hold brake --------------------------------------
+
+
+def system_lines(log) -> list[str]:
+    return [p["content"] for m, path, p in log if path == "/channels/sys/messages"]
+
+
+def test_feed_paused_holds_every_feed_job_and_says_so_once_a_day(state, monkeypatch):
+    log = channels(monkeypatch, auto_submit=True, feed_paused=True)
+    feed_app = queued("jobs.example.com/feed", 80)
+    assert worker.next_queued(1) is None
+    assert worker.next_queued(1) is None
+    paused = (
+        "`intake` · feed paused · 1 feed job waiting in the queue · your own links and picks "
+        "still go · set feed_paused to false to start them"
+    )
+    assert system_lines(log) == [paused]
+    # What the owner chose still runs.
+    picked = queued("jobs.example.com/picked", source=intake.OWNER_PICK)
+    assert worker.next_queued(1) == picked
+    workflow.set_state(picked, "DEFERRED")
+    # Attended sending is paused the same way, and the line is not said twice that day.
+    channels(monkeypatch, feed_paused=True)
+    assert worker.next_queued(1) is None
+    with workflow.db() as conn:
+        said = conn.execute("SELECT value FROM intake_marks WHERE name='feed_paused'").fetchone()
+    assert said[0] == datetime.now(UTC).strftime("%Y-%m-%d")
+    # Off (false or absent), the feed job goes.
+    channels(monkeypatch, auto_submit=True, feed_paused=False)
+    assert worker.next_queued(1) == feed_app
+    assert workflow.get(feed_app)["status"] == "QUEUED"
+
+
+def test_a_zero_or_absent_hold_limit_is_no_brake(state, monkeypatch):
+    for setting in ({"max_new_holds_per_day": 0}, {}):
+        log = channels(monkeypatch, auto_submit=True, **setting)
+        held_jobs = [queued(f"jobs.example.com/held{n}-{len(setting)}") for n in range(3)]
+        for application_id in held_jobs:
+            worker.held(application_id, "NEEDS_USER", "A question only you can answer.", "Answers")
+        waiting = queued(f"jobs.example.com/next-{len(setting)}", 80)
+        assert worker.next_queued(1) == waiting
+        assert not any("hold brake" in line for line in system_lines(log))
+        workflow.set_state(waiting, "DEFERRED")
+
+
+# --- feed failures ------------------------------------------------------------
+
+
+def test_three_failed_imports_raise_one_card_and_a_working_import_withdraws_it(state, monkeypatch):
+    log = channels(monkeypatch)
+    feed(state, monkeypatch)
+    failures = [
+        httpx.ConnectError("name resolution failed"),
+        ValueError("Unsupported Keryx schema/country; existing jobs were preserved"),
+        ValueError("Unsupported Keryx schema/country; existing jobs were preserved"),
+        ValueError("Unsupported Keryx schema/country; existing jobs were preserved"),
+    ]
+
+    def sync():
+        if failures:
+            raise failures.pop(0)
+        return {"changed_source": False}
+
+    monkeypatch.setattr(discord_feed, "sync_keryx", sync)
+    first = discord_feed.tick()
+    assert first["sync_failed"] == "ConnectError" and first["failures_in_a_row"] == 1
+    assert discord_feed.tick()["failures_in_a_row"] == 2
+    assert posts(log, "action") == [] and system_lines(log) == []
+    assert discord_feed.tick()["failures_in_a_row"] == 3
+    (card,) = [p["embeds"][0] for p in posts(log, "action")]
+    assert card["title"] == "The job feed stopped updating"
+    assert "shape I do not accept" in card["description"]
+    assert "ValueError" not in json.dumps(card) and "Keryx" not in json.dumps(card)
+    raised = (
+        "`intake` · feed · 3 imports failed in a row · last: ValueError · the job list arrived "
+        "in a shape I do not accept, so I kept the jobs I had · owner card posted"
+    )
+    assert system_lines(log) == [raised]
+    discord_feed.tick()  # a fourth failure: still one card, no new line
+    assert len(posts(log, "action")) == 1 and len(system_lines(log)) == 1
+    recovered = discord_feed.tick()
+    assert "sync_failed" not in recovered
+    assert ("DELETE", "/channels/action/messages/w1", None) in log
+    assert system_lines(log)[-1] == "`intake` · feed · import works again · card withdrawn"
+    discord_feed.tick()
+    assert len(system_lines(log)) == 2 and len(posts(log, "action")) == 1
+
+
+# --- the same role through another board -------------------------------------
+
+
+def test_role_slots_compare_company_role_family_town_and_term():
+    slot = lambda record: intake.role_slot(record)
+    austin = slot(job("a", "Software Engineer Intern", location="Austin, TX"))
+    worded_otherwise = slot(
+        job(
+            "b",
+            "Backend Developer Internship",
+            company="Example Labs, Inc.",
+            location="Austin, Texas, United States",
+        )
+    )
+    assert intake.same_slot(austin, worded_otherwise)
+    assert not intake.same_slot(austin, slot(job("c", location="Denver, CO")))
+    assert not intake.same_slot(austin, slot(job("d", company="Globex Example")))
+    assert not intake.same_slot(austin, slot(job("e", "IT Intern")))
+    assert not intake.same_slot(austin, slot(job("f", cycle=f"fall-{NOW.year + 1}")))
+    assert intake.same_slot(austin, slot(job("g", cycle=None)))  # no term: cannot differ
+    assert intake.same_slot(
+        slot(job("h", location="Remote")), slot(job("i", location="Remote - US"))
+    )
+    assert slot(job("j", location="")) is None and slot(job("k", "Make it happen")) is None
+
+
+def test_the_same_role_through_another_board_is_not_queued_twice(state, monkeypatch, tmp_path):
+    log = channels(monkeypatch)
+    sent = feed(state, monkeypatch)
+    employer = job("site", "Software Engineer Intern", url="https://careers.example.com/jobs/77")
+    board = job(
+        "gh",
+        "Software Development Internship",
+        location="Austin, Texas",
+        url="https://boards.greenhouse.io/examplelabs/jobs/4000001",
+    )
+    elsewhere = job("den", "Backend Developer Intern", location="Denver, CO")
+    jobs.ingest(snapshot(tmp_path / "keryx.json", employer, board, elsewhere), "a" * 40)
+    result = discord_feed.tick()
+    assert (result["queued"], result["duplicates"], result["sent"]) == (3, 1, 2)
+    titles = sorted(p["embeds"][0]["title"] for p in posts(sent, "jobs"))
+    assert len(titles) == 2 and "Backend Developer Intern" in titles
+    assert len(queue()) == 2
+    with workflow.db() as conn:
+        (row,) = conn.execute(
+            "SELECT job_id,status,reason,application_id FROM intake_decisions "
+            "WHERE status='duplicate'"
+        ).fetchall()
+    assert row["job_id"] in {"job_site", "job_gh"}
+    assert row["reason"] == "same role, other place" and row["application_id"]
+    assert "1 same role already on your list through another board" in system_lines(log)[0]
+    # The owner may still choose that listing himself: nothing blocks his own link.
+    duplicate_url = employer["url"] if row["job_id"] == "job_site" else board["url"]
+    own = workflow.enqueue(duplicate_url, source="owner_link")
+    assert not own["already_exists"] and own["status"] == "QUEUED"
+
+
+def test_a_queued_feed_job_is_parked_once_its_role_is_sent_through_another_board(
+    state, monkeypatch, tmp_path
+):
+    channels(monkeypatch)
+    employer = job("site", "Software Engineer Intern", url="https://careers.example.com/jobs/77")
+    board = job(
+        "gh",
+        "Software Development Internship",
+        url="https://boards.greenhouse.io/examplelabs/jobs/4000001",
+    )
+    jobs.ingest(snapshot(tmp_path / "keryx.json", employer, board), "a" * 40)
+    first, second = (
+        workflow.enqueue(r["url"], source="keryx", title=f"Example Labs — {r['title']}")[
+            "application_id"
+        ]
+        for r in (employer, board)
+    )
+    assert worker.prune_excluded() == 0  # both only queued: the queue order decides
+    workflow.set_state(first, "PREPARING")
+    workflow.set_state(first, "APPLIED")
+    assert worker.prune_excluded() == 1
+    item = workflow.get(second)
+    assert item["status"] == "DEFERRED"
+    assert item["error"] == "the same role is already on your list through another board"
+
+
+# --- stale and closed postings ------------------------------------------------
+
+
+def test_stale_or_closed_feed_jobs_are_parked_before_the_browser_opens(
+    state, monkeypatch, tmp_path
+):
+    log = channels(monkeypatch)
+    fresh = job("fresh")
+    gone = job("gone", "Backend Developer Intern", location="Denver, CO")
+    old = job("old", "Mobile Developer Intern", location="Reno, NV")
+    jobs.ingest(snapshot(tmp_path / "keryx.json", fresh, gone, old), "a" * 40)
+    ids = {
+        r["id"]: workflow.enqueue(r["url"], source="keryx", title=f"Example Labs — {r['id']}")[
+            "application_id"
+        ]
+        for r in (fresh, gone, old)
+    }
+    own_old = workflow.enqueue("https://jobs.example.com/mine", source="owner_link")[
+        "application_id"
+    ]
+    month_ago = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    with workflow.db() as conn:
+        conn.execute(
+            "UPDATE application_queue SET created_at=? WHERE id IN (?,?)",
+            (month_ago, ids["job_old"], own_old),
+        )
+    # The feed reports one posting closed (no close pass ran for that revision).
+    jobs.ingest(
+        snapshot(tmp_path / "keryx.json", fresh, {**gone, "status": "closed"}, old), "b" * 40
+    )
+    assert worker.prune_excluded() == 2
+    status = {name: workflow.get(app) for name, app in ids.items()}
+    assert status["job_fresh"]["status"] == "QUEUED"
+    assert status["job_gone"]["error"] == "the posting closed in the job feed"
+    assert status["job_old"]["error"] == (
+        "waited in the queue over 21 days; the posting is likely stale"
+    )
+    assert workflow.get(own_old)["status"] == "QUEUED"  # the owner's own link is his call
+    assert system_lines(log)[-1].startswith("`intake` · parked 2 queued feed jobs · ")
+    # `feed_max_age_days: 0` keeps old feed jobs.
+    channels(monkeypatch, feed_max_age_days=0)
+    workflow.set_state(ids["job_old"], "QUEUED", error=None)
+    assert worker.prune_excluded() == 0
+    assert workflow.get(ids["job_old"])["status"] == "QUEUED"
+
+
+def test_a_posting_page_that_is_gone_reads_as_closed(tmp_path, monkeypatch):
+    from patchright.sync_api import sync_playwright
+
+    from rove import live_browser
+
+    gone = jobs.posting_gone
+    assert gone("Software Intern | Example Labs", 404) == "the posting page is gone"
+    assert gone("Software Intern | Example Labs", 410) == "the posting page is gone"
+    assert gone("Job not found | Example Labs", 200) == "the page title says “Job not found”"
+    assert gone("404 · Example Labs Careers", 200) == "the page title says “404”"
+    assert gone("Software Intern | Example Labs", 200) is None
+    assert gone("Software Intern", 0) is None
+    email = {"label": "Email", "name": "email", "kind": "email"}
+    search = {"label": "Search jobs", "name": "q", "kind": "text"}
+    assert gone("Page not found", 404, [email]) is None  # a form to fill is no dead page
+    assert gone("Page not found", 404, [search]) == "the posting page is gone"
+    assert gone("Careers", 404, [], [{"label": "Apply now"}]) is None
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(live_browser.workflow, "config", lambda: {"human_pacing": False})
+    pages = {
+        "gone": (404, "<title>Careers</title><p>Sorry, we could not find that.</p>"),
+        "missing": (200, "<title>Job not found | Example Labs</title><p>Try our search.</p>"),
+        "live": (200, "<title>Software Intern</title><p>About the role.</p>"),
+    }
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        def serve(route):
+            status, body = pages[route.request.url.rsplit("/", 1)[1]]
+            route.fulfill(status=status, content_type="text/html", body=body)
+
+        page.route("https://jobs.example.com/**", serve)
+        runtime = live_browser.RecruitingBrowser(headless=True)
+        runtime.page = page
+        runtime.run = {"id": "abcdef012345", "profile_hash": "x"}
+        seen = {}
+        for name in pages:
+            page.goto(f"https://jobs.example.com/{name}")
+            seen[name] = runtime.observe()
+        browser.close()
+    assert seen["gone"]["http_status"] == 404
+    assert (seen["gone"]["closed"], seen["gone"]["closed_marker"]) == (
+        True,
+        "the posting page is gone",
+    )
+    assert seen["missing"]["closed"] and not seen["missing"]["blocked"]
+    assert not seen["live"]["closed"] and seen["live"]["http_status"] == 200
+
+
+# --- a profile edited in the vault --------------------------------------------
+
+
+def test_a_vault_edit_stops_new_work_with_one_card_and_resumes_on_its_own(
+    state, monkeypatch, tmp_path
+):
+    log = channels(monkeypatch, auto_submit=True)
+    sent = feed(state, monkeypatch)
+    feed_app = queued("jobs.example.com/feed", 80)
+    pasted = queued("jobs.example.com/pasted", source="owner_link")
+    note = vault_note()
+    approved_text = note.read_text()
+    note.write_text(approved_text.replace("Example State University", "Example Tech"))
+    for _ in range(3):
+        assert worker.prune_excluded() == 0
+        assert worker.next_queued(1) is None
+    # One card, one line, and no failed card for any application.
+    (card,) = [p["embeds"][0] for p in posts(log, "action")]
+    assert card["title"] == "Your profile note changed and needs approval"
+    assert "Undo the edit in Obsidian" in card["description"]
+    assert feed_app not in json.dumps(card) and "hash" not in json.dumps(card).lower()
+    lines = system_lines(log)
+    assert len(lines) == 1 and lines[0].startswith("`intake` · profile does not validate · ")
+    assert {workflow.get(a)["status"] for a in (feed_app, pasted)} == {"QUEUED"}
+    # The feed keeps importing and decides nothing until the profile checks out.
+    jobs.ingest(snapshot(tmp_path / "keryx.json", job("new")), "a" * 40)
+    assert discord_feed.tick()["profile"] == "needs approval"
+    assert posts(sent, "jobs") == []
+    # Undone in the vault: the card leaves, work resumes, the feed catches up.
+    note.write_text(approved_text)
+    assert worker.next_queued(1) == pasted
+    assert ("DELETE", "/channels/action/messages/w1", None) in log
+    assert system_lines(log)[-1] == "`intake` · profile validates again · applications resume"
+    assert discord_feed.tick()["sent"] == 1
+    worker.next_queued(1)
+    assert len(posts(log, "action")) == 1
+
+
+# --- the digest beyond one card -----------------------------------------------
+
+
+def test_more_shows_the_next_batch_and_the_rest_carry_over_in_score_order(
+    state, monkeypatch, tmp_path
+):
+    channels(monkeypatch)
+    sent = feed(state, monkeypatch, digest_size=2)
+    jobs.ingest(snapshot(tmp_path / "keryx.json", *BORDERLINE), "a" * 40)
+    assert discord_feed.tick()["digest"] == 4
+    (first,) = posts(sent, "short")
+    card = first["embeds"][0]
+    assert [line.split(" · ")[0] for line in card["description"].split("\n")] == [
+        "1. **Umbrella Example**",
+        "2. **Example Labs**",
+    ]
+    assert card["fields"][0]["value"] == "```\n3 yes\n5 no\nall yes\nnone\nmore\n```"
+    assert card["footer"]["text"].startswith("2 more waiting · reply `more`")
+    assert intake.read_reply("More.") == "more" and intake.read_reply("show more") == "more"
+    assert intake.digest_reply(owner("more"), "owner", "short") is True
+    second = posts(sent, "short")[-1]["embeds"][0]
+    assert second["title"].endswith(" · 3–4")
+    assert [line.split(" · ")[0] for line in second["description"].split("\n")] == [
+        "3. **Globex Example**",
+        "4. **Hooli Example**",
+    ]
+    assert "more" not in second["fields"][0]["value"].split("\n")
+    # The first card is redrawn without `more`; numbers run on across both cards.
+    redrawn = [p for m, path, p in sent if m == "PATCH" and path == "/channels/short/messages/m1"]
+    assert "more" not in redrawn[-1]["embeds"][0]["fields"][0]["value"]
+    assert intake.digest_reply(owner("1 no, 3 yes"), "owner", "short") is True
+    assert queue() == [("Globex Example — QA Engineer Intern", "owner_pick", "QUEUED")]
+    with pytest.raises(ValueError, match="Nothing else is waiting right now"):
+        intake.digest_reply(owner("more"), "owner", "short")
+    # A reply on the second card applies to it alone.
+    with pytest.raises(ValueError, match="no number 2 on that list; it runs from 3 to 4"):
+        intake.digest_reply(
+            owner("2 yes", message_reference={"message_id": "m3"}), "owner", "short"
+        )
+    # Tomorrow, the unanswered lines come back first by score, numbered from one.
+    tomorrow = datetime.now().astimezone() + timedelta(days=1)
+    intake.run_digest({"digest_size": 2}, now=tomorrow)
+    fresh = posts(sent, "short")[-1]["embeds"][0]["description"].split("\n")
+    assert [line.split(" · ")[0] for line in fresh] == [
+        "1. **Example Labs**",
+        "2. **Hooli Example**",
+    ]

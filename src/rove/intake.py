@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlsplit
 
 import httpx
+import yaml
 
 from . import discord_feed, workflow
 from .jobs import identity_key, plain, plain_company, public_link
@@ -561,6 +562,10 @@ def ensure_tables(conn):
         basis TEXT NOT NULL, family TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS intake_marks(name TEXT PRIMARY KEY, value TEXT NOT NULL);
     """)
+    if "offered_at" not in {row[1] for row in conn.execute("PRAGMA table_info(intake_decisions)")}:
+        # When a digest line was first shown; another service may add it in the same moment.
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("ALTER TABLE intake_decisions ADD COLUMN offered_at TEXT")
 
 
 def mark(name: str) -> str | None:
@@ -585,7 +590,7 @@ def db():
 
 # A posting in one of these states has been put in front of the owner or the queue, so
 # the same role in another city is a sibling, not news.
-HANDLED = ("queued", "digest", "offered", "picked", "declined")
+HANDLED = ("queued", "digest", "offered", "picked", "declined", "duplicate")
 # States the owner never saw: a manual seed may score these again under the current rules.
 UNSEEN = ("capped", "dropped", "lapsed")
 
@@ -751,6 +756,7 @@ def log_counts(counts: dict, capped: int = 0):
             ("digest", "for the digest"),
             ("dropped", "dropped below the bar"),
             ("siblings", "same role elsewhere"),
+            ("duplicates", "same role already on your list through another board"),
             ("repeats", "already seen"),
         )
         if counts.get(key)
@@ -1002,9 +1008,13 @@ def hold_brake(conn, settings: dict, now: datetime) -> bool:
 
     Unattended runs no longer stop at the first holds, so this keeps one day from
     filling action-needed. Only holds on feed jobs count, and only feed jobs wait. The
-    first time it engages on a day, the system log gets one line.
+    first time it engages on a day, the system log gets one line. An absent or zero
+    `max_new_holds_per_day` is no brake at all; `feed_paused` is the switch that stops
+    the feed.
     """
-    limit = number(settings, "max_new_holds_per_day", 8)
+    limit = number(settings, "max_new_holds_per_day", 0)
+    if not limit:
+        return False
     today = now.strftime("%Y-%m-%d")
     names = [name for name in (*workflow.SOURCES, *workflow.SOURCE_ALIASES) if is_feed(name)]
     held = conn.execute(
@@ -1025,6 +1035,225 @@ def hold_brake(conn, settings: dict, now: datetime) -> bool:
             "tomorrow · your own links and picks still go",
         )
     return True
+
+
+FEED_PAUSED = "feed_paused"  # the mark holding the day the pause was last said
+
+
+def feed_paused(conn, settings: dict, now: datetime) -> bool:
+    """Whether the owner paused the feed (`feed_paused: true` in the workflow config).
+
+    Feed jobs stay queued and wait; what the owner chose still runs. While paused, the
+    system log gets one line a day saying so.
+    """
+    if settings.get("feed_paused") is not True:
+        return False
+    today = now.strftime("%Y-%m-%d")
+    said = conn.execute("SELECT value FROM intake_marks WHERE name=?", (FEED_PAUSED,)).fetchone()
+    if not said or said["value"] != today:
+        names = [name for name in (*workflow.SOURCES, *workflow.SOURCE_ALIASES) if is_feed(name)]
+        waiting = conn.execute(
+            f"SELECT COUNT(*) FROM application_queue WHERE status='QUEUED' AND source IN "
+            f"({','.join('?' * len(names))})",
+            names,
+        ).fetchone()[0]
+        conn.execute("INSERT OR REPLACE INTO intake_marks VALUES(?,?)", (FEED_PAUSED, today))
+        conn.commit()  # nothing stays locked while the line is posted
+        workflow.system_line(
+            "intake",
+            f"feed paused · {waiting} feed job{'' if waiting == 1 else 's'} waiting in the queue · "
+            "your own links and picks still go · set feed_paused to false to start them",
+        )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# The approved profile as a gate: a vault edit stops new work once, with one card
+# ---------------------------------------------------------------------------
+
+PROFILE_ALERT = "profile"
+PROFILE_CHANGED = (
+    "Your profile note in Obsidian was edited after you approved it, so I have stopped "
+    "starting applications. Undo the edit in Obsidian, then make the change through "
+    "onboarding and approve it there. Applications start again on their own once the note "
+    "checks out. Nothing was sent."
+)
+PROFILE_MISSING = (
+    "I cannot read your approved profile note in Obsidian (the vault or the note is "
+    "missing), so I have stopped starting applications. Check that the vault is where it "
+    "was. Applications start again on their own once the note checks out. Nothing was sent."
+)
+
+
+def profile_gate(reader=None) -> dict | None:
+    """The approved profile when it validates, or None while it does not.
+
+    A profile edited by hand in the vault fails validation. The first time, one card in
+    action-needed says so and one system-log line names the reason; every application
+    then waits instead of failing one by one. The card leaves, and work resumes, on the
+    first tick the profile validates again. Before any profile is approved there is
+    nothing to resume and no card. `reader` is the caller's own read_approved.
+    """
+    from . import alerts
+
+    try:
+        approved = (reader or workflow.read_approved)()
+    except (ValueError, OSError, yaml.YAMLError) as error:
+        detail = " ".join(str(error).split())
+        if not detail.startswith("No candidate profile has been approved"):
+            missing = isinstance(error, OSError) or "vault" in detail.lower()
+            if alerts.raise_card(
+                PROFILE_ALERT,
+                "action",
+                "Your profile needs a look"
+                if missing
+                else "Your profile note changed and needs approval",
+                PROFILE_MISSING if missing else PROFILE_CHANGED,
+            ):
+                workflow.system_line(
+                    "intake",
+                    f"profile does not validate · {type(error).__name__}: "
+                    f"{workflow.clip(detail, 160)} · no application starts until it does",
+                )
+        return None
+    if alerts.clear(PROFILE_ALERT):
+        workflow.system_line("intake", "profile validates again · applications resume")
+    return approved
+
+
+# ---------------------------------------------------------------------------
+# The same role through another board, and queued jobs that went stale
+# ---------------------------------------------------------------------------
+
+# Applications that hold a role: queued, in progress, waiting on the owner, or sent.
+TAKEN = (
+    "QUEUED",
+    "PREPARING",
+    "NEEDS_USER",
+    "READY_FOR_REVIEW",
+    "SUBMITTING",
+    "UNKNOWN_SUBMISSION",
+    "MANUAL_TAKEOVER",
+    "APPLIED",
+    "OA",
+    "INTERVIEW",
+    "OFFER",
+    "REJECTED",
+)
+SAME_ROLE = "same role, other place"
+
+
+def city(place) -> str:
+    """The town a place names, without its state or country; "remote" for remote."""
+    words = plain(str(place).split(",")[0])
+    return "remote" if "remote" in words.split() else words
+
+
+def role_slot(job: dict) -> tuple | None:
+    """(company, role family, towns, terms): what makes two listings the same role
+    whatever board lists it and however its title is worded. None when the listing does
+    not say enough to tell."""
+    company = plain_company(job.get("company"))
+    family = role_family(role_head(job.get("title")))
+    towns = frozenset(filter(None, (city(spot) for spot in places(job.get("location")))))
+    if not company or not family or not towns:
+        return None
+    terms = frozenset(terms_in(job.get("title")) or terms_in(job.get("cycle")))
+    return company, family[0], towns, terms
+
+
+def same_slot(a, b) -> bool:
+    return bool(
+        a
+        and b
+        and a[0] == b[0]
+        and a[1] == b[1]
+        and a[2] & b[2]
+        and (not a[3] or not b[3] or a[3] & b[3])
+    )
+
+
+def taken_slots(conn, statuses=TAKEN) -> list[dict]:
+    """The role each application in `statuses` holds, read from its feed listing.
+
+    An application without a listing (a link the owner pasted from elsewhere) names no
+    place, so it holds no slot here; the board's own duplicate check still applies.
+    """
+    rows = conn.execute(
+        "SELECT q.id,q.url,q.source_url,q.status,"
+        "(SELECT metadata FROM jobs j WHERE j.url IN (q.url,q.source_url) "
+        " ORDER BY j.active DESC LIMIT 1) AS listing "
+        f"FROM application_queue q WHERE q.status IN ({','.join('?' * len(statuses))})",
+        statuses,
+    ).fetchall()
+    found = []
+    for row in rows:
+        slot = role_slot(json.loads(row["listing"])) if row["listing"] else None
+        if slot:
+            found.append({"id": row["id"], "urls": {row["url"], row["source_url"]}, "slot": slot})
+    return found
+
+
+def slot_taken(job: dict, slots: list[dict], *, skip_id: str = "") -> dict | None:
+    """The application that already holds this listing's role through another link."""
+    mine = role_slot(job)
+    link = public_link(job.get("url"))
+    for held in slots:
+        if held["id"] == skip_id or (link and link in held["urls"]):
+            continue  # the same link is the same application, not a duplicate
+        if same_slot(mine, held["slot"]):
+            return held
+    return None
+
+
+def mark_duplicate(conn, identity: str, application_id: str):
+    conn.execute(
+        "UPDATE intake_decisions SET status='duplicate',reason=?,application_id=?,updated_at=? "
+        "WHERE identity=?",
+        (SAME_ROLE, application_id, workflow.now(), identity),
+    )
+
+
+def listing_for(conn, row) -> dict | None:
+    found = conn.execute(
+        "SELECT metadata,active FROM jobs WHERE url IN (?,?) ORDER BY active DESC LIMIT 1",
+        (row["url"], row["source_url"]),
+    ).fetchone()
+    if not found:
+        return None
+    return {**json.loads(found["metadata"]), "_active": bool(found["active"])}
+
+
+def stale_feed_jobs(rows, settings: dict, now: datetime) -> list[tuple[str, str]]:
+    """(id, why) for queued feed jobs to park before the browser opens: the posting
+    closed in the feed, the job waited longer than `feed_max_age_days` (default 21; 0
+    keeps them), or the same role is already in progress or sent through another board."""
+    days = number(settings, "feed_max_age_days", 21)
+    cutoff = (now - timedelta(days=days)).isoformat() if days else ""
+    parked = []
+    with db() as conn:
+        busy = taken_slots(conn, tuple(s for s in TAKEN if s != "QUEUED"))
+        for row in rows:
+            if not is_feed(row["source"]):
+                continue
+            listing = listing_for(conn, row)
+            created = conn.execute(
+                "SELECT created_at FROM application_queue WHERE id=?", (row["id"],)
+            ).fetchone()
+            if listing and not listing["_active"]:
+                parked.append((row["id"], "the posting closed in the job feed"))
+            elif cutoff and created and created[0] < cutoff:
+                parked.append(
+                    (
+                        row["id"],
+                        f"waited in the queue over {days} days; the posting is likely stale",
+                    )
+                )
+            elif listing and slot_taken(listing, busy, skip_id=row["id"]):
+                parked.append(
+                    (row["id"], "the same role is already on your list through another board")
+                )
+    return parked
 
 
 def resting_platforms(conn, settings: dict, now: datetime) -> set[str]:
@@ -1078,19 +1307,40 @@ def line_text(line: dict, linked: bool = True) -> str:
     return text + (f" · _{workflow.clip(line['reason'], 70)}_" if line.get("reason") else "")
 
 
+def page_of(day: str) -> tuple[str, int]:
+    """(the digest's day, its page). A day's first card is keyed by the day itself; each
+    `more` adds a card keyed `day+NN`, which sorts after it and before the next day."""
+    base, _, page = str(day).partition("+")
+    return base, int(page or 1)
+
+
+def page_key(base: str, page: int) -> str:
+    return base if page == 1 else f"{base}+{page:02d}"
+
+
 def digest_card(day: str, data: dict) -> dict:
-    """The digest as one card: numbered lines, the replies, and what waits for tomorrow."""
-    when = date.fromisoformat(day)
+    """The digest as one card: numbered lines, the replies, and how many more wait."""
+    base, page = page_of(day)
+    when = date.fromisoformat(base)
     lines = [line_text(line) for line in data["lines"]]
     if len("\n".join(lines)) > 3800:
         # Long links would push lines off the card; the roles stay, the links go.
         lines = [line_text(line, linked=False) for line in data["lines"]]
+    numbers = [line["number"] for line in data["lines"]] or [1]
+    title = f"Worth a look · {when.day} {when.strftime('%b')}"
+    replies = list(DIGEST_REPLIES)
+    if page > 1:
+        title += f" · {numbers[0]}–{numbers[-1]}"
+        replies[:2] = [f"{numbers[min(2, len(numbers) - 1)]} yes", f"{numbers[-1]} no"]
+    if data.get("waiting"):
+        replies.append("more")
     card = workflow.embed(
-        f"Worth a look · {when.day} {when.strftime('%b')}",
+        title,
         color="needs",
-        fields=[("Reply", workflow.command_block(DIGEST_REPLIES), False)],
+        fields=[("Reply", workflow.command_block(replies), False)],
         footer=(
-            f"{data['waiting']} more on tomorrow's list"
+            f"{data['waiting']} more waiting · reply `more` for the next ones, or they come "
+            "back on later lists"
             if data.get("waiting")
             else "Close matches I did not queue on my own"
         ),
@@ -1149,11 +1399,62 @@ def withdraw_digest(row, channel: str | None):
         conn.execute("UPDATE intake_digests SET delivery='withdrawn' WHERE day=?", (row["day"],))
 
 
+def waiting_lines(conn) -> list:
+    """Every candidate waiting for a digest line, best score first, newest among equals."""
+    return conn.execute(
+        "SELECT * FROM intake_decisions WHERE status='digest' "
+        "ORDER BY score DESC,decided_at DESC,identity"
+    ).fetchall()
+
+
+def add_page(conn, day: str, waiting: list, size: int, first: int):
+    """Record one digest card for `day` holding the next `size` waiting candidates,
+    numbered from `first`; delivery happens in flush_digests."""
+    lines = []
+    stamp = workflow.now()
+    for number_, row in enumerate(waiting[:size], start=first):
+        payload = json.loads(row["payload"])
+        lines.append(
+            {
+                "number": number_,
+                "identity": row["identity"],
+                "company": payload.get("company"),
+                "title": payload.get("title"),
+                "location": payload.get("location"),
+                "also": payload.get("also") or [],
+                "url": payload.get("url"),
+                "reason": row["reason"],
+                "score": row["score"],
+                "answer": None,
+            }
+        )
+        conn.execute(
+            "UPDATE intake_decisions SET status='offered',updated_at=?,"
+            "offered_at=COALESCE(offered_at,?) WHERE identity=?",
+            (stamp, stamp, row["identity"]),
+        )
+    conn.execute(
+        "INSERT INTO intake_digests(day,data,created_at) VALUES(?,?,?)",
+        (day, json.dumps({"lines": lines, "waiting": max(len(waiting) - size, 0)}), stamp),
+    )
+
+
+def feed_settings() -> dict:
+    path = state_root() / "config/feed.json"
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 def run_digest(settings: dict, now: datetime | None = None) -> dict:
     """Once per feed run: retire yesterday's digest and post today's when its hour has come.
 
-    Lines nobody answered go back to waiting and return on the next digest, until the
-    posting closes or `digest_keep_days` pass.
+    Today's card holds the best `digest_size` candidates; the rest wait in score order
+    for later days, or for the owner's `more`. Lines nobody answered go back to waiting
+    and return on the next digest. A line leaves without being asked about when its
+    posting closes, or `digest_keep_days` after it was first shown; one never shown
+    waits its turn however long that takes.
     """
     channel = digest_channel()
     if not channel:
@@ -1180,46 +1481,16 @@ def run_digest(settings: dict, now: datetime | None = None) -> dict:
         exists = conn.execute("SELECT 1 FROM intake_digests WHERE day=?", (today,)).fetchone()
         if not exists:
             cutoff = (now.astimezone(UTC) - timedelta(days=keep_days)).isoformat()
-            # A closed posting or one that waited too long leaves without being asked about.
+            # A closed posting, or one shown and left unanswered too long, leaves without
+            # being asked about again.
             conn.execute(
                 "UPDATE intake_decisions SET status='lapsed',updated_at=? WHERE status='digest' "
-                "AND (decided_at<? OR job_id IN (SELECT id FROM jobs WHERE active=0))",
+                "AND (offered_at<? OR job_id IN (SELECT id FROM jobs WHERE active=0))",
                 (workflow.now(), cutoff),
             )
-            waiting = conn.execute(
-                "SELECT * FROM intake_decisions WHERE status='digest' "
-                "ORDER BY score DESC,decided_at DESC,identity"
-            ).fetchall()
+            waiting = waiting_lines(conn)
             if waiting:
-                lines = []
-                for number_, row in enumerate(waiting[:size], start=1):
-                    payload = json.loads(row["payload"])
-                    lines.append(
-                        {
-                            "number": number_,
-                            "identity": row["identity"],
-                            "company": payload.get("company"),
-                            "title": payload.get("title"),
-                            "location": payload.get("location"),
-                            "also": payload.get("also") or [],
-                            "url": payload.get("url"),
-                            "reason": row["reason"],
-                            "score": row["score"],
-                            "answer": None,
-                        }
-                    )
-                    conn.execute(
-                        "UPDATE intake_decisions SET status='offered',updated_at=? WHERE identity=?",
-                        (workflow.now(), row["identity"]),
-                    )
-                conn.execute(
-                    "INSERT INTO intake_digests(day,data,created_at) VALUES(?,?,?)",
-                    (
-                        today,
-                        json.dumps({"lines": lines, "waiting": max(len(waiting) - size, 0)}),
-                        workflow.now(),
-                    ),
-                )
+                add_page(conn, today, waiting, size, 1)
     with db() as conn:
         live = conn.execute("SELECT * FROM intake_digests WHERE delivery='sent'").fetchall()
     for row in live:
@@ -1235,14 +1506,20 @@ NUMBERED = re.compile(
 )
 
 
+MORE_WORDS = {"more", "show more", "more please", "next batch"}
+
+
 def read_reply(text: str) -> dict | str | None:
     """`3 yes`, `1 4 no`, `2-5 yes, 7 no` as {number: answer}; `all yes`, `all no` and
-    `none` as the answer for every open line; anything else is not a digest reply."""
+    `none` as the answer for every open line; `more` for the next batch; anything else
+    is not a digest reply."""
     words = " ".join(str(text or "").strip().strip("`").lower().rstrip(".!").split())
     if words in {"all yes", "yes to all", "yes all"}:
         return "yes"
     if words in {"none", "all no", "no to all", "no all"}:
         return "no"
+    if words in MORE_WORDS:
+        return "more"
     answers: dict[int, str] = {}
     position = 0
     while position < len(words):
@@ -1257,11 +1534,53 @@ def read_reply(text: str) -> dict | str | None:
     return answers or None
 
 
+def day_pages(conn, base: str, deliveries=("sent",)) -> list:
+    """Every card of one digest day in the given deliveries, first page first."""
+    marks = ",".join("?" * len(deliveries))
+    return conn.execute(
+        f"SELECT * FROM intake_digests WHERE (day=? OR day LIKE ?) AND delivery IN ({marks}) "
+        "ORDER BY day",
+        (base, base + "+%", *deliveries),
+    ).fetchall()
+
+
+def show_more() -> bool:
+    """The owner's `more`: one more card for the newest digest day, holding the next
+    `digest_size` candidates in score order, numbered after the day's last line."""
+    size = max(number(feed_settings(), "digest_size", 15), 1)
+    with db() as conn:
+        newest = conn.execute("SELECT day FROM intake_digests ORDER BY day DESC LIMIT 1").fetchone()
+        waiting = waiting_lines(conn)
+        if not newest or not waiting:
+            raise ValueError("Nothing else is waiting right now.")
+        base = page_of(newest["day"])[0]
+        pages = day_pages(conn, base, ("pending", "sent", "withdrawn"))
+        last = max(
+            (line["number"] for row in pages for line in json.loads(row["data"])["lines"]),
+            default=0,
+        )
+        page = max(page_of(row["day"])[1] for row in pages) + 1
+        for row in pages:
+            # Only the newest card offers `more`; the earlier ones are redrawn without it.
+            data = json.loads(row["data"])
+            if data.get("waiting") and row["delivery"] != "withdrawn":
+                data["waiting"] = 0
+                conn.execute(
+                    "UPDATE intake_digests SET data=?,shown=0 WHERE day=?",
+                    (json.dumps(data), row["day"]),
+                )
+        add_page(conn, page_key(base, page), waiting, size, last + 1)
+    flush_digests()
+    return True
+
+
 def digest_reply(message: dict, owner: str, channel: str) -> bool:
     """Apply the owner's reply to the live digest. True when the message was one.
 
     Only the owner's own message in the shortlist channel counts. `yes` queues the job as
-    the owner's pick; `no` drops it. A reply that cannot apply raises one plain line.
+    the owner's pick; `no` drops it; `more` posts the next batch. Numbers run on across
+    the day's cards, so a bare reply finds its line on whichever card shows it; a reply
+    on one card applies to that card. A reply that cannot apply raises one plain line.
     """
     author = message.get("author") or {}
     if (
@@ -1276,38 +1595,49 @@ def digest_reply(message: dict, owner: str, channel: str) -> bool:
         return False
     referenced = (message.get("message_reference") or {}).get("message_id")
     with db() as conn:
-        live = conn.execute(
-            "SELECT * FROM intake_digests WHERE delivery='sent' ORDER BY day DESC LIMIT 1"
-        ).fetchone()
+        target = None
         if referenced:
             target = conn.execute(
                 "SELECT * FROM intake_digests WHERE message_id=?", (referenced,)
             ).fetchone()
             if not target:
                 return False  # a reply to some other card; the usual reader handles it
+        if reply == "more":
+            pages = []
+        elif target is not None:
             if target["delivery"] != "sent":
                 raise ValueError("That list has closed. The next one will have new numbers.")
-            live = target
-        if not live:
-            cards = conn.execute(
-                "SELECT 1 FROM owner_notices WHERE channel='shortlist' AND delivery='sent'"
+            pages = [target]
+        else:
+            live = conn.execute(
+                "SELECT * FROM intake_digests WHERE delivery='sent' ORDER BY day DESC LIMIT 1"
             ).fetchone()
-            if cards:
-                return False
-            raise ValueError("No list is open right now. The next one will have new numbers.")
-    data = json.loads(live["data"])
-    lines = {line["number"]: line for line in data["lines"]}
+            if not live:
+                cards = conn.execute(
+                    "SELECT 1 FROM owner_notices WHERE channel='shortlist' AND delivery='sent'"
+                ).fetchone()
+                if cards:
+                    return False
+                raise ValueError("No list is open right now. The next one will have new numbers.")
+            pages = day_pages(conn, page_of(live["day"])[0])
+    if reply == "more":
+        return show_more()
+    datas = {row["day"]: json.loads(row["data"]) for row in pages}
+    lines = {line["number"]: (day, line) for day, data in datas.items() for line in data["lines"]}
     if isinstance(reply, str):
-        reply = {n: reply for n, line in lines.items() if not line.get("answer")}
+        reply = {n: reply for n, (_, line) in lines.items() if not line.get("answer")}
     unknown = sorted(n for n in reply if n not in lines)
     if unknown:
+        low, high = min(lines), max(lines)
         raise ValueError(
-            f"There is no number {unknown[0]} on today's list; it goes up to {len(lines)}."
+            f"There is no number {unknown[0]} on today's list; it goes up to {high}."
+            if low == 1
+            else f"There is no number {unknown[0]} on that list; it runs from {low} to {high}."
         )
     queued, tracked, skipped = [], [], 0
     stamp = basis(_profile_hash())
     for number_, answer in sorted(reply.items()):
-        line = lines[number_]
+        day, line = lines[number_]
         if line.get("answer"):
             continue  # answered already; a repeated reply changes nothing
         application_id = None
@@ -1346,11 +1676,15 @@ def digest_reply(message: dict, owner: str, channel: str) -> bool:
                 )
             conn.execute(
                 "UPDATE intake_digests SET data=?,shown=0 WHERE day=?",
-                (json.dumps(data), live["day"]),
+                (json.dumps(datas[day]), day),
             )
-    if all(line.get("answer") for line in data["lines"]):
-        withdraw_digest(live, channel)
-    else:
+    redraw = False
+    for row in pages:
+        if all(line.get("answer") for line in datas[row["day"]]["lines"]):
+            withdraw_digest(row, channel)
+        else:
+            redraw = True
+    if redraw:
         flush_digests()
     parts = []
     if queued:
@@ -1368,7 +1702,7 @@ def digest_reply(message: dict, owner: str, channel: str) -> bool:
                 {"content": " · ".join(parts) + ".", "allowed_mentions": {"parse": []}},
             )
         except (httpx.HTTPError, OSError) as error:
-            workflow.delivery_failed("digest-reply", live["day"], error)
+            workflow.delivery_failed("digest-reply", pages[0]["day"], error)
     return True
 
 

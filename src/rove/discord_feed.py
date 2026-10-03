@@ -191,16 +191,84 @@ def close_withdrawn_postings(revision: str) -> int:
     return parked
 
 
+FEED_ALERT = "feed"
+FAILURES_BEFORE_CARD = 3
+
+
+def failure_words(error: Exception) -> str:
+    """What went wrong with the job list, in the owner's words."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return "the job list's server refused the download"
+    if isinstance(error, (httpx.TransportError, OSError)):
+        return "I could not reach the job list"
+    if isinstance(error, ValueError):
+        return "the job list arrived in a shape I do not accept, so I kept the jobs I had"
+    return "reading the job list failed"
+
+
+def checked_sync() -> tuple[dict | None, Exception | None]:
+    """Import the feed once; a failure is counted, not raised.
+
+    After FAILURES_BEFORE_CARD failures in a row the system log gets one line and
+    action-needed one card; both are said once, and the card leaves on the next import
+    that works.
+    """
+    from . import alerts
+
+    try:
+        result = sync_keryx()
+    except Exception as error:  # noqa: BLE001 -- counted and surfaced, never a traceback loop
+        words = failure_words(error)
+        alerts.check(
+            FEED_ALERT,
+            False,
+            error=type(error).__name__,
+            after=FAILURES_BEFORE_CARD,
+            headline="The job feed stopped updating",
+            text=(
+                f"The last {FAILURES_BEFORE_CARD} tries to import the job list failed: {words}. "
+                "No new jobs come in until it works; jobs already queued still go. This card "
+                "leaves on its own when an import works again."
+            ),
+            card_line=(
+                f"feed · {FAILURES_BEFORE_CARD} imports failed in a row · last: "
+                f"{type(error).__name__} · {words} · owner card posted"
+            ),
+            back_line="feed · import works again · card withdrawn",
+            log_name="intake",
+        )
+        return None, error
+    alerts.check(
+        FEED_ALERT,
+        True,
+        back_line="feed · import works again · card withdrawn",
+        log_name="intake",
+    )
+    return result, None
+
+
 def tick(seed: bool = False) -> dict:
-    from . import intake
+    from . import alerts, intake
 
     config = json.loads((state_root() / "config/feed.json").read_text())
     if not config.get("enabled"):
         return {"enabled": False}
-    result = sync_keryx()
+    result, failure = checked_sync()
+    if failure is not None:
+        result = {
+            "sync_failed": type(failure).__name__,
+            "failures_in_a_row": alerts.streak(FEED_ALERT),
+        }
     if result.get("changed_source") and result.get("revision"):
         close_withdrawn_postings(result["revision"])
-    approved = read_approved()
+    approved = intake.profile_gate(read_approved)
+    if approved is None:
+        # Nothing is scored or queued against a profile that does not validate; the
+        # cursor stays, so these jobs are decided once it does.
+        result.update(intake.run_digest(config), profile="needs approval")
+        result["finished_at"] = datetime.now(UTC).isoformat()
+        write_private(state_root() / "jobs/feed-service.json", result)
+        return result
     profile = approved["profile"]
     db = feed_db()
     sent = 0
@@ -247,7 +315,6 @@ def tick(seed: bool = False) -> dict:
                 AND job_id IN (SELECT job_id FROM feed_outbox WHERE status='sent')"""
             )
         expired = cap_backlog(db, intake.number(config, "max_pending", 40))
-        intake.log_counts(counts, expired)
         pending = db.execute(
             """SELECT o.* FROM feed_outbox o JOIN jobs j ON j.id=o.job_id
             WHERE o.status='pending' AND j.active=1 ORDER BY o.score DESC,o.rowid DESC LIMIT ?""",
@@ -256,14 +323,31 @@ def tick(seed: bool = False) -> dict:
         from .workflow import enqueue
 
         stamp = intake.basis(approved.get("profile_hash", ""))
+        # The same role through another board is not queued twice: one listing of it is
+        # already queued, in progress or sent. It is kept on record, never announced.
+        slots = intake.taken_slots(db) if pending else []
         for row in pending:
             job = json.loads(row["payload"])
+            held = intake.slot_taken(job, slots) if job.get("url") else None
+            if held:
+                with db:
+                    intake.mark_duplicate(db, row["key"], held["id"])
+                    db.execute(
+                        "UPDATE feed_outbox SET status='duplicate' WHERE key=?", (row["key"],)
+                    )
+                counts["duplicates"] = counts.get("duplicates", 0) + 1
+                continue
             queued = (
                 enqueue(job["url"], source="keryx", title=job["company"] + " — " + job["title"])
                 if job.get("url")
                 else None
             )
             card = job_card(job, queued)
+            slot = intake.role_slot(job) if queued and not queued.get("already_exists") else None
+            if slot:
+                slots.append(
+                    {"id": queued["application_id"], "urls": {queued["url"]}, "slot": slot}
+                )
             with db:
                 if queued and not queued.get("already_exists") and "score" in job:
                     intake.record_queue_score(
@@ -295,13 +379,14 @@ def tick(seed: bool = False) -> dict:
                     (message["id"], row["key"]),
                 )
             sent += 1
+        intake.log_counts(counts, expired)
         result.update(
             sent=sent,
             expired=expired,
             pending=db.execute(
                 "SELECT COUNT(*) FROM feed_outbox WHERE status='pending'"
             ).fetchone()[0],
-            **{key: counts.get(key, 0) for key in ("queued", "digest", "dropped")},
+            **{key: counts.get(key, 0) for key in ("queued", "digest", "dropped", "duplicates")},
         )
     finally:
         db.close()

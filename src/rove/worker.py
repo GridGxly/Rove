@@ -1274,6 +1274,10 @@ def prune_excluded() -> int:
     The first run also sorts a queue filled under the old rules: feed jobs whose listing
     scores in the digest tier leave the queue and wait for the owner's yes on the daily
     list. A mark keeps that from happening twice.
+
+    Feed jobs whose posting closed, that waited past `feed_max_age_days`, or whose role is
+    already in progress or sent through another board are parked too. Nothing is judged
+    while the approved profile does not validate.
     """
     with workflow.db() as conn:
         queued = conn.execute(
@@ -1288,7 +1292,15 @@ def prune_excluded() -> int:
         if first_sort:
             intake.set_mark(intake.QUEUE_SORTED)
         return 0
-    parked = intake.rescore_queue(rows, matching.read_approved())
+    approved = intake.profile_gate(matching.read_approved)
+    if approved is None:
+        return 0
+    stale = intake.stale_feed_jobs(rows, workflow.config(), datetime.now(UTC))
+    for application_id, reason in stale:
+        workflow.set_state(application_id, "DEFERRED", error=reason)
+    gone = {application_id for application_id, _ in stale}
+    rows = [row for row in rows if row["id"] not in gone]
+    parked = intake.rescore_queue(rows, approved)
     moved = intake.move_borderline(rows, {a for a, _ in parked}) if first_sort else []
     for application_id, reason in [*parked, *moved]:
         workflow.set_state(application_id, "DEFERRED", error=reason)
@@ -1299,7 +1311,13 @@ def prune_excluded() -> int:
             f"sorted the existing queue · {len(rows) - len(parked) - len(moved)} stay queued · "
             f"{len(moved)} moved to the daily list · {len(parked)} parked",
         )
-    return len(parked) + len(moved)
+    if stale:
+        workflow.system_line(
+            "intake",
+            f"parked {len(stale)} queued feed job{'s' if len(stale) != 1 else ''} · "
+            + workflow.clip(" · ".join(sorted({reason for _, reason in stale})), 300),
+        )
+    return len(stale) + len(parked) + len(moved)
 
 
 def next_queued(max_waiting: int):
@@ -1313,10 +1331,15 @@ def next_queued(max_waiting: int):
     a submission gives way to the best job on another platform. With `auto_submit` off,
     `max_waiting` holds stop the rest of the queue until the owner answers, and they
     always stop a link the agent queued, which is never sent unattended.
+
+    `feed_paused` holds every feed job, attended or not. While the approved profile does
+    not validate nothing starts at all: every preparation would stop on the same check.
     """
     settings = workflow.config()
     unattended = bool(settings.get("auto_submit"))
     now = datetime.now(UTC)
+    if intake.profile_gate() is None:
+        return None
     with workflow.db() as conn:
         intake.prepare_pacing(conn)
         resting = intake.resting_platforms(conn, settings, now) if unattended else set()
@@ -1367,12 +1390,17 @@ def next_queued(max_waiting: int):
             ).fetchone()[0]
             >= max_waiting
         )
-        braked = None
+        braked = paused = None
         rest = []
         for row in reversed(queued):  # newest first, then by score band
             policy = policies[row["id"]]
             if policy["owner_decided"]:
                 continue
+            if intake.is_feed(row["source"]):
+                if paused is None:
+                    paused = intake.feed_paused(conn, settings, now)
+                if paused:
+                    continue
             if not (unattended and policy["unattended"]):
                 # Not covered by unattended sending: waiting holds stop it as before.
                 if not stalled:
