@@ -259,7 +259,7 @@ def test_generic_adapter_ignores_negated_url_tokens():
     ):
         assert confirmed(base + "/jobs/42/done", text)["confirmed"], text
     # A posting that reads as closed, or "you already applied", is not this send's receipt.
-    thanks = generic_page(base + "/jobs/42/done", "Thank you for your interest.")
+    thanks = generic_page(base + "/jobs/42/done", "Thank you for applying.")
     assert GenericV1.confirmed(form_url, thanks, [], before=before)["confirmed"]
     closed = {**thanks, "closed": True}
     assert not GenericV1.confirmed(form_url, closed, [], before=before)["confirmed"]
@@ -293,14 +293,68 @@ def test_accepted_post_is_never_reported_as_rejected():
     # A POST still in the air may have been stored too.
     assert not GenericV1.rejected(checks(unanswered=1))
     assert not GenericV1.rejected(checks(422, unanswered=1))
-    # A POST to another host is not this site's answer.
-    foreign = GenericV1.confirmed(
+    # A POST another host accepted (an API host, a third-party backend) may have stored the
+    # application just the same: the form's error then says nothing about the send.
+    for host in ("api.careers.example.com", "api.example-ats.net", "tracker.example.net"):
+        for status in (200, 201, 302, 500):
+            foreign = GenericV1.confirmed(
+                form_url, kept, [{"host": host, "path": "/b", "status": status}], before=before
+            )
+            assert foreign["posts_kept"], (host, status)
+            assert not GenericV1.rejected(foreign), (host, status)
+    # Every POST, on every host, refused with a 4xx: nothing was stored.
+    refused = GenericV1.confirmed(
         form_url,
         kept,
-        [{"host": "tracker.example.net", "path": "/b", "status": 200}],
+        [
+            {"host": "careers.example.com", "path": "/apply", "status": 422},
+            {"host": "api.example-ats.net", "path": "/b", "status": 400},
+        ],
         before=before,
     )
-    assert not foreign["post_accepted"] and GenericV1.rejected(foreign)
+    assert GenericV1.rejected(refused)
+    # One still unanswered on another host keeps it unknown.
+    refused["all_posts_answered"] = False
+    assert not GenericV1.rejected(refused)
+
+
+def test_generic_adapter_does_not_confirm_interest_a_home_page_a_verification_or_a_sign_in():
+    """Finding 4: none of these says the application was received."""
+    form_url = "https://careers.example.com/jobs/42/apply"
+    before = generic_page(form_url, "Apply here", fields=[field("a", "Email", "x")])
+
+    def confirmed(after_url, text="", status=""):
+        return GenericV1.confirmed(
+            form_url, generic_page(after_url, text, status=status), [], before=before
+        )
+
+    base = "https://careers.example.com"
+    interest = confirmed(base + "/jobs/42/done", "Thank you for your interest in Example.")
+    assert not interest["confirmation_text"] and not interest["confirmed"]
+    home = confirmed(base + "/", "Thank you for your interest in Example. Explore our teams.")
+    assert not home["confirmed"]
+    for text in (
+        "Thank you for applying! Please verify your email to finish your application.",
+        "Application received. Check your inbox to confirm your email address.",
+        "Thank you for applying. Confirm your email to complete your application.",
+        "Thank you for applying. Please sign in to continue.",
+        "Application submitted. Log in to your account to track it.",
+    ):
+        checks = confirmed(base + "/jobs/42/done", text)
+        assert not checks["no_pending_step"] and not checks["confirmed"], text
+        assert not GenericV1.rejected(checks), text  # unclear, never "nothing was sent"
+        assert "one more step" in GenericV1.reason(checks, {}), text
+    for address in (
+        "/users/sign_in",
+        "/users/sign-in?after=apply",
+        "/account/login",
+        "/candidate/signin",
+        "/verify-email",
+    ):
+        checks = confirmed(base + address, "Thank you for applying.")
+        assert not checks["no_pending_step"] and not checks["confirmed"], address
+    # A plain thank-you on an ordinary page still confirms.
+    assert confirmed(base + "/jobs/42/thank-you", "Thank you for applying.")["confirmed"]
 
 
 def test_url_variants_of_one_job_cannot_both_submit(state):

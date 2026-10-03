@@ -81,7 +81,7 @@ GENERIC_URL_FAILURE = frozenset(
     }
 )
 GENERIC_SUCCESS = (
-    r"\b(?:thank you for (applying|your (application|interest))"
+    r"\b(?:thank you for (applying|your application)"
     r"|application (has been |was )?(submitted|received|complete)"
     r"|we('ve| have) received your application"
     r"|successfully (submitted|applied))\b"
@@ -103,11 +103,29 @@ GENERIC_FAILURE = (
     r"|please try again|try again later"
     r"|session (has )?(expired|timed out))\b"
 )
+# A page that still wants something before the application counts: an email to verify,
+# a sign-in, an account. Not a confirmation; an emailed verification step is its own
+# outcome, unclear until the code in that mail is used.
+GENERIC_PENDING = (
+    r"\b(?:(verify|confirm|activate) your (e-?mail( address)?|account)"
+    r"|check your (e-?mail|inbox) to (finish|complete|confirm|verify|activate)"
+    r"|to (finish|complete) your application"
+    r"|(sign|log) ?in to (continue|finish|complete|apply|your account)"
+    r"|please (sign|log) ?in"
+    r"|create (an|your) account to (continue|finish|complete|apply))\b"
+)
+# The same in an address: "/users/sign_in", "/login", "/verify-email".
+GENERIC_PENDING_PATH = re.compile(
+    r"(?:^|[/_.-])(sign[-_]?in|sign[-_]?on|log[-_]?in|sso|auth|verify[-_]?e?-?mail"
+    r"|confirm[-_]?e?-?mail|activate)(?:[/_.-]|$)",
+    re.IGNORECASE,
+)
 GENERIC_ERROR = r"required|invalid|error|could not|try again"
 GENERIC_SUCCESS_RE = re.compile(GENERIC_SUCCESS, re.IGNORECASE)
 GENERIC_NEGATION_RE = re.compile(GENERIC_NEGATION, re.IGNORECASE)
 GENERIC_FAILURE_RE = re.compile(GENERIC_FAILURE, re.IGNORECASE)
 GENERIC_ERROR_RE = re.compile(GENERIC_ERROR, re.IGNORECASE)
+GENERIC_PENDING_RE = re.compile(GENERIC_PENDING, re.IGNORECASE)
 
 # Polled after the click: true once the page left, the form is gone, or a success or
 # validation message appeared that was not in the observation taken before the click.
@@ -190,6 +208,14 @@ def success_phrases(text: str | None) -> set[str]:
 
 def failure_phrases(text: str | None) -> set[str]:
     return {normalized(m.group(0)) for m in GENERIC_FAILURE_RE.finditer(text or "")}
+
+
+def pending_phrases(text: str | None) -> set[str]:
+    return {normalized(m.group(0)) for m in GENERIC_PENDING_RE.finditer(text or "")}
+
+
+def pending_address(url: str) -> bool:
+    return bool(GENERIC_PENDING_PATH.search(urlsplit(url or "").path))
 
 
 def package_digest(package: dict) -> str:
@@ -390,6 +416,13 @@ class GenericV1:
             "no_failure_text": not (failure_phrases(said) - failure_phrases(said_before))
             and not after.get("closed")
             and not (markers.get("already_applied") and not prior.get("already_applied")),
+            # "Verify your email to finish your application", a sign-in page: the site
+            # still wants a step, so nothing is confirmed yet.
+            "no_pending_step": not (pending_phrases(said) - pending_phrases(said_before))
+            and not (pending_address(after_url) and not pending_address(package_url)),
+            # Any POST on any host the page did not refuse with a 4xx: the application may
+            # be stored by a backend the form posts to (an API host, a third party).
+            "posts_kept": any(not 400 <= r["status"] < 500 for r in responses),
         }
         checks["confirmed"] = (
             checks["form_gone"]
@@ -397,6 +430,7 @@ class GenericV1:
             and checks["no_form_error"]
             and checks["no_failure_text"]
             and checks["no_failure_url"]
+            and checks["no_pending_step"]
         )
         return checks
 
@@ -414,6 +448,13 @@ class GenericV1:
             return (
                 f"The form reported a validation error and stayed open: {excerpt} "
                 "Check the highlighted field in the recruiting browser; do not click Submit again."
+            )
+        if not checks.get("no_pending_step", True):
+            return (
+                "The page asks for one more step before the application counts: verifying "
+                "your email or signing in. Nothing else was clicked. Finish that step "
+                "yourself (the email, or the recruiting browser), then tell me the outcome; "
+                "do not click Submit again."
             )
         if not checks.get("no_failure_text", True) or not checks.get("no_failure_url", True):
             return (
@@ -443,15 +484,18 @@ class GenericV1:
     def rejected(cls, checks: dict) -> bool:
         """The form stayed where it was and named its own validation error: nothing was sent.
 
-        Not when the site accepted a POST, or a POST is still unanswered: the form's
-        message could be about anything, and the application may already be stored.
+        Only when no POST left the page, or every POST, on any host, was refused with a
+        4xx. A POST accepted anywhere (the form's own host, an API host, a third-party
+        backend) or one still unanswered may have stored the application, whatever the
+        form says next.
         """
         return (
             checks.get("no_form_error") is False
             and not checks.get("url_changed")
             and not checks.get("form_gone")
             and not checks.get("post_accepted")
-            and checks.get("posts_answered", True)
+            and not checks.get("posts_kept")
+            and checks.get("all_posts_answered", checks.get("posts_answered", True))
         )
 
 
@@ -940,20 +984,38 @@ def erga_confirm(application_id: str) -> dict:
     return {"synced": True, "application_id": erga_id, "status": data.get("status")}
 
 
-def finish_attempt(application_id: str, status: str, evidence: dict):
+# The one state a send's own outcome may replace: the claim. The browser service and the
+# stuck-send cleanup both pass it, so whichever records first wins and the other writes
+# nothing; the owner's reconciliation and the employer's mail pass none.
+CLAIMED = ("SUBMITTING",)
+
+
+def finish_attempt(
+    application_id: str, status: str, evidence: dict, expect: tuple[str, ...] | None = None
+) -> bool:
+    """Record a send's outcome; False, with nothing written, when `expect` names the
+    states the attempt must still be in and it is in none of them (another path settled
+    it first: an outcome the owner already reconciled is never overwritten).
+
+    The outcome is on record (the attempt, the receipt, the application's state) before
+    anything slow happens: Discord posts, the Erga sync.
+    """
     if status not in {"APPLIED", "UNKNOWN_SUBMISSION", "NOT_SUBMITTED"}:
         raise ValueError("Invalid submission outcome")
     directory = state_root() / f"applications/{application_id}"
     receipt = directory / "receipt.json"
-    if receipt.exists():
-        shutil.move(receipt, directory / f"receipt-superseded-{int(receipt.stat().st_mtime)}.json")
-    write_private(receipt, evidence)
+    query, args = "UPDATE live_submission_attempts SET status=? WHERE application_id=?", ()
+    if expect:
+        query += f" AND status IN ({','.join('?' * len(expect))})"
+        args = expect
     with workflow.db() as conn:
-        conn.execute(
-            "UPDATE live_submission_attempts SET status=? WHERE application_id=?",
-            (status, application_id),
-        )
-        if status == "NOT_SUBMITTED":
+        conn.execute("BEGIN IMMEDIATE")
+        late = bool(expect) and not conn.execute(query, (status, application_id, *args)).rowcount
+        if not expect:
+            conn.execute(query, (status, application_id))
+        if late:
+            pass  # settled elsewhere first: nothing here may change
+        elif status == "NOT_SUBMITTED":
             # Nothing went out: the job is free to be sent once by a later attempt.
             job_index.release_send(conn, application_id)
         elif status == "APPLIED":
@@ -962,8 +1024,17 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
             item = conn.execute(
                 "SELECT url FROM application_queue WHERE id=?", (application_id,)
             ).fetchone()
-            job_index.keep_send(conn, application_id, item["url"])
+            form = job_index.form_url(application_id)
+            job_index.keep_send(conn, application_id, item["url"], form)
             job_index.approve_tenant(conn, item["url"], application_id, "applied")
+    if late:
+        workflow.system_line(
+            application_id, f"outcome {status} not recorded · the attempt was already settled"
+        )
+        return False
+    if receipt.exists():
+        shutil.move(receipt, directory / f"receipt-superseded-{int(receipt.stat().st_mtime)}.json")
+    write_private(receipt, evidence)
     if status == "NOT_SUBMITTED":
         workflow.record(application_id, "submission_rejected", evidence)
         if evidence.get("owner_finishes"):
@@ -981,7 +1052,7 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
                 commands=["applied", "park it"],
                 headline="The site's CAPTCHA rejected the send",
             )
-            return
+            return True
         workflow.transition(
             application_id,
             "NEEDS_USER",
@@ -995,13 +1066,10 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
             commands=[f"resume {application_id}", f"defer {application_id}"],
             headline="The site rejected the form",
         )
-        return
+        return True
     if status == "APPLIED":
-        try:
-            evidence["erga"] = erga_confirm(application_id)
-        except Exception as error:  # noqa: BLE001 -- the submission already happened; record, do not hide
-            evidence["erga"] = {"synced": False, "error": type(error).__name__}
-        write_private(receipt, evidence)
+        # The attempt row and the receipt already hold the outcome; the Erga sync, the
+        # slowest step, comes after the application's own state.
         workflow.record(application_id, "submission_confirmed", evidence)
         workflow.transition(
             application_id,
@@ -1009,6 +1077,11 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
             str(evidence.get("reason") or "verified employer confirmation after one submit"),
             f"receipt {receipt.name}",
         )
+        try:
+            evidence["erga"] = erga_confirm(application_id)
+        except Exception as error:  # noqa: BLE001 -- the submission already happened; record, do not hide
+            evidence["erga"] = {"synced": False, "error": type(error).__name__}
+        write_private(receipt, evidence)
     else:
         workflow.record(application_id, "submission_unknown", evidence)
         workflow.transition(
@@ -1027,6 +1100,7 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
             ],
             headline="Submission unclear",
         )
+    return True
 
 
 def own_receipt(application_id: str, package_hash: str, claimed_at: str) -> dict | None:
@@ -1060,20 +1134,20 @@ def settle_stale_sends(now: datetime | None = None) -> list[str]:
         rows = conn.execute(
             "SELECT q.id,a.package_hash,a.owner_message_id,a.created_at "
             "FROM application_queue q JOIN live_submission_attempts a ON a.application_id=q.id "
-            "WHERE q.status='SUBMITTING' AND a.created_at<?",
+            "WHERE q.status='SUBMITTING' AND a.status='SUBMITTING' AND a.created_at<?",
             (cutoff,),
         ).fetchall()
     settled = []
     for row in rows:
         receipt = own_receipt(row["id"], row["package_hash"], row["created_at"])
         if receipt is not None:
-            workflow.system_line(row["id"], f"send settled from its receipt · {receipt['status']}")
-            finish_attempt(row["id"], receipt["status"], receipt)
+            done = finish_attempt(row["id"], receipt["status"], receipt, expect=CLAIMED)
+            if done:
+                workflow.system_line(
+                    row["id"], f"send settled from its receipt · {receipt['status']}"
+                )
         else:
-            workflow.system_line(
-                row["id"], f"send never reported back · claimed {row['created_at']} · now unknown"
-            )
-            finish_attempt(
+            done = finish_attempt(
                 row["id"],
                 "UNKNOWN_SUBMISSION",
                 {
@@ -1086,8 +1160,15 @@ def settle_stale_sends(now: datetime | None = None) -> list[str]:
                     "it recorded what the site answered. Check the recruiting browser and "
                     "your email before reconciling; do not click Submit again.",
                 },
+                expect=CLAIMED,
             )
-        settled.append(row["id"])
+            if done:
+                workflow.system_line(
+                    row["id"],
+                    f"send never reported back · claimed {row['created_at']} · now unknown",
+                )
+        if done:
+            settled.append(row["id"])
     return settled
 
 
@@ -1152,6 +1233,22 @@ def reconcile(application_id: str, outcome: str, owner_message_id: str):
     )
 
 
+def still_claimed(application_id: str, owner_message_id: str) -> bool:
+    """This send's claim stands: nothing settled it while the browser got ready."""
+    with workflow.db() as conn:
+        row = conn.execute(
+            "SELECT a.status,a.owner_message_id,q.status AS queued FROM live_submission_attempts a "
+            "JOIN application_queue q ON q.id=a.application_id WHERE a.application_id=?",
+            (application_id,),
+        ).fetchone()
+    return bool(
+        row
+        and row["status"] == "SUBMITTING"
+        and row["queued"] == "SUBMITTING"
+        and row["owner_message_id"] == owner_message_id
+    )
+
+
 def submit(browser, application_id: str, package_hash: str, owner_message_id: str) -> dict:
     browser.check(application_id)
     with browser.guarded(browser.page):
@@ -1176,35 +1273,34 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
     if (directory / "browser.png").exists():
         shutil.copyfile(directory / "browser.png", directory / "form-before-submit.png")
         (directory / "form-before-submit.png").chmod(0o600)
-    claim_attempt(application_id, package_hash, owner_message_id)
-    workflow.record(
-        application_id,
-        "submit_attempt",
-        {
-            "package_hash": package_hash,
-            "owner_message_id": owner_message_id,
-            "adapter": adapter.name,
-        },
-    )
-    workflow.flush_events(application_id)
-    responses = []
+    arm = "() => document.documentElement.setAttribute('data-rove-submit-armed', '1')"
+    disarm = "() => document.documentElement.removeAttribute('data-rove-submit-armed')"
+    # The code-owned preparation guard is armed for this one observed click, before the
+    # claim: a page script that hangs hangs before anything is claimed, never between the
+    # claim and the click.
+    browser.form.evaluate(arm)
+    try:
+        claim_attempt(application_id, package_hash, owner_message_id)
+    except BaseException:
+        with contextlib.suppress(PlaywrightError):
+            browser.form.evaluate(disarm)
+        raise
+    responses: list[dict] = []
+    sent: list[str] = []
     hosts = adapter.response_hosts(package["url"])
 
     def observe_response(response):
-        url = urlsplit(response.url)
-        if response.request.method == "POST" and host_matches(url.hostname, hosts):
+        if response.request.method == "POST":
+            url = urlsplit(response.url)
             # No headers, body, query strings, applicant fields or tokens in receipt logs.
             responses.append({"host": url.hostname, "path": url.path, "status": response.status})
 
-    sent = []
-
     def observe_request(request):
-        # A POST the page started may never be answered; it still may have been stored.
-        if request.method == "POST" and host_matches(urlsplit(request.url).hostname, hosts):
-            sent.append(urlsplit(request.url).path)
+        # Every POST on any host: a form may post to an API host or a third-party backend,
+        # and a POST that is never answered may still have been stored.
+        if request.method == "POST":
+            sent.append((urlsplit(request.url).hostname or "").lower())
 
-    browser.page.on("request", observe_request)
-    browser.page.on("response", observe_response)
     result = {
         "application_id": application_id,
         "package_hash": package_hash,
@@ -1213,19 +1309,42 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
         "attempted_at": workflow.now(),
         "form_screenshot": str(directory / "form-before-submit.png"),
     }
+    # Between the claim and the click: one database read, nothing slow. The stuck-send
+    # cleanup may have settled this claim meanwhile; then there is no click at all.
+    if not still_claimed(application_id, owner_message_id):
+        with contextlib.suppress(PlaywrightError):
+            browser.form.evaluate(disarm)
+        workflow.system_line(application_id, "send not clicked · the claim was settled first")
+        return {
+            **result,
+            "status": workflow.get(application_id)["status"],
+            "clicked": False,
+            "reason": "The claim was settled before the click, so nothing was clicked.",
+        }
+    browser.page.on("request", observe_request)
+    browser.page.on("response", observe_response)
+    browser.sending = True  # a stop from here on never says that nothing was sent
     try:
-        # The code-owned preparation guard is armed for this one observed click only.
-        browser.form.evaluate(
-            "() => document.documentElement.setAttribute('data-rove-submit-armed', '1')"
-        )
         browser.click(locator)
         timing.lap("verify")
+        workflow.record(
+            application_id,
+            "submit_attempt",
+            {
+                "package_hash": package_hash,
+                "owner_message_id": owner_message_id,
+                "adapter": adapter.name,
+            },
+        )
         # Bounded: the adapter waits for its own signal, then the page is read once.
         adapter.await_result(browser.form, current, CONFIRMATION_TIMEOUT_MS)
-        browser.form.wait_for_load_state("domcontentloaded", timeout=15000)
+        browser.form.wait_for_load_state("domcontentloaded", timeout=LOAD_TIMEOUT_MS)
         after = browser.observe()
         checks = adapter.confirmed(package["url"], after, responses, before=current)
-        checks["posts_answered"] = len(sent) <= len(responses)
+        own_sent = [host for host in sent if host_matches(host, hosts)]
+        own_answered = [r for r in responses if host_matches(r["host"], hosts)]
+        checks["posts_answered"] = len(own_sent) <= len(own_answered)
+        checks["all_posts_answered"] = len(sent) <= len(responses)
         result["checks"] = checks
         if checks["confirmed"]:
             result.update(
@@ -1252,19 +1371,24 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
         else:
             result["reason"] = adapter.reason(checks, after)
     except Exception as error:  # noqa: BLE001 -- any uncertainty after the claim must stay durable
-        result["reason"] = "No independent confirmation: " + type(error).__name__
+        result["reason"] = live_browser.owner_words(str(error)) or (
+            "No independent confirmation: " + type(error).__name__
+        )
     finally:
-        try:
-            browser.form.evaluate(
-                "() => document.documentElement.removeAttribute('data-rove-submit-armed')"
-            )
-        except PlaywrightError:
-            pass
+        browser.sending = False
         browser.page.remove_listener("response", observe_response)
         with contextlib.suppress(Exception):  # never between the click and its record
             browser.page.remove_listener("request", observe_request)
         result["responses"] = responses
-        finish_attempt(application_id, result["status"], result)
+        result["posts_started"] = len(sent)
+        # The outcome is recorded first; the page's own scripts come after, if at all.
+        recorded = finish_attempt(application_id, result["status"], result, expect=CLAIMED)
+        with contextlib.suppress(PlaywrightError):
+            browser.form.evaluate(disarm)
+    if not recorded:
+        # The cleanup settled this send while the page was still answering: its card
+        # stands, and what the page said is only in the system log.
+        return {**result, "recorded": False}
     if result["status"] == "APPLIED":
         browser.close_run(application_id)
     else:

@@ -16,6 +16,7 @@ import socket
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -638,6 +639,52 @@ def test_embedded_board_forms_are_read_as_the_boards_own_job():
     )
     # A form off the board table is never "embedded": host-and-path rules decide there.
     assert not destinations.embedded_job(page, page, "https://forms.example.net/4471", nobody)
+
+
+def test_a_late_outcome_never_replaces_one_already_recorded(state, monkeypatch):
+    """Finding 5: the stuck-send cleanup and the browser service both record a send's
+    outcome only while it is still claimed; whichever is second writes nothing, and an
+    outcome the owner reconciled meanwhile stands."""
+    erga = []
+    monkeypatch.setattr(submission, "erga_confirm", lambda app: erga.append(app) or {})
+    app, package_hash = feed_ready(state, GREENHOUSE)
+    worker.apply_command(
+        {"kind": "submit", "application_id": app, "package_hash": package_hash}, "m-send"
+    )
+    submission.claim_attempt(app, package_hash, "m-send")
+    with workflow.db() as conn:
+        old = (datetime.now(UTC) - submission.STALE_SEND_AFTER - timedelta(minutes=1)).isoformat()
+        conn.execute("UPDATE live_submission_attempts SET created_at=?", (old,))
+    assert submission.settle_stale_sends() == [app]
+    assert workflow.get(app)["status"] == "UNKNOWN_SUBMISSION"
+    receipt = state / "applications" / app / "receipt.json"
+    settled = receipt.read_text()
+    # The daemon comes back late with its own reading: nothing changes, no Erga sync.
+    late = {"application_id": app, "package_hash": package_hash, "status": "APPLIED"}
+    assert not submission.finish_attempt(app, "APPLIED", late, expect=submission.CLAIMED)
+    assert workflow.get(app)["status"] == "UNKNOWN_SUBMISSION" and erga == []
+    assert receipt.read_text() == settled
+    assert submission.settle_stale_sends() == []  # and the cleanup does not run twice
+    # The owner reconciles; a still later daemon outcome changes nothing either.
+    submission.reconcile(app, "not-submitted", "m-owner")
+    assert not submission.finish_attempt(app, "UNKNOWN_SUBMISSION", late, expect=submission.CLAIMED)
+    assert workflow.get(app)["status"] == "NEEDS_USER" and attempts() == [(app, "NOT_SUBMITTED")]
+
+
+def test_the_stuck_send_bound_covers_every_wait_of_a_send():
+    """Finding 5: every bounded wait between the claim and the recorded outcome fits
+    inside the cleanup's bound, with room for reading the page after the click."""
+    waits = (
+        submission.CLICK_TIMEOUT_MS
+        + submission.CONFIRMATION_TIMEOUT_MS
+        + submission.GENERIC_QUIET_MS
+        + submission.LOAD_TIMEOUT_MS
+    )
+    assert waits == submission.SEND_WAITS_MS
+    assert submission.STALE_SEND_AFTER >= timedelta(milliseconds=waits) + timedelta(minutes=5)
+    # The click's own budget is the hover and the click the browser gives it.
+    default_click = live_browser.RecruitingBrowser.click.__defaults__[0]
+    assert default_click + 3000 <= submission.CLICK_TIMEOUT_MS
 
 
 def test_coverage_counts_links_by_board_and_names_what_is_off_the_table():
@@ -1849,6 +1896,116 @@ def test_no_adapter_reads_a_refusal_while_the_send_is_unanswered(board, site, mo
     assert result["status"] == "UNKNOWN_SUBMISSION", result
     assert not result["checks"]["posts_answered"]
     never_twice(runtime, run_id, package_hash, state)
+
+
+def posts_elsewhere_then_errs(api: str) -> bytes:
+    """The form posts to a backend on another host, which accepts it, then shows an error
+    that reads like a validation message."""
+    return (
+        "document.querySelector('form').addEventListener('submit', async e => {\n"
+        "  e.preventDefault();\n"
+        f"  await fetch('{api}/v1/applications', {{method:'POST', mode:'no-cors', body:'x'}});\n"
+        "  document.querySelector('#error').textContent = 'Email address is invalid. Try again.';\n"
+        "});"
+    ).encode()
+
+
+def test_a_post_to_another_host_keeps_the_send_unknown(board, site, monkeypatch):
+    """Finding 3: a backend on another host took the POST; the error the form showed
+    afterwards does not make it "nothing was sent"."""
+    runtime, _base, state = board
+    live.generic_only(monkeypatch)
+    api_server, api = serve(Site)
+    api = api.replace("127.0.0.1", "localhost")  # another host name, not only another port
+    try:
+        Site.pages["/acme/jobs/508"] = generic_form_with(posts_elsewhere_then_errs(api))
+        run_id, package_hash = live.prepared(runtime, site, state, 508)
+        approve(run_id, package_hash)
+        result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    finally:
+        api_server.shutdown()
+        api_server.server_close()
+    assert result["status"] == "UNKNOWN_SUBMISSION", result
+    checks = result["checks"]
+    assert not checks["no_form_error"] and not checks["post_accepted"] and checks["posts_kept"]
+    assert Site.posts == ["/v1/applications"]
+    assert {"path": "/v1/applications", "status": 200} == {
+        k: result["responses"][0][k] for k in ("path", "status")
+    }
+    never_twice(runtime, run_id, package_hash, state)
+
+
+def test_a_claim_settled_before_the_click_is_never_clicked(board, site, monkeypatch):
+    """Finding 5: the cleanup settled the claim while the browser got ready; the click is
+    not made, and the cleanup's outcome stands."""
+    runtime, _base, state = board
+    live.generic_only(monkeypatch)
+    Site.pages["/acme/jobs/509"] = live.GENERIC_FORM
+    run_id, package_hash = live.prepared(runtime, site, state, 509)
+    approve(run_id, package_hash)
+    claim = submission.claim_attempt
+    clicks = []
+    monkeypatch.setattr(runtime, "click", lambda *a, **k: clicks.append(a))
+
+    def claim_then_settle(*args):
+        claim(*args)
+        later = datetime.now(UTC) + submission.STALE_SEND_AFTER + timedelta(minutes=1)
+        assert submission.settle_stale_sends(now=later) == [run_id]
+
+    monkeypatch.setattr(submission, "claim_attempt", claim_then_settle)
+    result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert result["clicked"] is False and clicks == [] and Site.posts == []
+    assert result["status"] == "UNKNOWN_SUBMISSION"
+    assert workflow.get(run_id)["status"] == "UNKNOWN_SUBMISSION"
+    receipt = json.loads((state / "applications" / run_id / "receipt.json").read_text())
+    assert "stopped before it recorded" in receipt["reason"]
+
+
+def test_nothing_slow_runs_between_the_claim_and_the_click(board, site, monkeypatch):
+    """Finding 5: no Discord post, no Erga sync and no page script between the claim and
+    the click; the outcome is on record before anything is posted."""
+    runtime, _base, state = board
+    live.generic_only(monkeypatch)
+    Site.pages["/acme/jobs/510"] = live.GENERIC_FORM
+    run_id, package_hash = live.prepared(runtime, site, state, 510)
+    approve(run_id, package_hash)
+    order = []
+    claim, click = submission.claim_attempt, runtime.click
+    record, flush = workflow.record, workflow.flush_events
+    monkeypatch.setattr(
+        submission, "claim_attempt", lambda *a: (claim(*a), order.append("claim"))[0]
+    )
+    monkeypatch.setattr(runtime, "click", lambda *a, **k: (order.append("click"), click(*a, **k)))
+    monkeypatch.setattr(workflow, "flush_events", lambda app: (order.append("post"), flush(app))[0])
+    monkeypatch.setattr(workflow, "system_line", lambda app, text: order.append("post"))
+    monkeypatch.setattr(
+        workflow,
+        "record",
+        lambda app, kind, data: (
+            order.append("outcome" if kind.startswith("submission_") else kind),
+            record(app, kind, data),
+        )[1],
+    )
+    monkeypatch.setattr(submission, "erga_confirm", lambda app: order.append("erga") or {})
+    status_at_outcome = []
+    finish = submission.finish_attempt
+
+    def finishing(app, status, evidence, expect=None):
+        with workflow.db() as conn:
+            done = finish(app, status, evidence, expect)
+            status_at_outcome.append(
+                conn.execute(
+                    "SELECT status FROM live_submission_attempts WHERE application_id=?", (app,)
+                ).fetchone()[0]
+            )
+        return done
+
+    monkeypatch.setattr(submission, "finish_attempt", finishing)
+    result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert result["status"] == "APPLIED", result
+    assert order.index("click") == order.index("claim") + 1, order
+    assert order.index("outcome") < order.index("erga"), order
+    assert status_at_outcome == ["APPLIED"]
 
 
 THANKS_THEN_ERROR = b"""document.querySelector('form').addEventListener('submit', async e => {

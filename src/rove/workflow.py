@@ -1400,6 +1400,9 @@ CHECK_WORDS = {
     "no_failure_text": "no failure message",
     "captcha_rejected": "the human check refused the send",
     "rejected_form": "the form was refused",
+    "no_pending_step": "no step left to finish (an email to verify, a sign-in)",
+    "posts_kept": "a request left the page and was not refused",
+    "all_posts_answered": "every request, to any site, was answered",
 }
 
 
