@@ -11,7 +11,7 @@ from . import fastpath, inbound, intake, matching, memory_channel, overlays, tim
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
 from .reasoning import GATE_KINDS
-from .resumes import prepare_resume
+from .resumes import one_erga_pass, prepare_resume, start_preparation
 from .runtime import state_root, write_private
 
 INTERRUPTED_AFTER = timedelta(minutes=15)
@@ -86,8 +86,8 @@ def attach_resume(application_id: str, manifest: dict):
     )
     workflow.attach_file(application_id, directory / "resume.pdf", f"→ Resume as sent · {kind}")
     tex = manifest.get("rejected_proposal_tex")
-    if not tex or not Path(tex).is_file():
-        return
+    if not tex or not Path(tex).is_file() or not manifest.get("warning_is_new", True):
+        return  # a draft rejected for the reason the owner already saw stays in Erga's folder
     draft = directory / "tailored-draft.pdf"
     try:
         import shutil
@@ -121,6 +121,50 @@ def attach_resume(application_id: str, manifest: dict):
         draft,
         f"→ Tailored draft Erga rejected ({why}) · not sent · for your review",
     )
+
+
+def ready_resume(application_id: str, url: str, preparing) -> dict:
+    """The application's resume before anything is uploaded, announced in the thread once.
+
+    `preparing` is the background intake started beside the job-fit review, if any. A
+    resume an earlier pass prepared but never announced (its pass was held on fit) is
+    announced now. The fallback's reason shows only when it is news to the owner; the
+    technical detail goes to the system log.
+    """
+    manifest_path = state_root() / f"applications/{application_id}/resume-manifest.json"
+    if preparing is not None:
+        resume = preparing.result()
+    elif manifest_path.exists():
+        resume = json.loads(manifest_path.read_text())
+        if resume.get("announced", True):
+            return resume
+    else:
+        workflow.record(
+            application_id,
+            "resume_preparation_started",
+            {"source": "approved Erga evidence", "job_url": url},
+        )
+        workflow.flush_events(application_id)
+        resume = prepare_resume(application_id, url)
+    if not resume["ready"] or resume.get("announced") is True:
+        return resume
+    workflow.record(
+        application_id,
+        "resume_prepared",
+        {
+            "sha256": resume["resume_sha256"],
+            "tailored": resume.get("tailored", False),
+            "warning": resume.get("warning", "") if resume.get("warning_is_new", True) else "",
+            "review": "Review the exact PDF before approving submission.",
+        },
+    )
+    workflow.flush_events(application_id)
+    if resume.get("system_note"):
+        workflow.system_line(application_id, resume["system_note"])
+    attach_resume(application_id, resume)
+    if resume.get("announced") is False and manifest_path.exists():
+        write_private(manifest_path, {**json.loads(manifest_path.read_text()), "announced": True})
+    return resume
 
 
 @timing.stage(None, "hold")
@@ -294,6 +338,7 @@ def skip_optional(application_id: str, questions: list):
 
 
 @timing.stage(None, "pass")
+@one_erga_pass
 def process(application_id: str) -> dict:
     item = workflow.get(application_id)
     timing.queue_wait(item)
@@ -439,6 +484,13 @@ def process(application_id: str) -> dict:
             ):
                 from .reasoning import review_application, review_job
 
+                # Erga's intake runs beside the job-fit review; the resume step joins it.
+                preparing = start_preparation(
+                    prepare_resume,
+                    application_id,
+                    item["url"],
+                    posting_text or page.get("text", "").split("Apply for this job")[0],
+                )
                 phase = "job_fit_review"
                 # One model call per job: a later pass reads the stored review back.
                 fit = review_job(application_id, page, posting_text)
@@ -463,31 +515,12 @@ def process(application_id: str) -> dict:
                     break
                 phase = "resume"
                 timing.lap("resume")
-                directory = state_root() / "applications" / application_id
-                if not (directory / "resume-manifest.json").exists():
-                    workflow.record(
-                        application_id,
-                        "resume_preparation_started",
-                        {"source": "approved Erga evidence", "job_url": item["url"]},
-                    )
-                    workflow.flush_events(application_id)
-                    resume = prepare_resume(application_id, item["url"])
-                    if not resume["ready"]:
-                        reason = resume["reason"] + ". The resume needs review before upload."
-                        headline = "Resume needs review"
-                        break
-                    workflow.record(
-                        application_id,
-                        "resume_prepared",
-                        {
-                            "sha256": resume["resume_sha256"],
-                            "tailored": resume.get("tailored", False),
-                            "warning": resume.get("warning", ""),
-                            "review": "Review the exact PDF before approving submission.",
-                        },
-                    )
-                    workflow.flush_events(application_id)
-                    attach_resume(application_id, resume)
+                # The first fill uploads the resume, so the background intake joins here.
+                resume = ready_resume(application_id, item["url"], preparing)
+                if not resume["ready"]:
+                    reason = resume["reason"] + ". The resume needs review before upload."
+                    headline = "Resume needs review"
+                    break
                 phase = "prepare"
                 timing.lap("fill")
                 page = browser_call("prepare", run_id=application_id)

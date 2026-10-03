@@ -8,6 +8,7 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from . import erga_session
 from .runtime import state_root
 
 
@@ -49,23 +50,12 @@ async def career_evidence(query: str) -> dict:
     config = state_root() / "erga/config.toml"
     if not config.is_file():
         raise ValueError("Real Erga career state has not been configured")
-    params = StdioServerParameters(
-        command=str(Path.home() / ".local/bin/erga-mcp"),
-        # Erga deliberately hides managed masters in its read/career profiles. This
-        # trusted adapter calls only list_evidence and returns bounded approved excerpts;
-        # the private Erga tool inventory is never exposed to Hermes.
-        env=dict(os.environ, ERGA_MCP_CONFIG=str(config), ERGA_MCP_TOOL_PROFILE="career-private"),
-    )
-    async with (
-        stdio_client(params) as (reader, writer),
-        ClientSession(reader, writer) as session,
-    ):
-        await session.initialize()
-        response = await session.call_tool("list_evidence", {})
-        data = response.model_dump(by_alias=True)
-        if data.get("isError"):
-            raise RuntimeError("Erga career evidence retrieval failed")
-    records = data.get("structuredContent", {}).get("result", [])
+    # Erga deliberately hides managed masters in its read/career profiles. This trusted
+    # adapter calls only list_evidence, under the career-private profile, and returns
+    # bounded approved excerpts; the private Erga tool inventory is never exposed to
+    # Hermes. Within a worker pass the call shares the pass's one Erga process.
+    data = await erga_session.call("list_evidence", {})
+    records = data.get("result", [])
     words = query.lower().split()
     found = []
     for record in records:

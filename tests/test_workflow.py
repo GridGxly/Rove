@@ -342,7 +342,9 @@ def test_failed_erga_intake_keeps_the_approved_base_resume_with_a_warning(
 
     monkeypatch.setattr(resumes, "erga_call", failing)
     manifest = resumes.prepare_resume(application_id, "https://jobs.example.com/3")
-    assert manifest["ready"] and not manifest["tailored"] and "intake failed" in manifest["warning"]
+    assert (
+        manifest["ready"] and not manifest["tailored"] and "tailoring failed" in manifest["warning"]
+    )
     directory = state / "applications" / application_id
     assert (directory / "resume.pdf").read_bytes() == pdf.read_bytes()
     assert (directory / "erga-error.json").exists() and not (
