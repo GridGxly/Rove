@@ -25,7 +25,17 @@ from urllib.parse import urlsplit
 from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import sync_playwright
 
-from . import boards, browser_app, form_reading, overlays, questions, timing, workflow
+from . import (
+    boards,
+    browser_app,
+    dates,
+    form_frames,
+    form_reading,
+    overlays,
+    questions,
+    timing,
+    workflow,
+)
 from .browser_app import devtools_alive
 from .jobs import lookup_job_link, posting_gone, public_link
 from .onboarding import read_approved
@@ -118,6 +128,9 @@ def is_place_label(label) -> bool:
     return questions.is_place_label(label)
 
 
+# How many pages of one form are filled before Rove stops and says so (Workday has six).
+FORM_PAGES = 8
+
 # Questions that are several controls, or buttons: they have no input of their own under
 # `data-rove-field`, so account forms never type into them.
 GROUP_KINDS = ("radio_group", "checkbox_group", "choice")
@@ -132,6 +145,28 @@ def phone_variants(value) -> list[str]:
     if len(digits) == 10:
         return [digits, "+1" + digits]
     return [str(value or "")]
+
+
+# What `accept` may say for a PDF to be taken: its extension, its type, or anything at all.
+PDF_TYPES = {".pdf", "application/pdf", "application/*", "*/*", "*"}
+
+
+def accepts_pdf(accept: str | None) -> bool:
+    """The upload's `accept` attribute lets a PDF through (no attribute lets anything)."""
+    kinds = {k.strip().lower() for k in str(accept or "").split(",") if k.strip()}
+    return not kinds or bool(kinds & PDF_TYPES)
+
+
+def accepted_words(accept: str) -> str:
+    """The file types an upload takes, in plain words: ".doc, .docx", "Word documents"."""
+    names = {
+        "application/msword": ".doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        "text/plain": ".txt",
+        "application/rtf": ".rtf",
+    }
+    kinds = [names.get(k.strip().lower(), k.strip().lower()) for k in accept.split(",")]
+    return ", ".join(dict.fromkeys(k for k in kinds if k))
 
 
 def resolve_known(label: str, profile: dict) -> tuple[str | None, str | None]:
@@ -486,7 +521,24 @@ class ChromeLauncher:
         return port
 
 
-FIELDS_JS = "() => !!document.querySelector('input:not([type=hidden]),select,textarea')"
+# A form control in the document, or inside one of its open shadow roots.
+FIELDS_JS = """() => {
+  const q = 'input:not([type=hidden]),select,textarea,[contenteditable][role=textbox]';
+  if (document.querySelector(q)) return true;
+  const deep = r => { for (const e of r.querySelectorAll('*'))
+    if (e.shadowRoot && (e.shadowRoot.querySelector(q) || deep(e.shadowRoot))) return true;
+    return false; };
+  return deep(document);
+}"""
+# A page that moved to its next step: a form control or a final control is showing.
+STEP_JS = (
+    """() => ("""
+    + FIELDS_JS
+    + """)() || [...document.querySelectorAll(
+  'button,input[type=submit],a,[role=button]')].some(e => e.getClientRects().length
+  && /^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i
+     .test((e.innerText || e.value || '').trim()))"""
+)
 # The visible suggestion that names the typed place, in a dropdown without ARIA roles.
 SUGGESTION_JS = """(city) => {
   const norm = s => (s || '').toLowerCase();
@@ -500,7 +552,15 @@ SUGGESTION_JS = """(city) => {
   candidates[0].setAttribute('data-rove-suggestion', '1');
   return true;
 }"""
-RENDERED_JS = FIELDS_JS + " || document.body.innerText.trim().length > 200"
+RENDERED_JS = "() => (" + FIELDS_JS + ")() || document.body.innerText.trim().length > 200"
+# A button group shows the option as pressed: the one named by `label`.
+CHOICE_PRESSED_JS = (
+    "({ref,label})=>{\n"
+    + form_reading.DEEP_ONE_JS
+    + " const box=deepOne('[data-rove-choice=\"'+ref+'\"]');\n"
+    " return !!box&&[...box.querySelectorAll('button[aria-pressed]')]"
+    ".some(b=>b.innerText.trim()===label&&b.getAttribute('aria-pressed')==='true');}"
+)
 # A visible loading indicator means the shell painted before the form: keep waiting.
 BUSY_JS = """() => {
   if (document.querySelector('input:not([type=hidden]),select,textarea')) return true;
@@ -544,6 +604,10 @@ class RecruitingBrowser:
         self.cdp = None
         self.warmed = set()
         self.launcher = ChromeLauncher()
+        # Per application: the child frame its form lives in, and the tab address it was
+        # chosen on. No entry means the tab's own document.
+        self.frames = {}
+        self.frames_waited = None
 
     def _route(self, route):
         url = route.request.url
@@ -711,6 +775,34 @@ class RecruitingBrowser:
         else:
             locator.fill(value)
 
+    def write(self, locator, field: dict, value: str) -> str:
+        """Type one value the way its control takes it; what the control kept.
+
+        A rich-text editor is typed with the keyboard and read through its text; a date
+        or month input takes its ISO value whole; a masked date box gets the digits first,
+        and the separators too when it does not insert them itself.
+        """
+        if field.get("rich"):
+            locator.click()
+            self.page.keyboard.press("ControlOrMeta+A")
+            self.page.keyboard.press("Backspace")
+            slow = pacing_enabled() and len(value) <= 80
+            self.page.keyboard.type(value, delay=random.uniform(25, 65) if slow else 0)
+            return locator.evaluate("e=>e.innerText.trim()")
+        if field["kind"] in dates.DATE_KINDS:
+            locator.fill(value)
+            return locator.input_value()
+        if dates.is_date_box(field):
+            digits = re.sub(r"\D", "", value)
+            self.type_value(locator, digits)
+            kept = locator.input_value()
+            if kept == digits and digits != value:
+                self.type_value(locator, value)
+                kept = locator.input_value()
+            return kept
+        self.type_value(locator, value)
+        return locator.input_value()
+
     def warm(self, url: str, force: bool = False):
         """Visit the site's front door first; a cold deep link is what bot managers flag."""
         host = urlsplit(url).hostname or ""
@@ -797,16 +889,115 @@ class RecruitingBrowser:
                 )
                 if not alternative:
                     return False
-                locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
+                locator = self.form.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 self.type_value(locator, alternative)
                 return True
         return False
 
-    def wait_for_fields(self, timeout: int = 8000):
-        try:
-            self.page.wait_for_function(FIELDS_JS, timeout=timeout)
-        except PlaywrightError:
-            pass
+    def wait_for_fields(self, timeout: int = 8000, script: str = FIELDS_JS) -> bool:
+        """Bounded wait for a form in the tab: its own document, or a frame that may hold one.
+
+        A tab without child frames waits on its document alone, as it always has.
+        """
+        main = self.page.main_frame
+        if len(self.page.frames) < 2:
+            try:
+                main.wait_for_function(script, timeout=timeout)
+                return True
+            except PlaywrightError:
+                return False
+        deadline = time.monotonic() + timeout / 1000
+        while True:
+            for frame in self.form_frames():
+                with contextlib.suppress(PlaywrightError):
+                    if frame.evaluate(script):
+                        return True
+            if time.monotonic() >= deadline:
+                return False
+            self.page.wait_for_timeout(200)
+
+    # --- the frame that holds the form ------------------------------------------------
+
+    @property
+    def form(self):
+        """Where the observed form lives: the child frame chosen for this application, or
+        the tab's own document. Every reference an observation hands out belongs to it."""
+        held = self.frames.get(self.run["id"]) if self.run else None
+        if held and not held[0].is_detached() and held[0].page is self.page:
+            return held[0]
+        return self.page.main_frame
+
+    def form_frames(self) -> list:
+        """The frames that may hold a form, the current form's frame first."""
+        main, form = self.page.main_frame, self.form
+        others = [
+            f
+            for f in self.page.frames
+            if f is not form
+            and (f is main or (not f.is_detached() and form_frames.candidate(f.url)))
+        ]
+        return [form, *others]
+
+    def child_readings(self) -> list:
+        """(frame, reading) for every child frame big enough to show a form."""
+        main, found = self.page.main_frame, []
+        for frame in self.page.frames:
+            if frame is main or frame.is_detached() or not form_frames.candidate(frame.url):
+                continue
+            try:
+                element = frame.frame_element()
+                box = element.bounding_box()
+                element.dispose()
+                if form_frames.big_enough(box):
+                    found.append((frame, frame.evaluate(OBSERVE)))
+            except PlaywrightError:
+                continue
+        return found
+
+    def mark_frame(self, frame):
+        """The iframe that holds the form stands for it in the tab's own document, so a
+        pop-up around it is known to be the application and one on top of it is not."""
+        outer = frame
+        while outer.parent_frame is not None and outer.parent_frame is not self.page.main_frame:
+            outer = outer.parent_frame
+        with contextlib.suppress(PlaywrightError):
+            element = outer.frame_element()
+            element.evaluate(
+                "e=>{e.ownerDocument.querySelectorAll('[data-rove-field]')"
+                ".forEach(x=>x.removeAttribute('data-rove-field'));"
+                "e.setAttribute('data-rove-field','frame');}"
+            )
+            element.dispose()
+
+    def read_form(self) -> tuple:
+        """(frame, reading): the observation script run where the application form is.
+
+        The tab's own document is read first, as it always was; child frames are read only
+        when the tab has some. A chosen child frame stays chosen while the tab stays on the
+        same address and the frame is still there, so its confirmation page is read from
+        it after the send.
+        """
+        page, main = self.page, self.page.main_frame
+        run_id = self.run["id"] if self.run else None
+        held = self.frames.pop(run_id, None)
+        if held and not held[0].is_detached() and held[1] == page.url:
+            try:
+                reading = held[0].evaluate(OBSERVE)
+                self.frames[run_id] = held
+                return held[0], reading
+            except PlaywrightError:
+                pass
+        reading = main.evaluate(OBSERVE)
+        if len(page.frames) < 2:
+            return main, reading
+        children = self.child_readings()
+        index = form_frames.choose(reading, [r for _f, r in children])
+        if index is None:
+            return main, reading
+        frame, chosen = children[index]
+        self.frames[run_id] = (frame, page.url)
+        self.mark_frame(frame)
+        return frame, chosen
 
     def dismiss_consent(self):
         """A cookie banner gets the privacy-preserving choice, found by its own wording."""
@@ -826,9 +1017,25 @@ class RecruitingBrowser:
     def observe(self) -> dict:
         if self.page is None or self.page.is_closed():
             raise ValueError("No live job page. Open a link first.")
-        data = self.page.evaluate(OBSERVE)
+        frame, data = self.read_form()
+        main = self.page.main_frame
+        if (
+            frame is main
+            and not form_frames.actionable(data)
+            and len(self.page.frames) > 1
+            and self.frames_waited != (self.run["id"], self.page.url)
+        ):
+            # An employer page whose embedded form is still loading: one bounded wait.
+            self.frames_waited = (self.run["id"], self.page.url)
+            if self.wait_for_fields(5000):
+                frame, data = self.read_form()
+        if frame is not main:
+            # The tab shows the employer's page; the form, its address and everything the
+            # observation names belong to the frame.
+            data["page_url"] = self.page.url
+            data["title"] = self.page.title() or data["title"]
         # A board's honeypot must stay empty: it is never offered as a question.
-        data["fields"] = boards.fillable(self.page.url, data.get("fields", []))
+        data["fields"] = boards.fillable(frame.url, data.get("fields", []))
         head = data.get("title", "") + "\n" + data.get("text", "")[:3000]
         marker = BLOCK_MARKERS.search(head)
         closed = CLOSED_MARKERS.search(head)
@@ -839,7 +1046,7 @@ class RecruitingBrowser:
             data.get("application_links"),
         )
         data.update(
-            url=self.page.url,
+            url=frame.url,
             run_id=self.run["id"],
             blocked=bool(marker) and not data.get("fields"),
             block_marker=marker.group(0) if marker else None,
@@ -888,7 +1095,7 @@ class RecruitingBrowser:
     def set_checkboxes(self, field: dict, labels: list[str]) -> bool:
         """Leave exactly the named options of a checkbox group checked, and verify each box."""
         for option, ref in zip(field["options"], field["member_refs"], strict=True):
-            member = self.page.locator(f'[data-rove-field="{int(ref)}"]')
+            member = self.form.locator(f'[data-rove-field="{int(ref)}"]')
             wanted = option["label"] in labels
             if member.is_checked() == wanted:
                 continue
@@ -900,7 +1107,7 @@ class RecruitingBrowser:
                 # Styled boxes hide the input; its associated label is the visible target.
                 target = member.get_attribute("id")
                 if target:
-                    self.page.locator(f'label[for="{target}"]').first.click()
+                    self.form.locator(f'label[for="{target}"]').first.click()
             if member.is_checked() != wanted:
                 return False
         return True
@@ -1045,25 +1252,25 @@ class RecruitingBrowser:
         self.check(run_id)
         if not self.observation or observation_id != self.observation["observation_id"]:
             raise ValueError("Page observation changed; inspect again before following a link")
-        if self.page.url != self.observation["url"]:
+        if self.form.url != self.observation["url"]:
             raise ValueError("Page URL changed; inspect again")
         item = next((x for x in self.observation["application_links"] if x["ref"] == ref), None)
         if not item:
             raise PermissionError("Only an observed application-start link may be followed")
-        locator = self.page.locator(f'[data-rove-link="{int(ref)}"]')
+        locator = self.form.locator(f'[data-rove-link="{int(ref)}"]')
         if normalized(locator.inner_text()) != normalized(item["label"]):
             raise ValueError("Application link changed")
         if item["url"]:
             validate_destination(item["url"])
             if urlsplit(item["url"]).hostname != urlsplit(
-                self.page.url
+                self.form.url
             ).hostname and not approved_ats(item["url"]):
                 raise PermissionError("Unexpected application destination; owner review needed")
         old_pages = list(self.context.pages)
         with self.guarded(self.page):
             self.click(locator)
             try:
-                self.page.wait_for_function(
+                self.form.wait_for_function(
                     "old => location.href !== old || !!document.querySelector('input:not([type=hidden]),select,textarea,[role=dialog]')",
                     arg=self.observation["url"],
                     timeout=2500,
@@ -1122,7 +1329,7 @@ class RecruitingBrowser:
             locator.fill(city or value)
         else:
             locator.press("ArrowDown")
-        options = self.page.get_by_role("option")
+        options = self.form.get_by_role("option")
         try:
             options.first.wait_for(state="visible", timeout=4000)
         except PlaywrightError:
@@ -1137,12 +1344,12 @@ class RecruitingBrowser:
                     for _ in range(12):
                         # Place pickers geocode after a pause: poll for the suggestion.
                         self.page.wait_for_timeout(500)
-                        if city and self.page.evaluate(SUGGESTION_JS, city):
+                        if city and self.form.evaluate(SUGGESTION_JS, city):
                             found = True
                             break
                     if found:
                         self.click(
-                            self.page.locator('[data-rove-suggestion="1"]').first,
+                            self.form.locator('[data-rove-suggestion="1"]').first,
                             timeout=4000,
                         )
                     else:
@@ -1224,7 +1431,7 @@ class RecruitingBrowser:
         locator.click()
         if normalized(field["label"]) == "country":
             try:
-                self.page.wait_for_function(
+                self.form.wait_for_function(
                     "({ref,value})=>{const e=document.querySelector('[data-rove-field=\"'+ref+'\"]');return e?.closest('.select__container')?.querySelector('[aria-live]')?.textContent.includes('option '+value+', selected.')}",
                     arg={"ref": field["ref"], "value": value},
                     timeout=3000,
@@ -1241,7 +1448,7 @@ class RecruitingBrowser:
         # input or seeing a shared country dial code does not.
         locator.click()
         locator.press("ArrowDown")
-        selected = self.page.get_by_role("option", name=expected, exact=True)
+        selected = self.form.get_by_role("option", name=expected, exact=True)
         try:
             selected.wait_for(state="visible", timeout=3000)
             verified = (
@@ -1272,7 +1479,7 @@ class RecruitingBrowser:
         if field["kind"] == "radio_group":
             index = next(i for i, o in enumerate(field["options"]) if o["label"] == label)
             # The reference is the radio, or the role wrapper that stands in for a hidden one.
-            member = self.page.locator(f'[data-rove-field="{int(field["member_refs"][index])}"]')
+            member = self.form.locator(f'[data-rove-field="{int(field["member_refs"][index])}"]')
             try:
                 member.check(timeout=3000)
             except PlaywrightError as error:
@@ -1281,21 +1488,21 @@ class RecruitingBrowser:
                 if not member.evaluate(form_reading.CHECKED_JS):
                     # Styled radios hide the input; its associated label is the visible target.
                     target = member.get_attribute("id")
-                    label_for = self.page.locator(f'label[for="{target}"]') if target else None
+                    label_for = self.form.locator(f'label[for="{target}"]') if target else None
                     with contextlib.suppress(PlaywrightError):
                         if label_for is not None and label_for.count():
                             label_for.first.click(timeout=3000)
                         else:
                             member.click(timeout=3000, force=True)
             return bool(member.evaluate(form_reading.CHECKED_JS))
-        container = self.page.locator(f'[data-rove-choice="{int(field["ref"])}"]')
+        container = self.form.locator(f'[data-rove-choice="{int(field["ref"])}"]')
         button = container.get_by_role("button", name=label, exact=True)
         if button.count() != 1:
             return False
         self.click(button)
         try:
-            self.page.wait_for_function(
-                "({ref,label})=>[...document.querySelector('[data-rove-choice=\"'+ref+'\"]').querySelectorAll('button[aria-pressed]')].some(b=>b.innerText.trim()===label&&b.getAttribute('aria-pressed')==='true')",
+            self.form.wait_for_function(
+                CHOICE_PRESSED_JS,
                 arg={"ref": field["ref"], "label": label},
                 timeout=3000,
             )
@@ -1320,7 +1527,7 @@ class RecruitingBrowser:
             return False
         texts, matches = [], []
         for attempt in range(10):
-            texts = self.page.evaluate(form_reading.OPTIONS_JS, ref)
+            texts = self.form.evaluate(form_reading.OPTIONS_JS, ref)
             matches = [i for i, text in enumerate(texts) if option_matches(text, value)]
             if matches:
                 break
@@ -1344,9 +1551,9 @@ class RecruitingBrowser:
             return False
         expected, shown = texts[matches[0]], None
         with contextlib.suppress(PlaywrightError):
-            self.click(self.page.locator(f'[data-rove-option="{matches[0]}"]'), timeout=4000)
+            self.click(self.form.locator(f'[data-rove-option="{matches[0]}"]'), timeout=4000)
             for _ in range(12):
-                shown = self.page.evaluate(form_reading.PICKED_JS, ref)
+                shown = self.form.evaluate(form_reading.PICKED_JS, ref)
                 if normalized(str(shown or "")) == normalized(expected):
                     break
                 self.page.wait_for_timeout(250)
@@ -1389,12 +1596,13 @@ class RecruitingBrowser:
         """
         watch = getattr(self, "upload_watch", None) or (self.page, set(), None, None)
         page, pending, started, ended = watch
+        form = self.form if page is self.page else page.main_frame
         deadline = time.monotonic() + timeout_ms / 1000
         try:
             state, since = None, time.monotonic()
             while time.monotonic() < deadline:
                 page.wait_for_timeout(150)
-                now = page.evaluate(form_reading.FORM_STATE_JS)
+                now = form.evaluate(form_reading.FORM_STATE_JS)
                 if now != state or pending:
                     state, since = now, time.monotonic()
                 elif (time.monotonic() - since) * 1000 >= quiet_ms:
@@ -1415,7 +1623,7 @@ class RecruitingBrowser:
         else:
             ref = field["ref"] if field["ref"] is not None else field["member_refs"][0]
             selector = f'[data-rove-field="{int(ref)}"]'
-        return self.page.locator(selector).count() > 0
+        return self.form.locator(selector).count() > 0
 
     def fields_to_fill(self, before: dict):
         """One page's fields in form order, kept true while the page changes under the fill.
@@ -1540,22 +1748,65 @@ class RecruitingBrowser:
                 continue
 
     def find_overlays(self, after_failure: bool = False) -> list[dict]:
-        """The pop-ups in the way of the page right now, the one with controls first."""
-        try:
-            found = self.page.evaluate(overlays.FIND_JS)
-        except PlaywrightError:
-            return []
-        return overlays.in_the_way(found, after_failure)
+        """The pop-ups in the way of the page right now, the one with controls first.
+
+        The tab's own document is searched, and the form's frame when the form lives in
+        one; a pop-up found in the frame remembers it, so it is closed there.
+        """
+        main = self.page.main_frame
+        if len(self.page.frames) > 1:
+            self.mark_form_frame()
+        found = []
+        for frame in [main] if self.form is main else [main, self.form]:
+            try:
+                seen = frame.evaluate(overlays.FIND_JS)
+            except PlaywrightError:
+                continue
+            for overlay in overlays.in_the_way(seen, after_failure):
+                if frame is not main:
+                    overlay["_frame"] = frame
+                found.append(overlay)
+        return found
+
+    def mark_form_frame(self):
+        """Before pop-ups are judged: the frame holding the form, when the tab's own
+        document has no form, stands for it there (see `mark_frame`)."""
+        main = self.page.main_frame
+        form = self.form
+        with contextlib.suppress(PlaywrightError):
+            if form is main:
+                if main.evaluate(FIELDS_JS):
+                    return
+                form = next(
+                    (
+                        f
+                        for f in self.page.frames
+                        if f is not main
+                        and not f.is_detached()
+                        and form_frames.candidate(f.url)
+                        and f.evaluate(FIELDS_JS)
+                    ),
+                    None,
+                )
+            if form is not None:
+                self.mark_frame(form)
+
+    def overlay_frame(self, overlay: dict):
+        return overlay.get("_frame") or self.page.main_frame
 
     def overlay_gone(self, overlay: dict, timeout_ms: int = 2500) -> bool:
         try:
-            self.page.wait_for_function(overlays.GONE_JS, arg=overlay["ref"], timeout=timeout_ms)
+            self.overlay_frame(overlay).wait_for_function(
+                overlays.GONE_JS, arg=overlay["ref"], timeout=timeout_ms
+            )
             return True
         except PlaywrightError:
             return False
 
     def press_overlay_button(self, overlay: dict, button: dict) -> bool:
-        locator = self.page.locator(f'[data-rove-overlay-button="{int(button["ref"])}"]')
+        locator = self.overlay_frame(overlay).locator(
+            f'[data-rove-overlay-button="{int(button["ref"])}"]'
+        )
         try:
             self.click(locator, timeout=4000)
         except PlaywrightError:
@@ -1572,7 +1823,12 @@ class RecruitingBrowser:
             return "Escape"
         point = None
         with contextlib.suppress(PlaywrightError):
-            point = self.page.evaluate(overlays.BACKDROP_POINT_JS, overlay["ref"])
+            frame = self.overlay_frame(overlay)
+            point = frame.evaluate(overlays.BACKDROP_POINT_JS, overlay["ref"])
+            if point and frame is not self.page.main_frame:
+                # The frame's own coordinates, moved to where the frame sits in the tab.
+                box = frame.frame_element().bounding_box()
+                point = [point[0] + box["x"], point[1] + box["y"]] if box else None
         if point:
             with contextlib.suppress(PlaywrightError):
                 self.page.mouse.click(point[0], point[1])
@@ -1685,7 +1941,7 @@ class RecruitingBrowser:
         )
         if control is None:
             raise ValueError(f"No {intent} control is visible on this page")
-        return self.page.locator(f'[data-rove-auth="{int(control["ref"])}"]'), control
+        return self.form.locator(f'[data-rove-auth="{int(control["ref"])}"]'), control
 
     def register(self, run_id: str) -> dict:
         """Create the employer account the owner approved: email, generated password, nothing else."""
@@ -1716,7 +1972,7 @@ class RecruitingBrowser:
                     or field["kind"] in {"file", "hidden", *GROUP_KINDS}
                 ):
                     continue
-                locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
+                locator = self.form.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 label = normalized(field["label"] + " " + field["name"])
                 if field["kind"] == "password":
                     locator.fill(password)
@@ -1774,7 +2030,7 @@ class RecruitingBrowser:
             for field in before["fields"]:
                 if field["disabled"] or field["kind"] in {"file", "hidden", *GROUP_KINDS}:
                     continue
-                locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
+                locator = self.form.locator(f'[data-rove-field="{int(field["ref"])}"]')
                 label = normalized(field["label"] + " " + field["name"])
                 if field["kind"] == "password":
                     locator.fill(account["password"])
@@ -1809,9 +2065,11 @@ class RecruitingBrowser:
                 if field is None:
                     raise ValueError("Filled field disappeared; re-inspect before continuing")
                 if (
-                    field["kind"] in ("text", "email", "tel", "url", "textarea")
+                    field["kind"] in ("text", "email", "tel", "url", "textarea", *dates.DATE_KINDS)
                     and entry.get("control") != "combobox"
-                    and not same_value(entry["value"], field["value"])
+                    and not (dates.same_date if dates.is_date_box(field) else same_value)(
+                        entry["value"], field["value"]
+                    )
                 ):
                     raise ValueError(f"Field verification failed: {field.get('label', '')[:80]}")
                 if (
@@ -1850,7 +2108,7 @@ class RecruitingBrowser:
         for field in self.fields_to_fill(before):
             if field["disabled"] or field["readonly"]:
                 continue
-            if self.page.url != before["url"]:
+            if self.form.url != before["url"]:
                 raise PermissionError("Page changed before fill")
             pace()
             if field["kind"] == "radio" and field.get("name") in grouped:
@@ -1913,7 +2171,7 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            locator = self.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
+            locator = self.form.locator(f'[data-rove-field="{int(field["ref"])}"]')
             if field["kind"] == "file":
                 # Resume uploads are a separate, explicit preparation action, using a
                 # frozen file only. Other requested files always remain unresolved.
@@ -1952,6 +2210,19 @@ class RecruitingBrowser:
                 if hashlib.sha256(resume.read_bytes()).hexdigest() != self.run["resume_sha256"]:
                     raise PermissionError("Frozen resume changed")
                 upload_control = locator.element_handle()
+                accept = upload_control.evaluate("e=>e.getAttribute('accept')||''")
+                if not accepts_pdf(accept):
+                    # The site takes other file types only: nothing is attached, the owner decides.
+                    pending.append(
+                        {
+                            "label": field["label"],
+                            "key": field["key"],
+                            "required": field["required"],
+                            "reason": f"This upload takes only {accepted_words(accept)} files, "
+                            "and the approved resume is a PDF",
+                        }
+                    )
+                    continue
                 if upload_control.evaluate("e=>e.files.length===1&&e.files[0].name==='resume.pdf'"):
                     self.resume_attached = True  # a pass run again: the file is already on
                 else:
@@ -2008,7 +2279,7 @@ class RecruitingBrowser:
                 locator.click()
                 locator.press("ArrowDown")
                 try:
-                    options = self.page.get_by_role("option")
+                    options = self.form.get_by_role("option")
                     options.first.wait_for(state="visible", timeout=3000)
                     choices = options.all_text_contents()[:300]
                 except PlaywrightError:
@@ -2038,8 +2309,19 @@ class RecruitingBrowser:
                     }
                 )
                 continue
+            if field["tag"] == "select" and value is None and dates.part_of(field["options"]):
+                # A month, day or year dropdown answers part of a date question: the
+                # approved date for that question picks its option.
+                asked = dates.question_label(field["label"])
+                if asked:
+                    value, source = resolve(
+                        {**field, "label": asked, "options": [], "kind": "text"}
+                    )
             if field["tag"] == "select" and value is not None:
                 options = [x for x in field["options"] if option_matches(x["label"], value)]
+                by_date = None if options else dates.option_for(field["options"], value)
+                if by_date:
+                    options = [by_date]
                 if len(options) == 1:
                     locator.select_option(value=options[0]["value"])
                     if locator.input_value() != options[0]["value"]:
@@ -2047,7 +2329,7 @@ class RecruitingBrowser:
                     filled.append(
                         {
                             "label": field["label"],
-                            "value": value,
+                            "value": by_date["label"] if by_date else value,
                             "source": source,
                             "key": field["key"],
                         }
@@ -2066,8 +2348,24 @@ class RecruitingBrowser:
                     {"label": field["label"], "value": value, "source": source, "key": field["key"]}
                 )
                 continue
+            if value is not None and dates.is_date_box(field):
+                written = dates.for_input(value, field)
+                if written is None:
+                    pending.append(
+                        {
+                            "label": field["label"],
+                            "required": field["required"],
+                            "key": field["key"],
+                            "options": choices,
+                            "reason": "The date could not be written the way this field takes it",
+                            **questions.unlabeled(field),
+                        }
+                    )
+                    continue
+                value = written
             if (
-                field["kind"] not in ("text", "email", "tel", "url", "textarea", "number")
+                field["kind"]
+                not in ("text", "email", "tel", "url", "textarea", "number", *dates.DATE_KINDS)
                 or (
                     field["kind"] == "textarea"
                     and not owner_answer
@@ -2086,7 +2384,9 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            if field["value"] and not same_value(value, field["value"]) and not owner_answer:
+            dated = dates.is_date_box(field)
+            same = dates.same_date if dated else same_value
+            if field["value"] and not same(value, field["value"]) and not owner_answer:
                 pending.append(
                     {
                         "label": field["label"],
@@ -2096,20 +2396,18 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            if field["value"] and same_value(value, field["value"]):
+            if field["value"] and same(value, field["value"]):
                 filled.append(
                     {"label": field["label"], "value": value, "source": source, "key": field["key"]}
                 )
                 continue
-            self.type_value(locator, value)
-            kept = locator.input_value()
-            if not same_value(value, kept) and kept and value.startswith(kept):
+            kept = self.write(locator, field, value)
+            if not dated and not same_value(value, kept) and kept and value.startswith(kept):
                 # The field silently keeps only its first N characters: fit the text to it.
                 value = workflow.brief(value, len(kept))
-                self.type_value(locator, value)
-                kept = locator.input_value()
+                kept = self.write(locator, field, value)
                 source = f"{source} (shortened to {len(kept)} characters)"
-            if not same_value(value, kept):
+            if not same(value, kept):
                 raise ValueError(f"Field verification failed: {field['label'][:80]}")
             filled.append(
                 {"label": field["label"], "value": value, "source": source, "key": field["key"]}
@@ -2145,15 +2443,17 @@ class RecruitingBrowser:
         self.run["status"] = "PREPARING"
         answers = workflow.approved_answers(run_id)
         filled, pending, pages = [], [], []
-        result = before
-        for _step in range(4):
+        # `landed` is the last page reached, for what it says about itself (an assessment).
+        result = landed = before
+        moved = False
+        for _step in range(FORM_PAGES):
             pages.append(before["url"])
             page_filled, page_pending = self.fill_cleared(run_id, before, approved, answers)
             filled.extend(page_filled)
             pending.extend(page_pending)
             self.run.update(status="NEEDS_REVIEW", filled=filled, pending=pending)
             self.save()
-            result = self.observe()
+            result = landed = self.observe()
             self._verify_batch(result, page_filled)
             seen = {f["key"] for f in before["fields"]}
             pending.extend(
@@ -2170,11 +2470,15 @@ class RecruitingBrowser:
             if pending or result.get("final_controls") or not nav:
                 break
             # A complete step of a multi-page form: continue once, then keep filling.
-            self.click(self.page.locator(f'[data-rove-nav="{int(nav[0]["ref"])}"]'))
-            self.settle()
-            self.wait_for_fields()
-            before = self.observe()
+            state = self.form.evaluate(form_reading.FORM_STATE_JS)
+            self.click(self.form.locator(f'[data-rove-nav="{int(nav[0]["ref"])}"]'))
+            self.next_step(state, result["url"])
+            before = landed = self.observe()
             workflow.record(run_id, "form_step", {"clicked": nav[0]["label"], "url": before["url"]})
+            if urlsplit(before["url"]).hostname != urlsplit(pages[0]).hostname:
+                # The step left the site the form was verified on: nothing more is typed.
+                moved = True
+                break
             stuck = before["url"] in pages and before["fields"] == result["fields"]
             error = str(before.get("ats_markers", {}).get("form_error") or "")
             if (
@@ -2190,13 +2494,18 @@ class RecruitingBrowser:
                 stuck = False
             if stuck and error:
                 self.run["form_error"] = error[:300]
+            if not stuck and form_reading.review_step(before):
+                # The last step shows the answers back with Edit links and Submit: done.
+                pages.append(before["url"])
+                result = before
+                break
             if not before["fields"] or stuck:
                 break
         self.run["pending"] = pending
         self.save()
         package = {
             "run_id": run_id,
-            "url": self.page.url,
+            "url": self.form.url,
             "profile_hash": approved["profile_hash"],
             "resume_sha256": self.run.get("resume_sha256"),
             "filled": filled,
@@ -2222,17 +2531,39 @@ class RecruitingBrowser:
         status = "READY_FOR_REVIEW" if ready else "NEEDS_USER"
         if not pending and not ready:
             error = self.run.pop("form_error", "")
-            result = {
-                **result,
-                "reason": (
-                    f"The site rejected a value on this step: {error}. Check it in the "
-                    "recruiting browser, then resume."
-                    if error
-                    else "The form's last step with its Submit control was not reached. Check "
-                    "the recruiting browser, then resume."
-                ),
-            }
+            step = form_reading.owner_step(landed)
+            if step:
+                # A video interview or an assessment: named, with its link, for the owner.
+                result = {**result, **step, "owner_step": True}
+            else:
+                result = {
+                    **result,
+                    "reason": (
+                        "A step of the form moved to another site, so nothing more was typed. "
+                        "Check the recruiting browser, then resume."
+                        if moved
+                        else f"The site rejected a value on this step: {error}. Check it in the "
+                        "recruiting browser, then resume."
+                        if error
+                        else "The form's last step with its Submit control was not reached. "
+                        "Check the recruiting browser, then resume."
+                    ),
+                }
         return {**result, **package, "status": status}
+
+    def next_step(self, state: str, url: str, timeout_ms: int = 6000):
+        """After a Next click: wait until the step changed (another address, or other
+        controls and values), then for the new step's fields or its final control."""
+        deadline = time.monotonic() + timeout_ms / 1000
+        while time.monotonic() < deadline:
+            self.page.wait_for_timeout(100)
+            try:
+                if self.form.url != url or self.form.evaluate(form_reading.FORM_STATE_JS) != state:
+                    break
+            except PlaywrightError:
+                break  # the document is being replaced: the step changed
+        self.settle()
+        self.wait_for_fields(script=STEP_JS)
 
 
 def socket_path() -> Path:
@@ -2354,11 +2685,49 @@ def serve():
         server.serve_forever()
 
 
+# How long a caller waits for the daemon's reply, per action, in seconds. Long enough for
+# the daemon's own bounds: a wizard of eight pages with pickers, a send and its 45-second
+# confirmation wait, a blocked site's 12-30 s pause before its retry. Short for the
+# actions that answer at once, so a status check does not hang behind a long fill.
+CALL_SECONDS = {
+    "open": 240,
+    "reopen": 300,
+    "follow": 240,
+    "observe": 90,
+    "register": 240,
+    "login": 240,
+    "prepare": 900,
+    "submit": 300,
+    "status": 20,
+    "close": 30,
+}
+
+
+def read_reply(client, seconds: float) -> bytes:
+    """The daemon's reply: one line of any length, within `seconds` in all."""
+    deadline = time.monotonic() + seconds
+    chunks = []
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("The browser service did not answer in time")
+        client.settimeout(left)
+        chunk = client.recv(1 << 16)
+        if not chunk:
+            break
+        end = chunk.find(b"\n")
+        if end >= 0:
+            chunks.append(chunk[:end])
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @timing.call("browser")
 def browser_call(action: str, **kwargs) -> dict:
     def connect():
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(150)
+        client.settimeout(10)
         try:
             client.connect(str(socket_path()))
         except Exception:
@@ -2384,7 +2753,7 @@ def browser_call(action: str, **kwargs) -> dict:
             raise RuntimeError("Visible browser service did not start")
     with client:
         client.sendall((json.dumps({"action": action, **kwargs}) + "\n").encode())
-        result = json.loads(client.makefile("rb").readline(200000))
+        result = json.loads(read_reply(client, CALL_SECONDS.get(action, 240)))
     if "error" in result:
         raise RuntimeError(result["error"])
     return result["result"]

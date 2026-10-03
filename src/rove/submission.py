@@ -733,7 +733,7 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
     if adapter.scope(current["url"]) != adapter.scope(package["url"]):
         raise PermissionError("The live page is not the reviewed employer job")
     control = package["final_controls"][0]
-    locator = browser.page.locator(f'[data-rove-submit="{int(control["ref"])}"]')
+    locator = browser.form.locator(f'[data-rove-submit="{int(control["ref"])}"]')
     if locator.count() != 1 or not locator.is_enabled():
         raise PermissionError("Final application control is unavailable")
     if normalized(locator.inner_text()) != normalized(control["label"]):
@@ -773,14 +773,14 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
     }
     try:
         # The code-owned preparation guard is armed for this one observed click only.
-        browser.page.evaluate(
+        browser.form.evaluate(
             "() => document.documentElement.setAttribute('data-rove-submit-armed', '1')"
         )
         browser.click(locator)
         timing.lap("verify")
         # Bounded: the adapter waits for its own signal, then the page is read once.
-        adapter.await_result(browser.page, current, CONFIRMATION_TIMEOUT_MS)
-        browser.page.wait_for_load_state("domcontentloaded", timeout=15000)
+        adapter.await_result(browser.form, current, CONFIRMATION_TIMEOUT_MS)
+        browser.form.wait_for_load_state("domcontentloaded", timeout=15000)
         after = browser.observe()
         checks = adapter.confirmed(package["url"], after, responses, before=current)
         result["checks"] = checks
@@ -810,7 +810,7 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
         result["reason"] = "No independent confirmation: " + type(error).__name__
     finally:
         try:
-            browser.page.evaluate(
+            browser.form.evaluate(
                 "() => document.documentElement.removeAttribute('data-rove-submit-armed')"
             )
         except PlaywrightError:

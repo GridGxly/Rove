@@ -638,7 +638,9 @@ def process(application_id: str) -> dict:
                         "The form's last step with its Submit control was not reached. Check "
                         "the recruiting browser, then reply `go`.",
                     )
-                    headline = "Final step not reached"
+                    headline = page.get("headline") or "Final step not reached"
+                    if page.get("owner_step"):  # a video interview or assessment he takes
+                        final_state, commands = "MANUAL_TAKEOVER", ["applied", "park it"]
                 elif page.get("package_hash"):
                     from .submission import enabled_adapter
 

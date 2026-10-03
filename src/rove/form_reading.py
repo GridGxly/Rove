@@ -538,6 +538,70 @@ def distinct_keys(fields: list[dict], key) -> None:
             field["key"] = key(field)
 
 
+def review_step(reading: dict) -> bool:
+    """The last step of a wizard that shows the answers back: nothing left to fill (its
+    Edit links are not fields) and exactly one control that sends the application."""
+    open_fields = [
+        f for f in reading.get("fields") or [] if not f["disabled"] and not f["readonly"]
+    ]
+    return not open_fields and len(reading.get("final_controls") or []) == 1
+
+
+# The video-interview and assessment sites, as the owner knows them.
+STEP_SITES = {
+    "hirevue": "HireVue",
+    "sparkhire": "Spark Hire",
+    "modernhire": "Modern Hire",
+    "willo": "Willo",
+    "myinterview": "myInterview",
+    "vidcruiter": "VidCruiter",
+    "interviewstream": "interviewstream",
+    "talview": "Talview",
+    "codility": "Codility",
+    "hackerrank": "HackerRank",
+    "codesignal": "CodeSignal",
+    "testgorilla": "TestGorilla",
+    "karat": "Karat",
+    "pymetrics": "pymetrics",
+    "harver": "Harver",
+    "vervoe": "Vervoe",
+    "shl": "SHL",
+    "mettl": "Mercer Mettl",
+    "criteriacorp": "Criteria",
+    "coderbyte": "Coderbyte",
+    "qualified": "Qualified",
+    "devskiller": "DevSkiller",
+    "wonderlic": "Wonderlic",
+    "hackerearth": "HackerEarth",
+    "imocha": "iMocha",
+    "testdome": "TestDome",
+}
+
+
+def owner_step(reading: dict) -> dict | None:
+    """A video interview or an online assessment in the application: the owner's to take.
+
+    The headline and the reason are plain words for the owner, with the link to open.
+    """
+    marker = (reading.get("ats_markers") or {}).get("assessment")
+    if not marker:
+        return None
+    host = str(marker.get("host") or "").lower()
+    name = next((n for key, n in STEP_SITES.items() if key in host.split(".")), "")
+    on = f" on {name}" if name else ""
+    link = marker.get("link") or reading.get("url") or ""
+    what = (
+        ("Video interview step", f"a recorded video interview{on}, which Rove does not record")
+        if marker.get("kind") == "video"
+        else ("Assessment step", f"an online assessment{on}, which Rove does not take")
+    )
+    return {
+        "headline": what[0],
+        "reason": f"The application goes on to {what[1]}. Nothing was sent. Open it here: "
+        f"{link} and finish the application there, then reply `applied`, or `park it`.",
+    }
+
+
 def words(text) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(text or "").lower()))
 
