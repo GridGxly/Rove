@@ -1855,10 +1855,11 @@ def status_replies(payload: dict) -> list[str]:
     line, so `go` and `park it` still show."""
     replies = reply_lines(payload)
     numbers = [r for r in replies if NUMBERED_REPLY.fullmatch(r)]
-    if len(numbers) >= 3:
-        first, last = numbers[0].rstrip(": "), numbers[-1].rstrip(": ")
+    waiting = [q for q in payload.get("questions") or [] if q.get("state", "open") == "open"]
+    if len(numbers) >= 3 or (numbers and len(waiting) >= 3):
         words = [r for r in replies if r not in numbers]
-        replies = [f"N: your answer  (questions {first} to {last})", *words]
+        count = max(len(waiting), len(numbers))
+        replies = [f"N: your answer  ({count} questions)", *words]
     return replies[:4]
 
 

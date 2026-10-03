@@ -308,6 +308,35 @@ def test_an_interrupted_batch_resumes_where_it_stopped_with_the_same_nonces(fake
     assert [d for _, d in deliveries(app)] == ["sent", "sent", "sent"]
 
 
+def test_a_message_that_may_have_arrived_keeps_its_nonce_through_a_later_outage(fake):
+    app = application()
+    workflow.record(app, "opened", {"title": "Posting"})
+    original = fake.handler
+    nonces = []
+
+    def answer_lost(request):
+        if request.method == "POST":
+            nonces.append(json.loads(request.content)["nonce"])
+            raise httpx.ReadTimeout("response lost", request=request)
+        return original(request)
+
+    def offline(request):
+        raise httpx.ConnectError("no route", request=request)
+
+    fake.handler = answer_lost
+    workflow.flush_events(app)
+    fake.handler = offline
+    workflow.flush_events(app)
+    workflow.record(app, "opened", {"title": "Later"})
+    fake.handler = original
+    workflow.flush_events(app)
+    posts = fake.posts(THREAD)
+    # Resent alone under its first nonce (Discord drops it if it did arrive), then the rest.
+    assert posts[0]["nonce"] == nonces[0]
+    assert posts[0]["content"] == "→ Opened · Posting" and "Later" in posts[1]["content"]
+    assert [d for _, d in deliveries(app)] == ["sent", "sent"]
+
+
 def test_rows_survive_a_crash_after_they_were_claimed(fake):
     app = application()
     workflow.record(app, "opened", {"title": "Posting"})
@@ -467,9 +496,8 @@ def test_hold_cards_list_every_open_question_with_its_reply(fake):
     assert "`11:` Synthetic question 11?" in "\n".join(f["value"] for f in thread["fields"])
     status = [b for m, p, b in fake.requests if m == "PATCH" and "/messages/" in p][-1]
     replies = next(f["value"] for f in status["embeds"][0]["fields"] if f["name"] == "Reply")
-    assert replies == workflow.command_block(
-        ["N: your answer  (questions 1 to 4)", "go", "park it"]
-    )
+    # The live card stays glanceable: one line for the numbered answers, then the words.
+    assert replies == workflow.command_block(["N: your answer  (11 questions)", "go", "park it"])
 
 
 def test_a_long_question_list_is_cut_on_the_channel_card_and_whole_in_the_thread(fake):

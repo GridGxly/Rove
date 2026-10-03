@@ -382,7 +382,7 @@ def reopen(thread: str, error: httpx.HTTPStatusError) -> bool:
             if transient(failure):
                 raise
             raise Closed("the thread is out of reach") from failure
-        meta = info.get("thread_metadata") or {} if isinstance(info, dict) else {}
+        meta = (info.get("thread_metadata") or {}) if isinstance(info, dict) else {}
         if meta.get("locked"):
             raise Closed("the thread is locked")
         if not meta.get("archived"):
@@ -497,15 +497,16 @@ def post(box: Box, message: Message, nonce: str):
     from . import discord_feed
 
     payload = message.payload(nonce)
+    path = Path(message.file["path"]) if message.file else None
+    if path is not None and not path.is_file():
+        payload["content"] = (
+            payload.get("content", "") + " · the file is no longer on this Mac"
+        ).strip()
+        path = None
 
     def call():
-        if message.file:
-            path = Path(message.file["path"])
-            if path.is_file():
-                return discord_feed.discord_upload(box.channel, path, payload)
-            payload["content"] = (
-                payload.get("content", "") + " · the file is no longer on this Mac"
-            ).strip()
+        if path is not None:
+            return discord_feed.discord_upload(box.channel, path, payload)
         return _workflow().discord("POST", f"/channels/{box.channel}/messages", payload)
 
     if box.thread:
@@ -518,9 +519,10 @@ def post(box: Box, message: Message, nonce: str):
         raise Rejected(error) from error
 
 
-def send(box: Box, token: str) -> bool:
+def send(box: Box, token: str, fresh: bool = False) -> bool:
     """Post one batch from where it stopped. True when it is done (delivered, or refused
-    and put back); False when the pass should stop here (an outage or a closed thread)."""
+    and put back); False when the pass should stop here (an outage or a closed thread).
+    `fresh` is a batch just claimed, none of whose messages was ever attempted."""
     workflow = _workflow()
     with conn() as db:
         rows = db.execute(
@@ -577,7 +579,7 @@ def send(box: Box, token: str) -> bool:
             # the next pass resumes it at this message with the same nonce.
             outages[0] += 1
             workflow.delivery_failed(box.kind, token, error, box.scope, announce=False)
-            if index == 0 and not_delivered(error):
+            if fresh and index == 0 and not_delivered(error):
                 release(box, token)
             return False
         done = [row_id for row_id, at in last.items() if at == index]
@@ -655,7 +657,7 @@ def deliver(box: Box):
             return
     token = claim(box)
     if token:
-        send(box, token)
+        send(box, token, fresh=True)
 
 
 def deliver_events(application_id: str, thread: str):
