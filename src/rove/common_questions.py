@@ -192,15 +192,33 @@ CORPUS = (
         hint="the first line; city, state and postal code come from your profile",
     ),
     CommonQuestion("country", "Country of residence", SHORT_TEXT, profile="identity.country"),
+    # The start of a form's education block ("Start date month", "Start date year").
+    CommonQuestion(
+        "school_start",
+        questions.SCHOOL_START_LABEL,
+        MONTH,
+        profile="education.schools.0.start_month",
+        hint="a month and year, like Aug 2024",
+        only_when="one_school",
+    ),
+    # Answers "have you worked for us before?" at every employer not on the list.
+    CommonQuestion(
+        "past_employers",
+        questions.PAST_EMPLOYERS_LABEL,
+        SHORT_TEXT,
+        hint="company names separated by commas, or none",
+    ),
 )
 BY_ID = {entry.id: entry for entry in CORPUS}
 
 
 def applies(entry: CommonQuestion, profile: dict | None) -> bool:
     """Whether the owner should be asked this at all, given the approved profile."""
+    schools = ((profile or {}).get("education") or {}).get("schools") or []
     if entry.only_when == "gpa_disclosed":
-        schools = ((profile or {}).get("education") or {}).get("schools") or []
         return len(schools) == 1 and schools[0].get("disclose_gpa") is True
+    if entry.only_when == "one_school":
+        return len(schools) == 1  # the school a form's education block asks about
     return True
 
 

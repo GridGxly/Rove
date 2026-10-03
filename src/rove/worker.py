@@ -204,6 +204,8 @@ def question_list(asked: list, pending: list, proposals: dict, used: set) -> lis
     Numbers are positions in this list; the thread's cards and the `N: value` reply
     both count the same way.
     """
+    from .questions import real_options
+
     drafts: dict = {}
     for answer in proposals.get("answers", []):
         if answer.get("kind") == "proposal" and answer.get("key"):
@@ -218,7 +220,8 @@ def question_list(asked: list, pending: list, proposals: dict, used: set) -> lis
         entry = {
             "key": key,
             "label": question.get("label", ""),
-            "options": list(question.get("options") or []),
+            # A select's placeholder ("Select...") is no choice: it is never listed.
+            "options": real_options(question.get("options")),
             "required": question.get("required", True),
         }
         if question.get("label_missing"):
@@ -700,12 +703,28 @@ def draft_by_number(application_id: str, number: int) -> dict:
     }
 
 
+# A reply made only of these is a nod or a command, never an answer to a question.
+CHATTER = frozenset(
+    {
+        *("ok", "okay", "k", "kk", "thanks", "thank", "thx", "ty", "cool", "nice", "great"),
+        *("got", "it", "sure", "alright", "awesome", "perfect", "sounds", "good", "lol"),
+        *("haha", "hmm", "hm", "yeah", "yep", "please", "pls", "ahead", "now", "you"),
+        *(word for phrase in WORDS for word in phrase.split()),
+        *("use", "draft", "answer", "later", "not", "yet"),
+    }
+)
+EXPLICIT_FORM = "For this one, reply `1: your answer` so I know it is your answer."
+
+
 def single_question_answer(raw: str, application_id: str) -> dict | None:
     """When one question is open, the owner's plain reply is its answer. With options,
     the reply must name one of them; a link or a long message is never taken as one.
 
-    A legal or personal question without options takes only the explicit `1: value`
-    form, so a stray remark in the thread never becomes a remembered legal answer.
+    A reply with no letters or digits ("👍"), or one made only of nods and command words
+    ("ok go", "thanks"), is no answer: it is ignored, never stored or remembered. A legal
+    or personal question without options, and a free-text question answered in fewer
+    than three words, take only the explicit `1: value` form, so a stray remark in the
+    thread never becomes a remembered answer.
     """
     from . import questions
 
@@ -717,20 +736,25 @@ def single_question_answer(raw: str, application_id: str) -> dict | None:
         return None
     question = open_questions[0]
     value = raw.strip()
-    options = [str(o) for o in question.get("options") or []]
+    tokens = re.findall(r"[^\W_]+", value.lower())
+    options = questions.real_options(question.get("options"))
+    wanted = " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+    match = next(
+        (o for o in options if " ".join(re.findall(r"[a-z0-9]+", o.lower())) == wanted), None
+    )
+    if match is None and (not tokens or set(tokens) <= CHATTER):
+        return None  # a nod, an emoji or a command word: not an answer to anything
     if options:
-        wanted = " ".join(re.findall(r"[a-z0-9]+", value.lower()))
-        match = next(
-            (o for o in options if " ".join(re.findall(r"[a-z0-9]+", o.lower())) == wanted), None
-        )
         if match is None:
             raise ValueError(
                 "That is not one of the options for the open question: "
                 + " / ".join(o for o in options[:8] if not o.strip().startswith("-"))
             )
         value = match
-    elif questions.is_sensitive(question.get("label"), question.get("kind") or ""):
-        raise ValueError("For this one, reply `1: your answer` so I know it is your answer.")
+    elif len(tokens) < 3 or questions.is_sensitive(
+        question.get("label"), question.get("kind") or ""
+    ):
+        raise ValueError(EXPLICIT_FORM)
     return {
         "kind": "answer",
         "application_id": application_id,
@@ -995,11 +1019,7 @@ def apply_command(command: dict, message_id: str):
             if (
                 field is None
                 or field["kind"] in {"password", "file", "hidden"}
-                or re.search(
-                    r"social security|passport|bank account|verification code|driver.?s license",
-                    field["label"],
-                    re.IGNORECASE,
-                )
+                or questions.manual_only(field["label"])
             ):
                 raise PermissionError("Unknown or manual-only question")
             if command["value"].lower() == "skip" and field["required"]:

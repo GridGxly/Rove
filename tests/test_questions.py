@@ -21,7 +21,7 @@ from test_unattended_failure_modes import (
 )
 from test_workflow import owner_channels
 
-from rove import questions, reasoning, submission, worker, workflow
+from rove import common_questions, fastpath, questions, reasoning, submission, worker, workflow
 from rove.live_browser import (
     decline_self_identification,
     resolve_choice,
@@ -1050,3 +1050,604 @@ def test_the_form_card_says_where_the_values_came_from():
         "profile.application_policy.marketing_opt_in",
     ):
         assert workflow.source_words(source) == "your profile"
+
+
+# --- forms that word profile facts their own way --------------------------------------
+# A synthetic student: one school, a disclosed GPA, and experience notes that name the one
+# company he interned at.
+STUDENT = {
+    **PROFILE,
+    "education": {
+        "schools": [
+            {
+                "school": "Example University",
+                "degree": "Bachelor of Science in Computer Science",
+                "major": "Computer Science",
+                "start_month": "2024-08",
+                "graduation_month": "2028-05",
+                "gpa": 3.8,
+                "gpa_scale": 4.0,
+                "disclose_gpa": True,
+            }
+        ]
+    },
+    "evidence": {
+        "experience_notes": [
+            "Software intern at Globex Robotics, summer 2025: built a test dashboard.",
+            "Teaching assistant for an introductory programming course.",
+        ]
+    },
+}
+MONTHS = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
+# Greenhouse's degree list, in its own order and spelling.
+DEGREES = [
+    "Accelerated Master's",
+    "Advanced Certificate",
+    "Associates",
+    "Associate's Degree",
+    "Bachelors",
+    "Bachelor's Degree",
+    "Certificate",
+    "Doctorate",
+    "Doctor of Philosophy (Ph.D.)",
+    "High School",
+    "Master of Business Administration (M.B.A.)",
+    "Masters",
+    "Master's Degree",
+    "Non-Degree Seeking",
+    "Other",
+]
+DISCIPLINES = [
+    "Accounting",
+    "Business Administration",
+    "Computer Engineering",
+    "Computer Programming",
+    "Computer Science",
+    "Data Science",
+    "Electrical Engineering",
+    "Engineering",
+    "Information Systems",
+    "Mathematics",
+    "Software Design",
+    "Statistics",
+    "Other",
+]
+
+
+def student(**changes) -> dict:
+    school = {**STUDENT["education"]["schools"][0], **changes}
+    return {**STUDENT, "education": {"schools": [school]}}
+
+
+@pytest.mark.parametrize(
+    ("label", "canonical"),
+    [
+        ("Your Location", "location"),
+        ("Current location", "location"),
+        ("Location (City)", "location_city"),
+        ("GPA (Undergraduate)", "gpa"),
+        ("Cumulative GPA", "gpa"),
+        ("GPA on a 4.0 scale", "gpa"),
+        ("What is your cumulative GPA?", "gpa"),
+        ("School", "school"),
+        ("College/University", "school"),
+        ("Which university do you attend?", "school"),
+        ("Degree", "degree"),
+        ("Discipline", "major"),
+        ("Field of study", "major"),
+        ("Full Legal Name in Native Language", "full_name_native"),
+        ("Name in native language (if applicable)", "full_name_native"),
+        ("Country of residence", "country"),
+        ("What country do you currently live in?", "country"),
+        ("Which month can you start?", "start_month"),
+        ("Preferred start month", "start_month"),
+        ("When did you start at your current school?", "school_start"),
+        (
+            "If working in the US, will you now or in the future require sponsorship?",
+            "sponsorship_us_now_or_future",
+        ),
+        (
+            "Will you now (or in the future) require visa sponsorship in order to work in the US?",
+            "sponsorship_us_now_or_future",
+        ),
+        ("Are you legally work authorized to work in the US?", "work_authorization_us"),
+        (
+            (
+                "Have you ever worked for Acme as an employee, intern or contractor? Note that "
+                "providing false or misleading information may result in disqualification "
+                "from the hiring process."
+            ),
+            "previously_employed_here",
+        ),
+        (
+            "Do you currently or have you previously worked for Acme in the past?",
+            "previously_employed_here",
+        ),
+        (
+            "Have you ever worked for Acme before, as an employee or a contractor/consultant?",
+            "previously_employed_here",
+        ),
+        ("Have you worked here before?", "previously_employed_here"),
+    ],
+)
+def test_forms_word_profile_facts_their_own_way(label, canonical):
+    assert classify(label).canonical_id == canonical
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Major GPA",  # another number than the cumulative one
+        "High school GPA",
+        "Graduate GPA",
+        "Have you worked with React before?",  # a tool, not an employer
+        "Have you worked for Acme or any of its subsidiaries?",
+        "Start date month",  # without the education block's own id: a work-history field
+        "Highest level of education",
+    ],
+)
+def test_lookalike_wordings_are_not_taken_for_a_profile_fact(label):
+    assert answer(label, kind="text", profile=STUDENT) == (None, None), label
+    assert classify(label).canonical_id not in {"gpa", "previously_employed_here", "degree"}
+
+
+def test_sponsored_hackathons_are_not_a_sponsorship_question():
+    hackathons = classify("Which sponsored hackathons have you attended?")
+    assert hackathons.sensitivity == PLAIN and hackathons.topic == ""
+    assert questions.draft_gate({"label": "Which sponsored hackathons have you attended?"}) is None
+    for label in (
+        "Do you need a sponsor for your visa?",
+        "Will your employment require sponsorship?",
+        "Is sponsorship required for you to work here?",
+    ):
+        assert questions.is_sensitive(label), label
+
+
+def test_location_and_country_come_from_the_profile_in_the_forms_words():
+    assert answer("Your Location", kind="text") == ("Springfield, Illinois", "identity.location")
+    assert answer("Current location", kind="text")[0] == "Springfield, Illinois"
+    assert answer("Location (City)", kind="text") == ("Springfield", "identity.city")
+    countries = ["Canada", "United States", "Mexico"]
+    assert answer("Country of residence", countries) == ("United States", "identity.country")
+    assert answer("Which country do you currently reside in?", kind="text")[0] == "United States"
+
+
+def test_gpa_variants_are_answered_only_when_disclosed_and_on_the_profiles_scale():
+    for label in ("GPA (Undergraduate)", "Cumulative GPA", "GPA on a 4.0 scale", "GPA (out of 4)"):
+        assert answer(label, kind="text", profile=STUDENT) == (
+            "3.8",
+            "education.schools.0.gpa",
+        ), label
+    assert answer("GPA (out of 5.0)", kind="text", profile=STUDENT) == (None, None)
+    hidden = student(disclose_gpa=False)
+    assert answer("Cumulative GPA", kind="text", profile=hidden) == (None, None)
+    ranges = ["Below 3.0", "3.0 - 3.49", "3.5 - 4.0"]
+    assert answer("What is your GPA?", ranges, "select-one", profile=STUDENT)[0] == "3.5 - 4.0"
+    assert answer("What is your GPA?", ["3.0 - 3.9", "3.5 - 4.0"], profile=STUDENT) == (None, None)
+    # A GPA the form's list does not hold is the owner's, never a model's guess.
+    assert questions.draft_gate({"label": "Cumulative GPA", "options": ["A", "B"]})["code"] == (
+        "profile_fact:gpa"
+    )
+
+
+def test_the_degree_is_mapped_to_the_boards_own_level_names():
+    assert answer("Degree", DEGREES, "select-one", profile=STUDENT) == (
+        "Bachelor's Degree",
+        "education.schools.0.degree",
+    )
+    assert answer("Degree", ["BS", "BA", "MS"], profile=STUDENT)[0] == "BS"
+    specific = ["Bachelor's Degree", "Bachelor of Science", "Bachelor of Arts"]
+    assert answer("Degree", specific, profile=STUDENT)[0] == "Bachelor of Science"
+    arts = student(degree="B.A. in History")
+    assert answer("Degree", specific, profile=arts)[0] == "Bachelor of Arts"
+    assert answer("Degree", ["Bachelors", "Masters"], profile=arts)[0] == "Bachelors"
+    masters = student(degree="Master of Science in Data Science")
+    assert answer("Degree", DEGREES, profile=masters)[0] == "Master's Degree"
+    # No level the form offers: the owner picks; a text box takes the approved words.
+    assert answer("Degree", ["Associate's Degree", "High School"], profile=STUDENT) == (None, None)
+    assert answer("Degree", kind="text", profile=STUDENT)[0] == (
+        "Bachelor of Science in Computer Science"
+    )
+    # A picker whose list is not read yet is read first, then matched.
+    assert resolve(field("Degree", kind="text"), STUDENT, picker=True) == (None, None)
+
+
+def test_the_major_is_mapped_to_the_boards_discipline_list_or_left_for_the_owner():
+    assert answer("Discipline", DISCIPLINES, profile=STUDENT) == (
+        "Computer Science",
+        "education.schools.0.major",
+    )
+    software = student(major="Software Engineering")
+    assert answer("Discipline", DISCIPLINES, profile=software)[0] == "Computer Science"
+    embedded = student(major="Computer Engineering (embedded systems)")
+    assert answer("Discipline", DISCIPLINES, profile=embedded)[0] == "Computer Engineering"
+    combined = student(major="Computer Science and Engineering")
+    listed = ["Computer Science & Engineering", "Engineering"]
+    assert answer("Discipline", listed, profile=combined)[0] == "Computer Science & Engineering"
+    # Not on the list and not in the table: never the nearest guess ("Engineering").
+    unknown = student(major="Robotics and Mechatronics")
+    assert answer("Discipline", DISCIPLINES, profile=unknown) == (None, None)
+    pending = {"key": "k1", "label": "Discipline", "options": DISCIPLINES}
+    assert questions.draft_gate(pending)["code"] == "profile_fact:major"
+    assert fastpath.question_kind(pending) == "owner"
+    # Another question with options still goes to the model.
+    other = {"key": "k2", "label": "Favorite course area", "options": DISCIPLINES}
+    assert fastpath.question_kind(other) == "choice"
+
+
+def education(label, options=(), kind="select-one", key="start-month--0", **extra):
+    return {**field(label, options, kind), "id": key, **extra}
+
+
+def test_the_education_blocks_dates_come_from_enrollment_and_graduation():
+    got = {
+        label: resolve(education(label, options, kind, key), STUDENT)
+        for label, options, kind, key in (
+            ("Start date month", MONTHS, "select-one", "start-month--0"),
+            ("Start date year", (), "number", "start-year--0"),
+            ("End date month", MONTHS, "select-one", "end-month--0"),
+            ("End date year", (), "number", "end-year--0"),
+        )
+    }
+    assert got == {
+        "Start date month": ("August", "education.schools.0.start_month"),
+        "Start date year": ("2024", "education.schools.0.start_month"),
+        "End date month": ("May", "education.schools.0.graduation_month"),
+        "End date year": ("2028", "education.schools.0.graduation_month"),
+    }
+    numbered = [f"{n:02d}" for n in range(1, 13)]
+    assert resolve(education("Start date month", numbered), STUDENT)[0] == "08"
+    assert resolve(education("End date month", (), "number"), STUDENT)[0] == "5"
+    typed = education("Start date month", (), "text", placeholder="MM")
+    assert resolve(typed, STUDENT)[0] == "08"
+    # A picker's months are read before one is chosen.
+    assert resolve(education("End date month", (), "text"), STUDENT, picker=True) == (None, None)
+    # The label alone says education; without it, the field's id must.
+    assert resolve(field("Graduation month", MONTHS), STUDENT)[0] == "May"
+    work_history = education("Start date month", MONTHS, key="start-date-month-0")
+    assert resolve(work_history, STUDENT) == (None, None)
+    # Two schools: which one the block means is the owner's call.
+    two = {**STUDENT, "education": {"schools": [*STUDENT["education"]["schools"]] * 2}}
+    assert resolve(education("Start date month", MONTHS), two) == (None, None)
+
+
+def test_the_school_start_can_come_from_the_warm_up_answer(state):
+    unknown = student(start_month=None)
+    assert resolve(education("Start date month", MONTHS), unknown) == (None, None)
+    entry = common_questions.BY_ID["school_start"]
+    value = common_questions.normalize(entry, "aug 2024")
+    assert workflow.remember_answer(entry.label, [], value, "memory:m1")
+    recalled = resolve(
+        education("Start date month", MONTHS), unknown, recall=workflow.recall_answer
+    )
+    assert recalled == ("August", questions.REMEMBERED)
+    year = education("Start date year", (), "number", "start-year--0")
+    assert resolve(year, unknown, recall=workflow.recall_answer) == ("2024", questions.REMEMBERED)
+    # The end of the block is the graduation month: the profile's only.
+    assert resolve(education("End date year", (), "number", "end-year--0"), unknown)[0] == "2028"
+
+
+def test_the_native_language_name_is_the_legal_name_only_in_latin_script():
+    label = "Full Legal Name in Native Language"
+    assert answer(label, kind="text") == ("Alex Example", "identity.legal_name")
+    accented = {**PROFILE, "identity": {"legal_first_name": "José", "legal_last_name": "Núñez"}}
+    assert answer(label, kind="text", profile=accented)[0] == "José Núñez"
+    cyrillic = {
+        **PROFILE,
+        "identity": {"legal_first_name": "Алексей", "legal_last_name": "Example"},
+    }
+    assert answer(label, kind="text", profile=cyrillic) == (None, None)
+
+
+def test_sponsorship_behind_a_condition_is_the_same_question():
+    label = "If working in the US, will you now or in the future require sponsorship?"
+    assert answer(label, YES_NO) == ("No", "eligibility.sponsorship_now+future")
+    clause = "Will you now (or in the future) require visa sponsorship in order to work in the US?"
+    assert answer(clause, YES_NO)[0] == "No"
+    assert answer("Are you legally work authorized to work in the US?", YES_NO)[0] == "Yes"
+    for other in (
+        "If working in Canada, will you now or in the future require sponsorship?",
+        "If not working in the US, will you require sponsorship?",
+        "If working in the US, will you require sponsorship for your spouse?",
+    ):
+        assert answer(other, YES_NO) == (None, None), other
+
+
+ROBINHOOD_STYLE = [
+    "I currently work at Acme as a full-time employee or intern",
+    "I have previously worked at Acme as a full-time employee or intern",
+    "I have previously worked at Acme in a contractor role",
+    "I have never worked at Acme",
+]
+
+
+def test_never_worked_here_when_the_owners_employers_do_not_include_the_company():
+    acme = "greenhouse.io/acme"
+    worked = "Have you ever worked for Acme as an employee, intern or contractor?"
+    assert answer(worked, ROBINHOOD_STYLE, profile=STUDENT, employer=acme) == (
+        "I have never worked at Acme",
+        "profile.evidence.experience_notes",
+    )
+    databricks = ["No", "Yes - I currently work at Acme", "Yes - Previous Intern"]
+    asked = "Do you currently or have you previously worked for Acme in the past?"
+    assert answer(asked, databricks, profile=STUDENT, employer=acme)[0] == "No"
+    assert answer("Have you worked here before?", YES_NO, profile=STUDENT, employer=acme)[0] == "No"
+    assert answer("Have you previously worked at Acme?", kind="text", profile=STUDENT)[0] == "No"
+    # The company he named: his answer, never a rule's; the same for its board slug.
+    globex = "Have you previously worked at Globex Robotics?"
+    assert answer(globex, YES_NO, profile=STUDENT) == (None, None)
+    here = "Have you worked for this company before?"
+    slug = "greenhouse.io/globexrobotics"
+    assert answer(here, YES_NO, profile=STUDENT, employer=slug) == (None, None)
+    # Nothing to check against, or more than the company itself, or two "no" options.
+    assert answer(here, YES_NO, profile=STUDENT) == (None, None)
+    assert answer(worked, ROBINHOOD_STYLE, profile=PROFILE, employer=acme) == (None, None)
+    subsidiaries = "Have you worked for Acme or any of its subsidiaries?"
+    assert answer(subsidiaries, YES_NO, profile=STUDENT) == (None, None)
+    assert answer(worked, ["No", "Never"], profile=STUDENT, employer=acme) == (None, None)
+
+
+def test_never_worked_here_from_the_employers_the_owner_listed_once(state):
+    worked = "Have you previously worked at Acme?"
+    assert resolve(field(worked, YES_NO), PROFILE, recall=workflow.recall_answer) == (None, None)
+    entry = common_questions.BY_ID["past_employers"]
+    assert workflow.remember_answer(entry.label, [], "Globex Robotics, Initech", "memory:m1")
+    assert resolve(field(worked, YES_NO), PROFILE, recall=workflow.recall_answer) == (
+        "No",
+        questions.REMEMBERED,
+    )
+    initech = field("Have you previously worked at Initech?", YES_NO)
+    assert resolve(initech, PROFILE, recall=workflow.recall_answer) == (None, None)
+    # His own answer for this employer comes before the rule.
+    acme = "greenhouse.io/acme"
+    assert workflow.remember_answer(worked, YES_NO, "Yes", "m2", employer=acme)
+    assert resolve(field(worked, YES_NO), PROFILE, recall=workflow.recall_answer, employer=acme)[
+        0
+    ] == ("Yes")
+
+
+def test_start_month_options_follow_the_earliest_start():
+    months = ["May 2027", "June 2027", "July 2027"]
+    assert answer("Which month can you start?", months) == (
+        "June 2027",
+        "profile.availability.earliest_start",
+    )
+    assert answer("Preferred start month", MONTHS)[0] == "June"
+    assert answer("Which month can you start?", kind="text")[0] == "June 2027"
+    assert answer("When can you start?", ["Jun 2027", "Aug 2027"])[0] == "Jun 2027"
+    assert answer("When can you start?", MONTHS) == (None, None)  # a month without its year
+    assert answer("Start date", kind="text") == (
+        "June 1, 2027",
+        "profile.availability.earliest_start",
+    )
+
+
+def test_a_selects_placeholder_is_never_listed_or_matched():
+    for placeholder in ("Select...", "Select", "-- Choose --", "--", "Please select", "Select one"):
+        assert questions.placeholder_option(placeholder), placeholder
+    for real in ("Choose not to disclose", "Decline to self identify", "None", "No", "N/A"):
+        assert not questions.placeholder_option(real), real
+    offered = ["Select...", "Yes", "No"]
+    assert questions.real_options([{"label": o} for o in offered]) == ["Yes", "No"]
+    assert questions.match_option(offered, "Select") is None
+    assert questions.match_many(["-- Choose --", "Python"], "-- choose --") is None
+    # The owner's card lists only what he can choose.
+    listed = worker.question_list(
+        [{"key": "k1", "label": "Do you have a car?", "options": offered}], [], {}, set()
+    )
+    assert listed[0]["options"] == ["Yes", "No"]
+    lines = workflow.question_lines(workflow.numbered(listed))
+    assert "Select" not in lines and "(Yes / No)" in lines
+
+
+def test_manual_steps_are_field_intents_not_any_mention():
+    for label in (
+        "Passport number",
+        "Passport No.",
+        "Upload a copy of your passport",
+        "SSN (last 4 digits)",
+        "Social Security Number",
+        "Bank account number",
+        "Routing number",
+        "Verification code",
+        "Driver's license number",
+    ):
+        assert questions.manual_only(label), label
+    for label in (
+        "Name as it appears on your passport",
+        "Do you have a valid passport?",
+        "Do you have a valid driver's licence?",
+        "Which social media do you use?",
+    ):
+        assert not questions.manual_only(label), label
+    # A name as it appears on the passport is the legal name, a legal fact like it.
+    passport_name = "Name as it appears on your passport"
+    assert answer(passport_name, kind="text") == ("Alex Example", "identity.legal_name")
+    assert classify(passport_name).sensitivity == SENSITIVE
+
+
+PASSPORT_NAME = """<title>Apply</title><form>
+<label for="n">Name as it appears on your passport</label><input id="n" name="n" required>
+<label for="e">Email</label><input id="e" name="e" type="email" value="alex@example.invalid">
+</form>"""
+
+
+def test_a_benign_passport_label_does_not_take_the_page_away(reader):
+    seen = reader.read(PASSPORT_NAME)
+    assert not seen.get("manual_takeover_required")
+    assert any(f.get("value") == "alex@example.invalid" for f in seen["fields"])
+    number = PASSPORT_NAME.replace("Name as it appears on your passport", "Passport number")
+    seen = reader.read(number)
+    assert seen["manual_takeover_required"]
+    assert all("value" not in f for f in seen["fields"])
+
+
+def test_the_owner_may_answer_a_licence_question_but_never_a_document_number(state, monkeypatch):
+    owner_channels(monkeypatch)
+    app = workflow.enqueue("https://job-boards.greenhouse.io/acme/jobs/3003")["application_id"]
+    licence = {"label": "Do you have a valid driver's licence?", "name": "dl", "kind": "text"}
+    number = {"label": "Driver's license number", "name": "dln", "kind": "text"}
+    for item in (licence, number):
+        item.update(options=[], required=True)
+        item["key"] = workflow.field_key(item)
+    directory = state / "applications" / app
+    directory.mkdir(parents=True)
+    (directory / "observation.json").write_text(json.dumps({"fields": [licence, number]}))
+    command = {"kind": "answer", "application_id": app}
+    apply_command({**command, "field_key": licence["key"], "value": "Yes"}, "m1")
+    assert workflow.approved_answers(app)[licence["key"]]["value"] == "Yes"
+    with pytest.raises(PermissionError, match="manual-only"):
+        apply_command({**command, "field_key": number["key"], "value": "D1234567"}, "m2")
+    assert number["key"] not in workflow.approved_answers(app)
+
+
+def test_a_nod_an_emoji_or_a_command_word_is_never_an_answer(state, monkeypatch):
+    owner_channels(monkeypatch)
+    app = feed_job("nod")
+    held_question(app, "Favorite editor?")
+    for reply in (
+        "👍",
+        "ok go",
+        "thanks",
+        "Thank you!",
+        "ok",
+        "🙏🏽 🙏🏽",
+        "...",
+        "go ahead please",
+    ):
+        assert thread_command(reply, app) is None, reply
+    # A short free-text reply could be anything: the explicit form says it is the answer.
+    for reply in ("Vim", "neovim mostly"):
+        with pytest.raises(ValueError, match="reply `1: your answer`"):
+            thread_command(reply, app)
+    assert thread_command("1: Vim", app)["value"] == "Vim"
+    assert thread_command("A synthetic one", app)["value"] == "A synthetic one"
+    # With options, a reply that names one is the answer, however short; a nod is not.
+    held_question(app, "Do you have a car?", ["Select...", "Yes", "No"])
+    assert thread_command("yes", app)["value"] == "Yes"
+    assert thread_command("👍", app) is None and thread_command("thanks", app) is None
+    with pytest.raises(ValueError, match="not one of the options") as refused:
+        thread_command("maybe later today", app)
+    assert "Select" not in str(refused.value) and "Yes / No" in str(refused.value)
+    assert workflow.remembered_answers() == []
+
+
+def test_one_over_length_draft_is_cut_by_code_without_a_second_call(state, monkeypatch):
+    from test_security_inbound import KEYS, drafted_application, drafting
+    from test_security_inbound import proposal as drafted
+
+    sentence = "I built a small planner that helped my lab group schedule its weekly experiments."
+    long = " ".join([sentence] * 14)  # 196 words
+    assert len(long.split()) > 150
+    sent = drafting(monkeypatch, [[drafted(KEYS[0], long)]])
+    app, page = drafted_application(state, 1)
+    result = reasoning.review_application(app, page)
+    assert len(sent) == 1  # one drafting call, never a second one for length
+    (draft,) = result["answers"]
+    assert draft["kind"] == "proposal" and len(draft["value"].split()) <= 130
+    assert draft["value"].endswith(".") and long.startswith(draft["value"])
+    assert "Shortened" in draft["explanation"]
+
+
+# --- a whole Greenhouse form, replayed --------------------------------------------------
+def select(key, label, options, required=True):
+    listed = "".join(f"<option>{o}</option>" for o in options)
+    star = " required" if required else ""
+    return (
+        f'<label for="{key}">{label}</label><select id="{key}" name="{key}"{star}>'
+        f'<option value="">Select...</option>{listed}</select>'
+    )
+
+
+def text_input(key, label, kind="text", required=True):
+    star = " required" if required else ""
+    return f'<label for="{key}">{label}</label><input id="{key}" name="{key}" type="{kind}"{star}>'
+
+
+ESSAYS = ("Why do you want to work at Acme?", "Tell us about a project you are proud of.")
+GREENHOUSE_19 = (
+    '<title>Apply</title><form id="application-form">'
+    + text_input("first_name", "First Name")
+    + text_input("last_name", "Last Name")
+    + text_input("email", "Email", "email")
+    + text_input("location", "Your Location")
+    + text_input("school--0", "School")
+    + select("degree--0", "Degree", DEGREES)
+    + select("discipline--0", "Discipline", DISCIPLINES)
+    + select("start-month--0", "Start date month", MONTHS, required=False)
+    + text_input("start-year--0", "Start date year", "number", required=False)
+    + select("end-month--0", "End date month", MONTHS)
+    + text_input("end-year--0", "End date year", "number")
+    + text_input("question_1", "GPA (Undergraduate)")
+    + select(
+        "question_2",
+        "If working in the US, will you now or in the future require sponsorship?",
+        YES_NO,
+    )
+    + text_input("question_3", "Full Legal Name in Native Language")
+    + select(
+        "question_4",
+        "Have you ever worked for Acme as an employee, intern or contractor?",
+        ROBINHOOD_STYLE,
+    )
+    + select("question_5", "Which month can you start?", ["May 2027", "June 2027", "July 2027"])
+    + f'<label for="question_6">{ESSAYS[0]}</label><textarea id="question_6" required></textarea>'
+    + f'<label for="question_7">{ESSAYS[1]}</label><textarea id="question_7" required></textarea>'
+    + select(
+        "question_8",
+        "What is your gender identity?",
+        ["Man", "Woman", "Non-binary", "I don't wish to answer"],
+        required=False,
+    )
+    + '<button type="submit">Submit application</button></form>'
+)
+
+
+def test_a_greenhouse_form_leaves_only_the_essays_for_the_model(reader, state, monkeypatch):
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": False, "human_pacing": False})
+    reader.run["profile_hash"] = "x"
+    seen = reader.read(GREENHOUSE_19)
+    assert len([f for f in seen["fields"] if not f.get("in_group")]) == 19
+    approved = {"profile": STUDENT, "profile_hash": "x"}
+    filled, pending = reader._fill_page("abcdef012345", seen, approved, {})
+    got = {f["label"]: f["value"] for f in filled}
+    assert got == {
+        "First Name": "Alex",
+        "Last Name": "Example",
+        "Email": "alex@example.invalid",
+        "Your Location": "Springfield, Illinois",
+        "School": "Example University",
+        "Degree": "Bachelor's Degree",
+        "Discipline": "Computer Science",
+        "Start date month": "August",
+        "Start date year": "2024",
+        "End date month": "May",
+        "End date year": "2028",
+        "GPA (Undergraduate)": "3.8",
+        "If working in the US, will you now or in the future require sponsorship?": "No",
+        "Full Legal Name in Native Language": "Alex Example",
+        "Have you ever worked for Acme as an employee, intern or contractor?": (
+            "I have never worked at Acme"
+        ),
+        "Which month can you start?": "June 2027",
+        "What is your gender identity?": "I don't wish to answer",
+    }
+    assert reader.page.locator("#degree--0 option:checked").inner_text() == "Bachelor's Degree"
+    assert reader.page.locator("#end-year--0").input_value() == "2028"
+    # Only the two essays are left, and only they need the model.
+    assert sorted(q["label"] for q in pending) == sorted(ESSAYS)
+    counts = fastpath.drafting_counts(pending, seen["fields"])
+    assert counts == {"questions": 2, "writing": 2, "choices": 0, "short": 0, "owner_only": 0}

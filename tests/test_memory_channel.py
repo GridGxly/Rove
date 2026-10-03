@@ -776,6 +776,8 @@ OPEN_LABELS = [
     "Preferred name",
     "Street address",
     "Country of residence",
+    "When did you start at your current school?",
+    "Which companies have you worked for, as an employee, intern or contractor?",
 ]
 
 
@@ -790,11 +792,11 @@ def form(label: str, options=(), kind: str = "text") -> dict:
 def test_warm_up_lists_the_questions_nothing_answers_yet(state, chat):
     (card,) = chat.say("warm up")
     lines = card.split("\n")
-    assert lines[0].startswith("**Common application questions** · 18 to fill in. Answer with")
+    assert lines[0].startswith("**Common application questions** · 20 to fill in. Answer with")
     assert lines[1] == "1. When can you start? (a date, like Jan 15 2027)"
     assert "7. Preferred work arrangement (Remote / Hybrid / On-site)" in lines
     assert "8. Do you have an active security clearance? (Yes / No)" in lines
-    assert lines[-1] == "Say `more` for the other 6."
+    assert lines[-1] == "Say `more` for the other 8."
     assert len(numbered_lines(card)) == 12 and len(card) < 2000
     (rest,) = chat.say("more")
     assert rest.startswith("**Common application questions** (continued)\n13. ")
@@ -806,7 +808,7 @@ def test_warm_up_lists_the_questions_nothing_answers_yet(state, chat):
     no_ids([card, rest])
     # The other words for it start the list over.
     for words in ("fill in the blanks", "questions", "Warm-up"):
-        assert chat.say(words)[0].startswith("**Common application questions** · 18")
+        assert chat.say(words)[0].startswith("**Common application questions** · 20")
 
 
 def test_warm_up_answers_are_checked_kept_and_struck_through(state, chat):
@@ -851,7 +853,7 @@ def test_warm_up_answers_are_checked_kept_and_struck_through(state, chat):
     # Not news for the channel, and no longer open.
     assert chat.tick() == []
     (again,) = chat.say("warm up")
-    assert "13 to fill in" in again and "When can you start?" not in again
+    assert "15 to fill in" in again and "When can you start?" not in again
     no_ids([reply, redrawn])
 
 
@@ -863,7 +865,7 @@ def test_an_answer_of_the_wrong_kind_is_refused_and_nothing_is_kept(state, chat)
         "3. How many hours per week can you work?: I need a number between 1 and 80.",
         "8. Do you have an active security clearance?: I need yes or no.",
         "7. Preferred work arrangement: I need one of Remote / Hybrid / On-site.",
-        "99: there is no question 99; the list goes up to 18.",
+        "99: there is no question 99; the list goes up to 20.",
         "Could not read “hello there”: answer with the number, like `3: yes`.",
     ]
     assert workflow.remembered_answers() == [] and chat.edits == []
@@ -983,4 +985,4 @@ def test_a_corpus_question_left_open_is_asked_once_at_run_time_then_remembered(s
         "Saved: when a form asks “How many hours per week are you available?”, I answer 40."
     ]
     (card,) = chat.say("warm up")
-    assert "hours per week" not in card.lower() and "17 to fill in" in card
+    assert "hours per week" not in card.lower() and "19 to fill in" in card

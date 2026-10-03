@@ -20,6 +20,7 @@ This module reads no state: callers pass the frozen profile and a recall functio
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlsplit
@@ -187,11 +188,58 @@ POLICY_KEYS = {
 }
 
 
+# "Sponsor" is the authorization question only next to visa, work or employment words, or
+# when something requires or needs it: "sponsored hackathons" is a plain question.
+SPONSOR_CONTEXT = re.compile(
+    r"\b(?:visas?|immigra\w*|work\w*|employ\w*|authori[sz]\w*|permits?|status|h ?1 ?b|green card"
+    r"|citizen\w*|residen\w*|legal\w*|lawful\w*|opt|cpt|stem|countr\w*|nationals?|foreign"
+    r"|united states|u s a?|usa|us|transfer\w*|petition\w*)\b"
+    r"|\b(?:require|requires|required|requiring|need|needs|needed|needing)\b(?: [a-z0-9]+){0,4}"
+    r" sponsor\w*|\bsponsor\w* (?:is |be |are )?(?:required|needed)\b"
+)
+
+
 def sensitive_topic(name: str) -> str:
     for topic, pattern in SENSITIVE_PATTERNS:
-        if pattern.search(name):
+        if pattern.search(name) and (topic != "sponsorship" or SPONSOR_CONTEXT.search(name)):
             return topic
     return ""
+
+
+# A field that asks for an identity document, a bank detail or a one-time code is a step
+# the owner takes in the browser himself. The intent must be the field's own: "Name as it
+# appears on your passport" asks for a name, not for the passport.
+MANUAL_ONLY = re.compile(
+    r"\b(?:passport (?:number|no|num|id|document|documents|copy|scan|image|photo|page|details)"
+    r"|(?:copy|scan|image|photo|picture|upload) of (?:your |the )?passport"
+    r"|ssn|social security (?:number|no|card)|social insurance number"
+    r"|bank account|routing number|verification code"
+    r"|drivers? (?:s )?licen[cs]e (?:number|no|id))\b"
+)
+MANUAL_ONLY_LABELS = frozenset({"passport", "your passport", "social security", "ssn"})
+
+
+def manual_only(label) -> bool:
+    """Whether a field asks for something only the owner may enter, by hand."""
+    name = plain_name(label)
+    return bool(MANUAL_ONLY.search(name)) or name in MANUAL_ONLY_LABELS
+
+
+# A select's own prompt ("Select...", "-- Choose --") is not an answer anyone can give.
+PLACEHOLDER_OPTION = re.compile(
+    r"(?:please )?(?:select|choose|pick)(?: (?:one|an? (?:option|answer|item|value)"
+    r"|from (?:the )?list|below|here|(?:a|an|your|the) [a-z]+|[a-z]+))?"
+)
+
+
+def placeholder_option(label) -> bool:
+    text = normalized(label)
+    return not text or bool(PLACEHOLDER_OPTION.fullmatch(text))
+
+
+def real_options(options) -> list[str]:
+    """The option labels a person could choose: a select's placeholder is left out."""
+    return option_labels(options)
 
 
 # --- places -------------------------------------------------------------------------
@@ -303,7 +351,15 @@ IDENTITY_NAMES = {
     "last_name": "last name|legal last name|last name legal|family name|surname",
     "preferred_name": "preferred name|preferred first name",
     "full_name": "name|full name|legal name|legal full name|full legal name|your name"
-    "|your full name",
+    "|your full name|name as it appears on your passport|full name as it appears on your passport"
+    "|legal name as it appears on your passport|full legal name as it appears on your passport"
+    "|name as it appears on passport|name as shown on your passport",
+    # The name in the applicant's own script: the legal name itself when it is Latin.
+    "full_name_native": "full legal name in native language|full name in native language"
+    "|legal name in native language|name in native language|native language name"
+    "|full name in your native language|name in your native language"
+    "|full legal name in your native language|legal full name in native language"
+    "|full legal name in native language if applicable|name in native language if applicable",
     "email": "email|email address|e mail|e mail address",
     "phone": "phone|phone number|mobile phone|mobile number|cell phone|mobile phone number"
     "|cell phone number|telephone|telephone number|phone number including country code"
@@ -311,17 +367,34 @@ IDENTITY_NAMES = {
     "phone_type": "contact phone type|phone type|phone number type",
     "location_city": "city|location city|current city",
     "state_region": "state|state region|state province|state province region",
-    "country": "country|country region|country region of residence|country of residence",
+    "country": "country|country region|country region of residence|country of residence"
+    "|current country of residence|country of current residence|what is your country of residence"
+    "|what country do you live in|which country do you live in|what country do you currently live in"
+    "|which country do you currently live in|which country do you currently reside in"
+    "|what country do you currently reside in|country you reside in|country where you reside"
+    "|residence country",
     "postal_code": "zip code|postal code|zip|zip postal code",
     "location": "location|current location|city state|city and state|where are you located"
-    "|where are you currently located|where are you based",
+    "|where are you currently located|where are you based|your location|your current location"
+    "|where do you live|where do you currently live|current city and state"
+    "|what is your current location|what is your location",
     "linkedin_url": "linkedin|linkedin profile|linkedin url|linkedin profile url",
     "github_url": "github|github url|github profile",
     "portfolio_url": "portfolio|website|personal website|portfolio url",
-    "school": "school|university|college university",
-    "major": "major|field of study|what is your field of study",
-    "degree": "degree",
-    "gpa": "gpa|current gpa",
+    "school": "school|university|college university|college|school name|name of school"
+    "|university name|name of university|college name|school university|university college"
+    "|school or university|college or university|university or college|institution"
+    "|educational institution|name of institution|current school|current university"
+    "|what school do you attend|what school do you currently attend|which school do you attend"
+    "|what university do you attend|which university do you attend"
+    "|what university do you currently attend|which university do you currently attend",
+    "major": "major|field of study|what is your field of study|discipline|area of study"
+    "|major field of study|major discipline|major field|academic major|primary major|your major"
+    "|what is your major|degree major|course of study|program of study|major area of study"
+    "|field of study major|major field of study discipline",
+    "degree": "degree|degree type|type of degree|degree level|degree program|current degree"
+    "|degree in progress|what degree are you pursuing|what degree are you currently pursuing"
+    "|degree you are pursuing|degree pursuing",
     "sex": "sex",
     "sexual_orientation": "sexual orientation|what is your sexual orientation",
     "citizenship_country": "citizenship|country of citizenship|what is your country of citizenship"
@@ -345,6 +418,17 @@ COMMON_NAMES = {
     "|preferred working arrangement|remote hybrid or on site|remote hybrid or onsite"
     "|do you prefer remote hybrid or on site|do you prefer remote hybrid or onsite"
     "|are you looking for remote hybrid or on site work|remote or on site|remote or onsite",
+    "school_start": "school start date|school start month|enrollment date|enrollment start date"
+    "|date of enrollment|when did you start school|when did you start at your school"
+    "|when did you start at your current school|when did you start college"
+    "|when did you start university|when did you begin your degree|degree start date"
+    "|start date of your degree|college start date|university start date",
+    # Who the owner has worked for, as a list in his own words: it answers "have you
+    # worked for us before" at every employer that is not on it.
+    "past_employers": "past employers|previous employers|former employers"
+    "|which companies have you worked for|companies you have worked for"
+    "|which companies have you worked for as an employee intern or contractor"
+    "|list your previous employers|list your past employers",
     "preferred_locations": "preferred location|preferred locations|preferred work location"
     "|preferred work locations|preferred office location|preferred office locations"
     "|preferred office|which office location do you prefer|location preference"
@@ -391,7 +475,7 @@ QUALIFIERS = _words(
 )
 
 AUTHORIZED = re.compile(
-    r"(?:(?:are|will) you (?:be )?(?:(?:currently|presently|legally|lawfully) )*"
+    r"(?:(?:are|will) you (?:be )?(?:(?:currently|presently|legally|lawfully|work) )*"
     r"(?:authori[sz]ed|eligible|permitted|allowed|entitled|(?:legally|lawfully) able)"
     r"|do you (?:currently |presently )?have (?:the )?(?:(?:legal|lawful) )?"
     r"(?:right|authori[sz]ation|permission|eligibility)"
@@ -414,7 +498,15 @@ SPONSORSHIP_WORDS = _words(
     " working authorization permit h1b h1 h 1b 1 b status sponsorship for to of e g i such as"
     " example like legally lawfully continue be employed remain stay order obtain maintain"
     " extend extension type kind form related support opt cpt stem f1 f j1 j tn l1 l o1 o e3"
-    " lawful legal from this your us u s usa united states america xplace xjobplace"
+    " lawful legal from this your us u s usa united states america xplace xjobplace order"
+)
+# A condition in front of the sponsorship question that does not change it: "If working in
+# the US, will you now or in the future require sponsorship?"
+LEADING_CONDITION = re.compile(
+    r"if (?:you are |you were |you re |i am |i were )?(?:working|employed|hired|based|located"
+    r"|living|selected|offered(?: (?:employment|the (?:job|role|position)|a position|this"
+    r" (?:job|role|position)))?)(?: for (?:this|the) (?:job|role|position))?"
+    rf"(?: (?:in|within) (?:{US}|xplace|xjobplace))? "
 )
 CITIZEN = re.compile(
     rf"(?:(?:are you|i am) (?:currently )?an? )?(?:(?:{US}|xplace) citizen|citizen of (?:{US}|xplace))"
@@ -529,6 +621,21 @@ START_DATE = re.compile(
     r"|(?:what is your )?(?:(?:earliest|available|desired|preferred|anticipated) )*"
     r"(?:possible )?start date|date available(?: to start)?|available start date"
 )
+# The same availability asked as a month: its own question, so a bare "June" the owner
+# gives for it never fills a start-date box.
+START_MONTH = re.compile(
+    r"(?:what is your )?(?:(?:earliest|available|desired|preferred|anticipated) )*"
+    r"(?:possible )?start month"
+    r"|(?:which|what) month (?:can|could|would) you (?:be able to )?(?:start|begin)(?: work(?:ing)?)?"
+)
+# The cumulative GPA however a form words it. A major GPA, a high-school GPA or a graduate
+# GPA is another number; a stated scale must be the profile's own.
+GPA = re.compile(
+    r"(?:what is your |please (?:enter|provide|list) your |your )?"
+    r"(?:(?:current|cumulative|overall|undergraduate|college|university|unweighted|latest"
+    r"|most recent) )*(?:gpa|grade point average)(?: (?:cumulative|undergraduate|overall))?"
+    r"(?: (?:on a |out of |on |scale |of )?(?P<scale>4 0|4|5 0|5|10|100)(?: point)?(?: scale)?)?"
+)
 GRADUATION_DATE = frozenset(
     {
         "when is your expected graduation date month year",
@@ -551,9 +658,57 @@ RELOCATION_HELP = re.compile(
     r"(?: for this (?:job|role|position))?"
 )
 WORKED_HERE = re.compile(
-    r"have you (?:(?:ever|previously) )*(?:worked|been employed|been an employee|interned)"
-    r"(?: previously| before| in the past)? (?:for|at|by|with)(?: [a-z0-9]+){1,6}"
+    r"(?:do you currently or )?have you (?:(?:ever|previously|already) )*"
+    r"(?:worked|been employed|been an employee|interned)(?: (?:previously|before|in the past))?"
+    r"(?: (?P<prep>for|at|by|with) (?P<rest>[a-z0-9]+(?: [a-z0-9]+)*)"
+    r"| here(?: (?:before|previously|in the past))?)"
 )
+# What may follow the employer's name in that question without changing it.
+WORKED_BOUNDARY = _words("as before previously prior in or and during either since note")
+WORKED_TAIL = WORKED_BOUNDARY | _words(
+    "an a employee employees intern interns internship contractor contractors consultant"
+    " consultants full time part fulltime parttime the past ever temporary temp worker"
+    " contingent any capacity role that providing false misleading inaccurate incorrect"
+    " information may result disqualification from hiring process this application"
+)
+# "us", "this company": the employer whose form it is.
+EMPLOYER_SELF = frozenset(
+    {
+        "us",
+        "our company",
+        "this company",
+        "the company",
+        "our organization",
+        "this organization",
+        "our firm",
+        "this firm",
+        "this employer",
+        "our team",
+    }
+)
+CORPORATE_SUFFIX = _words("inc incorporated llc ltd limited corp corporation co plc gmbh")
+
+
+def worked_here_employer(text: str) -> list[str] | None:
+    """The employer a "have you worked for ..." label names, as words; [] for "us" or
+    "here", None when the label is not that question or adds a condition."""
+    match = WORKED_HERE.fullmatch(text)
+    if not match:
+        return None
+    if match["rest"] is None:
+        return []  # "have you worked here before"
+    words = match["rest"].split()
+    cut = next((i for i, w in enumerate(words) if w in WORKED_BOUNDARY), len(words))
+    company, tail = words[:cut], words[cut:]
+    if not 1 <= len(company) <= 6 or not set(tail) <= WORKED_TAIL:
+        return None
+    if " ".join(company) in EMPLOYER_SELF:
+        return []
+    if match["prep"] == "with":
+        return None  # "worked with React" is about a tool, not an employer
+    while company and company[-1] in CORPORATE_SUFFIX:
+        company = company[:-1]
+    return company or None
 APPLIED_HERE = re.compile(
     r"have you (?:(?:ever|previously) )*applied(?: previously| before| in the past)?"
     r" (?:to|at|with|for)(?: [a-z0-9]+){1,6}"
@@ -687,16 +842,23 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
             return {"id": "work_authorization_without_sponsorship", "scope": scope}
         if set(tail.split()) <= AUTHORIZED_TAIL:
             return {"id": "work_authorization", "scope": scope}
+    condition = LEADING_CONDITION.match(text)
+    asked = text[condition.end() :] if condition else text
+    body = asked.split()
     if (
-        re.match(r"(?:will|do|would) you\b", text)
-        and set(words) <= SPONSORSHIP_WORDS
-        and "sponsorship" in words
-        and any(v in words[: words.index("sponsorship")] for v in ("require", "need"))
+        re.match(r"(?:will|do|would) you\b", asked)
+        and set(body) <= SPONSORSHIP_WORDS
+        and "sponsorship" in body
+        and any(v in body[: body.index("sponsorship")] for v in ("require", "need"))
     ):
-        now = bool({"now", "currently", "presently", "ever"} & set(words))
-        future = bool({"future", "ever"} & set(words))
+        now = bool({"now", "currently", "presently", "ever"} & set(body))
+        future = bool({"future", "ever"} & set(body))
         tense = "now_or_future" if now == future else ("now" if now else "future")
+        # The condition's place counts: "if working in Canada" is the Canadian question.
         return {"id": "sponsorship", "scope": place_scope(text, found), "detail": tense}
+    gpa = GPA.fullmatch(text)
+    if gpa:
+        return {"id": "gpa", "detail": (gpa["scale"] or "").replace(" ", ".")}
     if CITIZEN.fullmatch(text):
         return {"id": "citizenship", "scope": place_scope(text, found)}
     if ADULT.fullmatch(text):
@@ -750,6 +912,8 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
         }
     if START_DATE.fullmatch(text):
         return {"id": "start_availability"}
+    if START_MONTH.fullmatch(text):
+        return {"id": "start_month"}
     if text in GRADUATION_DATE or text in GRADUATION_YEAR:
         return {"id": "graduation_date"}
     if LOCATED_IN_US.fullmatch(text):
@@ -784,7 +948,7 @@ def _loose(name: str, text: str) -> dict | None:
     words = text.split()
     if HEARD.fullmatch(text):
         return {"id": "how_did_you_hear", "default": "how_did_you_hear"}
-    if WORKED_HERE.fullmatch(text):
+    if worked_here_employer(text) is not None:
         return {"id": "previously_employed_here", "scope": "employer"}
     if APPLIED_HERE.fullmatch(text):
         return {"id": "previously_applied_here", "scope": "employer"}
@@ -1020,8 +1184,8 @@ def option_matches(option_label, value) -> bool:
 def match_option(options, value, *, loose: bool = False) -> str | None:
     """The one offered option that is this value. `loose` also accepts the only option
     that starts with the same yes or no, when the opposite is offered too; a sensitive
-    answer is never matched that way."""
-    labels = [str(o) for o in options or []]
+    answer is never matched that way. A select's placeholder is never an answer."""
+    labels = [str(o) for o in options or [] if not placeholder_option(o)]
     exact = [o for o in labels if option_matches(o, value)]
     if exact:
         return exact[0] if len(exact) == 1 else None
@@ -1041,7 +1205,7 @@ def match_many(options, value) -> list[str] | None:
     Every part of the answer must name an option. A lone box under a question is ticked
     by a plain yes.
     """
-    labels = [str(o) for o in options or []]
+    labels = [str(o) for o in options or [] if not placeholder_option(o)]
     chosen = form_reading.match_options(value, labels)
     if chosen is None and len(labels) == 1 and normalized(value) in {"yes", "true"}:
         return labels
@@ -1049,7 +1213,9 @@ def match_many(options, value) -> list[str] | None:
 
 
 def option_labels(options) -> list[str]:
-    return [str(o.get("label", "")) if isinstance(o, dict) else str(o) for o in options or []]
+    """The labels of the options offered; a select's placeholder is not one."""
+    labels = [str(o.get("label", "")) if isinstance(o, dict) else str(o) for o in options or []]
+    return [label for label in labels if not placeholder_option(label)]
 
 
 # --- a. the approved profile ---------------------------------------------------------
@@ -1113,6 +1279,15 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
     if canonical == "location":
         parts = [identity.get("city"), identity.get("state_region")]
         return ([", ".join(parts)], "identity.location") if all(parts) else None
+    if canonical == "full_name_native":
+        parts = [
+            str(identity[k])
+            for k in ("legal_first_name", "legal_middle_name", "legal_last_name")
+            if identity.get(k)
+        ]
+        name = " ".join(parts)
+        # A Latin-script legal name is the name in its own script; any other is the owner's.
+        return ([name], "identity.legal_name") if parts and latin_script(name) else None
     schools = (profile.get("education") or {}).get("schools") or []
     school = schools[0] if len(schools) == 1 else None
     if canonical in {"school", "major", "degree"}:
@@ -1121,19 +1296,25 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
         return None
     if canonical == "gpa":
         if school and school.get("disclose_gpa") is True and school.get("gpa") is not None:
+            scale = school.get("gpa_scale")
+            if question.detail and (scale is None or float(question.detail) != float(scale)):
+                return None  # the form asks on another scale than the profile's
             return [str(school["gpa"])], "education.schools.0.gpa"
         return None
-    if canonical == "graduation_date":
-        month = school.get("graduation_month") if school else None
+    if canonical in {"graduation_date", "school_start"}:
+        key = "graduation_month" if canonical == "graduation_date" else "start_month"
+        month = school.get(key) if school else None
         if not month:
             return None
         when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
-        source = "education.schools.0.graduation_month"
+        source = "education.schools.0." + key
         if has_options:
             return [when.strftime(f) for f in ("%B %Y", "%b %Y", "%Y")], source
         if question.name in GRADUATION_YEAR:
             return [when.strftime("%Y")], source
-        return ([when.strftime("%B %Y")], source) if question.name in GRADUATION_DATE else None
+        if canonical == "school_start" or question.name in GRADUATION_DATE:
+            return [when.strftime("%B %Y")], source
+        return None
     eligible = profile.get("eligibility") or {}
     if canonical == "work_authorization_us":
         values = _yes_no(eligible.get("us_work_authorized"))
@@ -1185,15 +1366,24 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
             return None
         return _yes_no(country in COUNTRY_ALIASES), "identity.country"
     availability = profile.get("availability") or {}
-    if canonical in {"start_availability", "availability_end"}:
-        key = "earliest_start" if canonical == "start_availability" else "latest_end"
+    if canonical in {"start_availability", "start_month", "availability_end"}:
+        key = "latest_end" if canonical == "availability_end" else "earliest_start"
         day = availability.get(key)
         if not day:
             return None
         when = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=UTC)
-        return [f"{when.strftime('%B')} {when.day}, {when.year}", day], (
-            "profile.availability." + key
-        )
+        source = "profile.availability." + key
+        if canonical == "start_month":
+            # The month of the earliest start, with its year; a bare month only from a
+            # list of months.
+            values = [when.strftime("%B %Y"), when.strftime("%b %Y")]
+            return (values + [when.strftime("%B"), when.strftime("%b")], source) if (
+                has_options
+            ) else (values, source)
+        values = [f"{when.strftime('%B')} {when.day}, {when.year}", day]
+        if has_options and canonical == "start_availability":
+            values += [when.strftime("%B %Y"), when.strftime("%b %Y")]  # a list of months
+        return values, source
     if canonical == "hours_per_week":
         hours = availability.get("hours_per_week")
         return ([str(hours)], "profile.availability.hours_per_week") if hours else None
@@ -1212,6 +1402,311 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
         values = _yes_no((profile.get("application_policy") or {}).get(canonical))
         return (values, "profile.application_policy." + canonical) if values else None
     return None
+
+
+def latin_script(text: str) -> bool:
+    """Every letter is a Latin one (accents included): the name needs no other script."""
+    letters = [c for c in str(text or "") if c.isalpha()]
+    return bool(letters) and all(unicodedata.name(c, "").startswith("LATIN") for c in letters)
+
+
+# --- a form's own list for a profile fact ---------------------------------------------
+# A form offers its own spelling of the degree and the major. Code maps the approved value
+# onto that list, exactly or through a short table; anything else is the owner's pick.
+DEGREE_LEVELS = (
+    ("doctorate", r"ph ?d|doctor of philosophy|doctorate|doctoral|d phil"),
+    ("mba", r"mba|m b a|master of business administration"),
+    ("master", r"master\w*|m ?sc?|m ?eng|meng|m ?a|ms[a-z]{0,3}"),
+    ("bachelor", r"bachelor\w*|b ?sc?|b ?eng|beng|b ?a|bs[a-z]{0,3}|b ?tech|btech"),
+    ("associate", r"associate\w*|a ?a|a ?s|aas"),
+)
+DEGREE_TYPES = (
+    ("science", r"of science|b ?sc?|m ?sc?|bs[a-z]{0,3}|ms[a-z]{0,3}"),
+    ("arts", r"of arts|b ?a|m ?a"),
+    ("engineering", r"of engineering|b ?eng|beng|m ?eng|meng"),
+)
+# How boards spell each level and type, most specific first.
+DEGREE_SPELLINGS = {
+    ("bachelor", "science"): (
+        "Bachelor of Science",
+        "Bachelor of Science (BS)",
+        "Bachelor of Science (B.S.)",
+        "Bachelor of Science (BSc)",
+        "BS",
+        "B.S.",
+        "BSc",
+        "B.Sc.",
+    ),
+    ("bachelor", "arts"): ("Bachelor of Arts", "Bachelor of Arts (BA)", "Bachelor of Arts (B.A.)"),
+    ("bachelor", "engineering"): ("Bachelor of Engineering", "BEng", "B.Eng."),
+    ("bachelor", ""): (
+        "Bachelor's Degree",
+        "Bachelor's",
+        "Bachelors Degree",
+        "Bachelor Degree",
+        "Bachelor",
+        "Undergraduate Degree",
+    ),
+    ("master", "science"): (
+        "Master of Science",
+        "Master of Science (MS)",
+        "Master of Science (M.S.)",
+        "MS",
+        "M.S.",
+        "MSc",
+    ),
+    ("master", "arts"): ("Master of Arts", "Master of Arts (MA)", "Master of Arts (M.A.)"),
+    ("master", "engineering"): ("Master of Engineering", "MEng", "M.Eng."),
+    ("master", ""): ("Master's Degree", "Master's", "Masters Degree", "Master Degree", "Master"),
+    ("mba", ""): (
+        "Master of Business Administration (M.B.A.)",
+        "Master of Business Administration (MBA)",
+        "Master of Business Administration",
+        "MBA",
+        "M.B.A.",
+    ),
+    ("doctorate", ""): (
+        "Doctor of Philosophy (Ph.D.)",
+        "Doctor of Philosophy (PhD)",
+        "Doctor of Philosophy",
+        "PhD",
+        "Ph.D.",
+        "Doctorate",
+        "Doctoral Degree",
+        "Doctorate Degree",
+    ),
+    ("associate", ""): (
+        "Associate's Degree",
+        "Associate's",
+        "Associates Degree",
+        "Associate Degree",
+        "Associate",
+    ),
+}
+
+
+def degree_kind(degree) -> tuple[str, str]:
+    """(level, type) of an approved degree: ("bachelor", "science") for "B.S. in CS"."""
+    text = normalized(degree)
+    level = next((n for n, p in DEGREE_LEVELS if re.search(rf"\b(?:{p})\b", text)), "")
+    kind = next((n for n, p in DEGREE_TYPES if re.search(rf"\b(?:{p})\b", text)), "")
+    return level, kind if level in {"bachelor", "master"} else ""
+
+
+def first_listed(labels: list[str], candidates) -> str | None:
+    """The option the first candidate names, taking candidates in order; a candidate that
+    names two options is ambiguous and ends the search."""
+    for candidate in candidates:
+        found = [o for o in labels if option_matches(o, candidate)]
+        if len(found) == 1:
+            return found[0]
+        if found:
+            return None
+    return None
+
+
+def degree_choice(labels: list[str], degree: str) -> str | None:
+    """The board's option for the approved degree: its own words, the same level and type,
+    then the level alone ("Bachelor of Science in X" is "Bachelor's Degree")."""
+    level, kind = degree_kind(degree)
+    if not level:
+        return first_listed(labels, [degree])
+    spellings = [degree, *DEGREE_SPELLINGS.get((level, kind), ())]
+    return first_listed(labels, [*spellings, *DEGREE_SPELLINGS.get((level, ""), ())])
+
+
+# Majors as boards list them. Only names that mean the same field of study; a near field
+# ("Engineering" for "Computer Engineering") is the owner's call, never a guess.
+DISCIPLINES = {
+    "computer science": ("Computer Science", "Computer and Information Science", "Computer Sciences"),
+    "computer sciences": ("Computer Science",),
+    "cs": ("Computer Science",),
+    "computing": ("Computing", "Computer Science"),
+    "computer information science": ("Computer and Information Science", "Computer Science"),
+    "computer information sciences": ("Computer and Information Sciences", "Computer Science"),
+    "computer science engineering": ("Computer Science and Engineering", "Computer Science"),
+    "software engineering": ("Software Engineering", "Computer Science"),
+    "computer engineering": ("Computer Engineering",),
+    "electrical computer engineering": (
+        "Electrical and Computer Engineering",
+        "Electrical & Computer Engineering",
+    ),
+    "electrical engineering": ("Electrical Engineering",),
+    "mathematics": ("Mathematics", "Math"),
+    "math": ("Mathematics", "Math"),
+    "applied mathematics": ("Applied Mathematics", "Mathematics"),
+    "applied math": ("Applied Mathematics", "Mathematics"),
+    "statistics": ("Statistics",),
+    "data science": ("Data Science",),
+    "information technology": ("Information Technology", "Information Systems"),
+    "information systems": ("Information Systems", "Information Systems Management"),
+    "management information systems": (
+        "Management Information Systems",
+        "Information Systems Management",
+        "Information Systems",
+    ),
+    "cybersecurity": ("Cyber Security", "Cybersecurity"),
+    "cyber security": ("Cyber Security", "Cybersecurity"),
+    "business administration": ("Business Administration",),
+    "economics": ("Economics",),
+    "physics": ("Physics",),
+    "mechanical engineering": ("Mechanical Engineering",),
+    "finance": ("Finance",),
+}
+DISCIPLINE_FILLER = _words("and of the in")
+
+
+def squashed(text) -> str:
+    return " ".join(w for w in normalized(text).split() if w not in DISCIPLINE_FILLER)
+
+
+def discipline_choice(labels: list[str], major: str) -> str | None:
+    """The board's option for the approved major: the same words, then the table."""
+    names = [major, re.split(r"[(,;]| - | with ", str(major))[0].strip()]
+    candidates = [*names, *(alias for n in names for alias in DISCIPLINES.get(squashed(n), ()))]
+    for candidate in candidates:
+        found = [o for o in labels if squashed(o) == squashed(candidate)]
+        if len(found) == 1:
+            return found[0]
+    return None
+
+
+GPA_RANGE = re.compile(r"(\d(?:\.\d+)?)\s*(?:-|–|to)\s*(\d(?:\.\d+)?)")
+
+
+def gpa_choice(labels: list[str], gpa: str, scale) -> str | None:
+    """The option that is the GPA, or the one 4.0-scale range that holds it."""
+    exact = [o for o in labels if re.fullmatch(r"\d(?:\.\d+)?", o.strip()) and float(o) == float(gpa)]
+    if len(exact) == 1:
+        return exact[0]
+    if scale is None or float(scale) != 4.0:
+        return None
+    ranges = []
+    for option in labels:
+        match = GPA_RANGE.fullmatch(option.strip())
+        if match and float(match[1]) <= float(gpa) <= float(match[2]):
+            ranges.append(option)
+    return ranges[0] if len(ranges) == 1 else None
+
+
+# --- the education block -----------------------------------------------------------
+# Greenhouse words its education dates "Start date month" and "End date year"; a work
+# history uses the same words, so the field's own id must say education when the label
+# does not.
+EDUCATION_DATE = re.compile(
+    r"(?:(?:education|school|degree|college|university) )?"
+    r"(?P<edge>start|end|graduation|enrollment)(?: date)? (?P<part>month|year)"
+)
+EDUCATION_WORDS = _words("education school degree college university graduation enrollment")
+EDUCATION_HINT = re.compile(
+    r"educat|school|degree|college|universit|(?:start|end)-(?:month|year)--\d", re.IGNORECASE
+)
+MONTH_YEAR = re.compile(r"([A-Za-z]+)\.? (\d{4})")
+
+
+def education_part(field: dict) -> tuple[str, str] | None:
+    """("start" | "end", "month" | "year") for a date part of a school entry, else None."""
+    name = plain_name(field.get("label"))
+    match = EDUCATION_DATE.fullmatch(name)
+    if not match:
+        return None
+    named = bool(EDUCATION_WORDS & set(name.split()))
+    hinted = EDUCATION_HINT.search(f"{field.get('id') or ''} {field.get('name') or ''}")
+    if not (named or hinted):
+        return None
+    return ("start" if match["edge"] in {"start", "enrollment"} else "end"), match["part"]
+
+
+def education_date(
+    part: tuple[str, str], field: dict, labels: list[str], profile: dict, recall
+) -> tuple[str | None, str | None]:
+    """A school entry's start or end month or year, from the approved enrollment and
+    graduation months; the start month may also be the owner's earlier answer."""
+    schools = (profile.get("education") or {}).get("schools") or []
+    if len(schools) != 1:
+        return None, None
+    edge, unit = part
+    key = "start_month" if edge == "start" else "graduation_month"
+    month, source = schools[0].get(key), "education.schools.0." + key
+    if month:
+        when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
+    elif edge == "start" and recall is not None:
+        said = recall(SCHOOL_START_LABEL, [], kind="", employer="", profile=profile)
+        match = MONTH_YEAR.fullmatch(str(said or "").strip())
+        try:
+            when = datetime.strptime(f"{match[1][:3]} {match[2]}", "%b %Y").replace(tzinfo=UTC)
+        except (TypeError, ValueError):
+            return None, None
+        source = REMEMBERED
+    else:
+        return None, None
+    if unit == "year":
+        candidates = [str(when.year)]
+    else:
+        candidates = [when.strftime("%B"), when.strftime("%b"), f"{when.month:02d}", str(when.month)]
+    if labels:
+        return first_listed(labels, candidates), source
+    if unit == "month" and field.get("kind") == "number":
+        return str(when.month), source
+    if unit == "month" and "mm" in normalized(field.get("placeholder")).split():
+        return f"{when.month:02d}", source
+    return candidates[0], source
+
+
+# --- "have you worked for us before" -------------------------------------------------
+SCHOOL_START_LABEL = "When did you start at your current school?"
+PAST_EMPLOYERS_LABEL = "Which companies have you worked for, as an employee, intern or contractor?"
+NEVER_OPTION = re.compile(r"^no\b|\bnever\b|\bhave not\b|\bnot previously\b")
+
+
+def employer_names(question: Question, employer: str) -> list[str] | None:
+    """The names the employer goes by on this form: the label's, then the address's.
+    None when there is none to check, or the label reaches past the employer itself."""
+    if re.search(r"\b(?:subsidiar\w*|affiliat\w*|parent|partners?|vendors?|clients?)\b", question.name):
+        return None
+    named = worked_here_employer(question.name)
+    names = [" ".join(named)] if named else []
+    if employer and employer not in {NO_EMPLOYER, ANY_EMPLOYER}:
+        tenant = employer.split("/", 1)[1] if "/" in employer else employer.split(".")[0]
+        names.append(normalized(tenant))
+    return [n for n in names if n] or None
+
+
+def mentioned(name: str, text: str) -> bool:
+    """Whether the profile's own words name this employer. A name too short to tell
+    counts as named: the owner decides."""
+    squeezed = name.replace(" ", "")
+    if len(squeezed) < 3:
+        return True
+    return bool(re.search(rf"\b{re.escape(name)}\b", text)) or squeezed in text.replace(" ", "")
+
+
+def never_worked_here(
+    question: Question, labels: list[str], kind: str, profile: dict, employer: str, recall
+) -> tuple[str | None, str | None]:
+    """The form's "no" or "never" when the employers the owner named do not include this
+    one: his approved experience notes, or the list of employers he gave once."""
+    if question.canonical_id != "previously_employed_here" or question.polarity != POSITIVE:
+        return None, None
+    names = employer_names(question, employer)
+    if not names:
+        return None, None
+    evidence = profile.get("evidence") or {}
+    notes = [str(n) for n in evidence.get("experience_notes") or [] if n]
+    listed = None
+    if recall is not None:
+        listed = recall(PAST_EMPLOYERS_LABEL, [], kind="", employer="", profile=profile)
+    if not notes and listed is None:
+        return None, None  # nobody has said who he worked for
+    known = {k: profile.get(k) for k in ("education", "evidence", "stories")}
+    text = normalized(json.dumps(known, default=str) + " " + str(listed or ""))
+    if any(mentioned(name, text) for name in names):
+        return None, None  # he named this employer somewhere: his answer, not a rule's
+    source = "profile.evidence.experience_notes" if notes else REMEMBERED
+    if labels:
+        nos = [o for o in labels if NEVER_OPTION.search(normalized(o))]
+        return (nos[0], source) if len(nos) == 1 else (None, None)
+    return ("No", source) if kind in {"", "text"} else (None, None)
 
 
 def known_fact(label, profile: dict) -> tuple[str | None, str | None]:
@@ -1300,6 +1795,14 @@ def draft_gate(question: dict | None) -> dict | None:
             "code": f"sensitive:{classified.topic or classified.canonical_id}",
             "words": "This is a legal or personal question, so only your own answer is used.",
         }
+    if classified.known and classified.canonical_id in BY_OPTIONS:
+        # The degree, major and GPA are facts: a list code could not map is the owner's
+        # pick, never a model's nearest guess.
+        return {
+            "code": f"profile_fact:{classified.canonical_id}",
+            "words": "This asks for a fact about your education, so only your profile or "
+            "your own answer fills it.",
+        }
     return None
 
 
@@ -1324,6 +1827,24 @@ def fills_long_text(source) -> bool:
 
 
 # --- the resolver --------------------------------------------------------------------
+# Facts a board offers in its own words: the option is chosen by mapping, never typed.
+BY_OPTIONS = frozenset({"degree", "major", "gpa"})
+
+
+def choose(question: Question, labels: list[str], values: list, profile: dict, loose: bool):
+    """The one offered option a profile fact names, or None."""
+    canonical = question.canonical_id
+    if canonical == "degree":
+        return degree_choice(labels, values[0])
+    if canonical == "major":
+        return discipline_choice(labels, values[0])
+    if canonical == "gpa":
+        schools = (profile.get("education") or {}).get("schools") or []
+        return gpa_choice(labels, values[0], schools[0].get("gpa_scale") if schools else None)
+    chosen = {match_option(labels, v, loose=loose) for v in values} - {None}
+    return chosen.pop() if len(chosen) == 1 else None
+
+
 def resolve(
     field: dict, profile: dict, *, recall=None, employer: str = "", picker: bool = False
 ) -> tuple[str | None, str | None]:
@@ -1338,6 +1859,13 @@ def resolve(
     if field.get("label_missing"):
         return None, None
     labels = option_labels(field.get("options"))
+    unread = picker and not labels
+    part = education_part(field)
+    if part:
+        value, source = education_date(part, field, labels, profile, recall)
+        if value is not None:
+            # A picker's list is read first, so the month is matched to its own spelling.
+            return (None, None) if unread else (value, source)
     question = classify(label, kind, labels)
     if not question.answerable:
         return None, None
@@ -1345,11 +1873,13 @@ def resolve(
     fact = profile_fact(question, profile, bool(labels))
     if fact:
         values, source = fact
+        if unread and question.canonical_id in BY_OPTIONS:
+            return None, None  # matched to the board's own list: the picker is read first
         if not labels:
             return values[0], source
-        chosen = {match_option(labels, v, loose=loose) for v in values} - {None}
-        if len(chosen) == 1:
-            return chosen.pop(), source
+        chosen = choose(question, labels, values, profile, loose)
+        if chosen is not None:
+            return chosen, source
     policy = POLICY_KEYS.get(question.topic)
     section = (profile.get(policy[0]) or {}) if policy else {}
     decline_first = bool(policy) and section.get(policy[1]) == "decline_when_optional"
@@ -1364,5 +1894,8 @@ def resolve(
         return declined, DECLINED
     if picker:
         return None, None
+    value, source = never_worked_here(question, labels, kind, profile, employer, recall)
+    if value is not None:
+        return value, source
     default = policy_default(question, labels, profile, kind)
     return default if default else (None, None)

@@ -838,14 +838,7 @@ class RecruitingBrowser:
                 "register" if len(passwords) >= 2 or "register" in intents else "login"
             )
         # Secrets/identity steps are kept out of saved screenshots and model context.
-        if passwords or any(
-            re.search(
-                r"social security|passport|bank account|verification code",
-                f["label"],
-                re.IGNORECASE,
-            )
-            for f in data["fields"]
-        ):
+        if passwords or any(questions.manual_only(f["label"]) for f in data["fields"]):
             data["text"] = data["text"][:1500]
             data["fields"] = [{k: v for k, v in f.items() if k != "value"} for f in data["fields"]]
             data["manual_takeover_required"] = True
@@ -2044,7 +2037,7 @@ class RecruitingBrowser:
                 )
                 continue
             if (
-                field["kind"] not in ("text", "email", "tel", "url", "textarea")
+                field["kind"] not in ("text", "email", "tel", "url", "textarea", "number")
                 or (
                     field["kind"] == "textarea"
                     and not owner_answer

@@ -26,6 +26,7 @@ FULL_PROFILE = {
         "schools": [
             {
                 "school": "Example University",
+                "start_month": "2024-08",
                 "graduation_month": "2027-12",
                 "gpa": 3.8,
                 "gpa_scale": 4.0,
@@ -130,8 +131,9 @@ def test_the_profile_answers_what_the_corpus_says_it_does():
             assert value is not None and source, entry.id
             assert source.split(".")[-1].split("+")[0] in entry.profile, (entry.id, source)
     bare = {entry.id for entry in common_questions.open_questions({}, NOBODY)}
-    assert bare == {entry.id for entry in CORPUS} - {"contact_consent", "gpa"}
+    assert bare == {entry.id for entry in CORPUS} - {"contact_consent", "gpa", "school_start"}
     # GPA is asked only when the owner discloses it; with it disclosed and unknown, it is.
+    # The school start is asked only of a profile with one school.
     disclosing = {"education": {"schools": [{"school": "U", "disclose_gpa": True}]}}
     assert "gpa" in {entry.id for entry in common_questions.open_questions(disclosing, NOBODY)}
 
