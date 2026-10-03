@@ -704,6 +704,57 @@ def test_the_worker_reads_digest_replies_before_anything_else_in_the_shortlist(
     assert posts(sent, "short")[-1]["content"] == "Queued Example Labs · skipped 1."
 
 
+def test_digest_numbers_and_card_words_do_not_cross_in_the_shortlist(state, monkeypatch, tmp_path):
+    sent = open_digest(state, monkeypatch, tmp_path)
+    monkeypatch.setattr(worker, "private_env", lambda: {"DISCORD_OWNER_USER_ID": "owner"})
+    cards = [
+        workflow.enqueue(
+            f"https://jobs.example.com/held{n}", source="keryx", title=f"Company {n} — Intern"
+        )["application_id"]
+        for n in (1, 2)
+    ]
+    for application_id in cards:
+        worker.held(
+            application_id,
+            "NEEDS_USER",
+            "Conflicts with your approved facts.",
+            "Your call on fit",
+            channel="shortlist",
+            commands=["go", "park it"],
+        )
+    with workflow.db() as conn:
+        for channel in ("action", "short", "sys"):
+            conn.execute("INSERT INTO workflow_checkpoints VALUES(?,?)", (channel, "100"))
+    said = []
+    inbox = [
+        {"id": "101", "author": {"id": "owner"}, "content": "3 yes"},
+        {"id": "102", "author": {"id": "owner"}, "content": "yes"},
+        {"id": "103", "author": {"id": "owner"}, "content": "go"},
+    ]
+
+    def discord(method, path, payload=None):
+        if method == "GET" and path.startswith("/channels/short/"):
+            return inbox
+        if method == "POST":
+            said.append(payload["content"])
+        return []
+
+    monkeypatch.setattr(worker, "discord", discord)
+    worker.poll_commands()
+    # `3 yes` is the digest's, whatever cards are live: no application was told anything.
+    assert decisions()["job_qa"] == "picked"
+    assert posts(sent, "short")[-1]["content"] == "Queued Globex Example."
+    with workflow.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM owner_commands").fetchone()[0] == 0
+    assert [workflow.get(a)["status"] for a in cards] == ["NEEDS_USER", "NEEDS_USER"]
+    # A bare `yes` is not a digest reply: the other three lines stay open, and the usual
+    # reader gets it. A bare word for a card still asks which card.
+    assert [decisions()[name] for name in ("job_ml", "job_it", "job_fw")] == ["offered"] * 3
+    assert said[0] == worker.HELP_LINE
+    assert said[1].startswith("Which one? Company 1 — Intern · Company 2 — Intern.")
+    assert len(said) == 2
+
+
 def test_a_digest_pick_is_held_on_fit_only_for_a_conflict_code_verified(state, monkeypatch):
     from rove import reasoning, submission
 
@@ -879,6 +930,13 @@ def test_the_platform_gap_sends_the_best_job_on_another_platform_instead_of_idli
     assert intake.platform_of("https://jobs.ashbyhq.com/example/abc-def") == "ashby"
     assert intake.platform_of("https://example.wd5.myworkdayjobs.com/careers/job/R1") == "workday"
     assert intake.platform_of("https://www.example.com/careers/12345") == "example.com"
+    for link, board in (
+        ("https://recruiting.paylocity.com/Recruiting/Jobs/Details/123456", "paylocity"),
+        ("https://apply.workable.com/example/j/ABCDEF1234/", "workable"),
+        ("https://example.applytojob.com/apply/AbCdEf1234/Software-Intern", "jazzhr"),
+        ("https://example.bamboohr.com/careers/42", "bamboohr"),
+    ):
+        assert intake.platform_of(link) == board
     assert intake.platform_of("not a link") == ""
 
     sent = queued("boards.greenhouse.io/example/jobs/4000001", 90)
@@ -897,12 +955,16 @@ def test_the_platform_gap_sends_the_best_job_on_another_platform_instead_of_idli
     assert worker.next_queued(1) == own_site
     workflow.set_state(own_site, "DEFERRED")
     assert worker.next_queued(1) is None  # every platform with work is resting
-    # The gap is per platform for everything sent unattended, a pasted link included.
+    # The gap is per platform for everything sent unattended: a pasted link and a digest
+    # pick wait their ninety seconds too.
     pasted = queued("boards.greenhouse.io/example/jobs/4000003", source="owner_link")
+    picked = queued("boards.greenhouse.io/example/jobs/4000004", source=intake.OWNER_PICK)
     assert worker.next_queued(1) is None
     clock(monkeypatch, noon + timedelta(seconds=61))
     assert worker.next_queued(1) == pasted  # 91 seconds on: Greenhouse is free again
     workflow.set_state(pasted, "DEFERRED")
+    assert worker.next_queued(1) == picked
+    workflow.set_state(picked, "DEFERRED")
     assert worker.next_queued(1) == best
     settings["min_seconds_between_submissions_per_platform"] = 600
     assert worker.next_queued(1) is None
@@ -932,25 +994,28 @@ def test_the_daily_cap_defaults_to_thirty_and_null_settings_do_not_crash(state, 
     assert worker.next_queued(1) == feed_job
     attempt("sent00000029", noon - timedelta(minutes=4))
     assert worker.next_queued(1) is None  # thirty attempts on record today
+    # What the owner chose is never capped: a digest pick and a pasted link still go.
     picked = queued("jobs.example.com/picked", source=intake.OWNER_PICK)
-    assert worker.next_queued(1) is None  # a digest pick waits for tomorrow as well
+    assert worker.next_queued(1) == picked
     pasted = queued("jobs.example.com/pasted", source="owner_link")
     assert worker.next_queued(1) == pasted
     workflow.set_state(pasted, "DEFERRED")
+    workflow.set_state(picked, "DEFERRED")
+    assert worker.next_queued(1) is None
     # Yesterday's attempts do not count against today.
     with workflow.db() as conn:
         conn.execute(
             "UPDATE live_submission_attempts SET created_at=? WHERE application_id='sent00000029'",
             ((noon - timedelta(days=1)).isoformat(),),
         )
-    assert worker.next_queued(1) == picked
+    assert worker.next_queued(1) == feed_job
     settings["max_submissions_per_day"] = 3
     assert worker.next_queued(1) is None
     # An owner who still wants the old global gap can set it.
     settings.update(max_submissions_per_day=40, min_minutes_between_submissions=8)
     assert worker.next_queued(1) is None
     settings["min_minutes_between_submissions"] = 5
-    assert worker.next_queued(1) == picked
+    assert worker.next_queued(1) == feed_job
 
 
 def test_holds_never_stall_an_unattended_queue_and_still_do_with_auto_submit_off(
@@ -979,6 +1044,123 @@ def test_holds_never_stall_an_unattended_queue_and_still_do_with_auto_submit_off
     )
     assert worker.tick()["application_id"] == waiting
     assert processed == [waiting]
+
+
+def test_the_hold_brake_stops_feed_jobs_for_the_day_but_never_the_owners_own(state, monkeypatch):
+    log = channels(monkeypatch, auto_submit=True, max_new_holds_per_day=2)
+    lines = lambda: [
+        p["content"]
+        for m, path, p in log
+        if path == "/channels/sys/messages" and p["content"].startswith("`intake`")
+    ]
+
+    def hold(application_id):
+        worker.held(
+            application_id, "NEEDS_USER", "A question only you can answer.", "Answers needed"
+        )
+
+    first, second, third = (queued(f"jobs.example.com/feed{n}", 80) for n in range(3))
+    asked_by_agent = queued("jobs.example.com/agent", source="agent")
+    hold(asked_by_agent)  # a hold on a link the agent queued is not the feed's
+    hold(first)
+    hold(first)  # the same job stopping twice is one hold
+    assert worker.next_queued(1) in {second, third}
+    assert lines() == []
+    hold(second)
+    # Two feed jobs stopped for the owner today: the rest of the feed waits.
+    assert worker.next_queued(1) is None
+    assert lines() == [
+        (
+            "`intake` · hold brake · 2 feed jobs stopped for you today, so feed jobs wait "
+            "until tomorrow · your own links and picks still go"
+        )
+    ]
+    assert worker.next_queued(1) is None and len(lines()) == 1  # said once a day
+    picked = queued("jobs.example.com/picked", source=intake.OWNER_PICK)
+    pasted = queued("jobs.example.com/pasted", source="owner_link")
+    assert worker.next_queued(1) == pasted
+    workflow.set_state(pasted, "DEFERRED")
+    assert worker.next_queued(1) == picked
+    workflow.set_state(picked, "DEFERRED")
+    # Yesterday's holds do not count, and an unset limit is eight.
+    with workflow.db() as conn:
+        conn.execute(
+            "UPDATE application_events SET created_at=? WHERE application_id=? "
+            "AND kind='needs_action'",
+            ((datetime.now(UTC) - timedelta(days=1)).isoformat(), second),
+        )
+    assert worker.next_queued(1) == third
+    hold(second)
+    assert worker.next_queued(1) is None
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {"enabled": True, "auto_submit": True, "max_new_holds_per_day": None},
+    )
+    assert worker.next_queued(1) == third
+
+
+def test_a_queue_filled_under_the_old_rules_is_sorted_once_by_the_new_tiers(
+    state, monkeypatch, tmp_path
+):
+    log = channels(monkeypatch)
+    sent = feed(state, monkeypatch)
+    good, borderline, junk, in_progress, pasted_listing, late = (
+        job("good"),
+        job("it", "IT Intern"),
+        job("tax", "Tax Technology Intern"),
+        job("qa", "QA Engineer Intern", company="Globex Example"),
+        job("fw", "Firmware Engineer Intern", company="Hooli Example"),
+        job("emb", "Embedded Systems Intern", company="Umbrella Example"),
+    )
+    jobs.ingest(
+        snapshot(
+            tmp_path / "keryx.json", good, borderline, junk, in_progress, pasted_listing, late
+        ),
+        "a" * 40,
+    )
+
+    def old_queue(record, source="keryx"):
+        return workflow.enqueue(
+            record["url"], source=source, title=f"{record['company']} — {record['title']}"
+        )["application_id"]
+
+    kept, moved, parked, started = (old_queue(r) for r in (good, borderline, junk, in_progress))
+    workflow.set_state(started, "NEEDS_USER")
+    own = old_queue(pasted_listing, source="owner_link")
+    assert worker.prune_excluded() == 2
+    assert [workflow.get(a)["status"] for a in (kept, moved, parked, started, own)] == [
+        "QUEUED",
+        "DEFERRED",
+        "DEFERRED",
+        "NEEDS_USER",  # in progress: not touched
+        "QUEUED",  # the owner's own link: not touched
+    ]
+    assert workflow.get(moved)["error"] == "waiting for your yes on the daily list"
+    assert decisions() == {"job_it": "digest"}
+    assert [p["content"] for m, path, p in log if path == "/channels/sys/messages"] == [
+        (
+            "`intake` · sorted the existing queue · 1 stay queued · 1 moved to the daily list"
+            " · 1 parked"
+        )
+    ]
+    # Once only: a borderline feed job queued afterwards stays where it is.
+    after = old_queue(late)
+    assert worker.prune_excluded() == 0
+    assert workflow.get(after)["status"] == "QUEUED" and decisions() == {"job_it": "digest"}
+    # The moved job is on the next daily list, and a yes brings the same application back
+    # as the owner's pick.
+    intake.run_digest({})
+    (card,) = posts(sent, "short")
+    assert card["embeds"][0]["description"].startswith("1. **Example Labs** · [IT Intern](")
+    assert intake.digest_reply(owner("1 yes"), "owner", "short") is True
+    item = workflow.get(moved)
+    assert (item["status"], item["source"], item["error"]) == ("QUEUED", "owner_pick", None)
+    assert posts(sent, "short")[-1]["content"] == "Queued Example Labs."
+    assert len(queue()) == 6
+    assert worker.next_queued(1) == own  # the pasted link, then the pick, then the feed
+    workflow.set_state(own, "DEFERRED")
+    assert worker.next_queued(1) == moved
 
 
 def test_the_platform_column_is_added_once_and_old_attempts_are_kept(state):

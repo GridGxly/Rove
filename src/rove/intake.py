@@ -26,6 +26,8 @@ QUEUE_AT = 70  # this score and above is queued and announced
 DIGEST_AT = 35  # this score and above is offered in the daily digest; below it is dropped
 SCORE_BAND = 10  # within a band of this many points the newest job goes first
 OWNER_PICK = "owner_pick"  # the queue source of a job the owner said yes to in the digest
+QUEUE_SORTED = "existing_queue_sorted"  # the mark left by the one-time pass over the queue
+HOLD_BRAKE = "hold_brake"  # the mark holding the day the hold brake last engaged
 
 # Every point a job can gain or lose. A title that names no wanted role never reaches
 # the digest, whatever else it earns.
@@ -167,6 +169,8 @@ BOARDS = {
     "taleo.net": "taleo",
     "successfactors.com": "successfactors",
     "bamboohr.com": "bamboohr",
+    "paylocity.com": "paylocity",
+    "applytojob.com": "jazzhr",
 }
 CLASS_YEARS = {
     "freshman": ("freshman", "freshmen", "first year", "1st year"),
@@ -555,7 +559,22 @@ def ensure_tables(conn):
       CREATE TABLE IF NOT EXISTS queue_scores(
         application_id TEXT PRIMARY KEY, score INTEGER NOT NULL, reason TEXT NOT NULL,
         basis TEXT NOT NULL, family TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS intake_marks(name TEXT PRIMARY KEY, value TEXT NOT NULL);
     """)
+
+
+def mark(name: str) -> str | None:
+    """A checkpoint left by a one-time or once-a-day step, or None when it never ran."""
+    with db() as conn:
+        row = conn.execute("SELECT value FROM intake_marks WHERE name=?", (name,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_mark(name: str, value: str = ""):
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO intake_marks VALUES(?,?)", (name, value or workflow.now())
+        )
 
 
 def db():
@@ -821,17 +840,79 @@ def rescore_queue(rows, approved: dict) -> list[tuple[str, str]]:
     return parked
 
 
+def is_feed(source) -> bool:
+    name = str(source or "")
+    return workflow.SOURCE_ALIASES.get(name, name) == "feed"
+
+
+def move_borderline(rows, gone: set) -> list[tuple[str, str]]:
+    """The one-time sort of a queue filled under the old rules: queued feed jobs whose
+    listing now scores in the digest tier leave the queue and wait for the owner's yes.
+
+    Returns (id, why) for the applications to park. Only feed jobs still queued, with a
+    listing to score and no decision yet, are moved; `rescore_queue` has just scored them.
+    """
+    moved = []
+    stamp = workflow.now()
+    with db() as conn:
+        for row in rows:
+            if row["id"] in gone or not is_feed(row["source"]):
+                continue
+            scored = conn.execute(
+                "SELECT score,reason,family FROM queue_scores WHERE application_id=?",
+                (row["id"],),
+            ).fetchone()
+            if not scored or not scored["family"]:
+                continue  # no feed listing behind it: nothing reliable to sort it by
+            if not DIGEST_AT <= scored["score"] < QUEUE_AT:
+                continue
+            listing = conn.execute(
+                "SELECT metadata FROM jobs WHERE url IN (?,?) ORDER BY active DESC LIMIT 1",
+                (row["url"], row["source_url"]),
+            ).fetchone()
+            if not listing:
+                continue
+            listed = json.loads(listing["metadata"])
+            identity = identity_key(listed)
+            if conn.execute(
+                "SELECT 1 FROM intake_decisions WHERE identity=?", (identity,)
+            ).fetchone():
+                continue
+            # The link as it was queued, so a later yes finds this same application.
+            payload = {**compact(listed), "url": row["source_url"], "also": []}
+            conn.execute(
+                "INSERT INTO intake_decisions(identity,job_id,family,score,tier,reason,status,"
+                "payload,application_id,decided_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    identity,
+                    listed.get("id") or "",
+                    scored["family"],
+                    scored["score"],
+                    2,
+                    scored["reason"],
+                    "digest",
+                    json.dumps(payload),
+                    row["id"],
+                    stamp,
+                    stamp,
+                ),
+            )
+            moved.append((row["id"], "waiting for your yes on the daily list"))
+    return moved
+
+
 def fit_may_hold(source: str, fit: dict) -> bool:
     """Whether a job-fit review may stop this application for the owner.
 
-    A pasted link is never held. A job the owner picked from the digest is held only on a
-    conflict code verified against an approved fact. Feed jobs are held as before.
+    A link the owner pasted is never held. A job the owner picked from the digest is held
+    only on a conflict code verified against an approved fact. Everything the owner did
+    not choose (feed jobs, links the agent queued) is held as before.
     """
-    if source == "owner_link":
-        return False
+    if not workflow.source_policy(source)["owner_decided"]:
+        return True
     if source == OWNER_PICK:
         return fit.get("decision") == "not_fit"
-    return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -852,14 +933,18 @@ def number(settings: dict, key: str, default: int) -> int:
 
 def platform_of(url) -> str:
     """The applicant-tracking platform behind a link, or the employer's own host."""
+    from . import boards
     from .live_browser import job_scope
 
     safe = public_link(str(url or ""))
     if not safe:
         return ""
-    host = str(job_scope(safe)[0])
-    if host == "greenhouse":
-        return host
+    board = boards.board_for(safe)
+    if board:
+        return board.NAME  # Paylocity, Workable, JazzHR, BambooHR: each its own gap
+    host = (urlsplit(safe).hostname or "").lower()
+    if job_scope(safe)[0] == "greenhouse":
+        return "greenhouse"
     for suffix, name in BOARDS.items():
         if host == suffix or host.endswith("." + suffix):
             return name
@@ -910,6 +995,36 @@ def inside_global_gap(conn, settings: dict, now: datetime) -> bool:
     return bool(
         minutes and last and now - datetime.fromisoformat(last) < timedelta(minutes=minutes)
     )
+
+
+def hold_brake(conn, settings: dict, now: datetime) -> bool:
+    """Whether feed jobs wait until tomorrow: enough of them stopped for the owner today.
+
+    Unattended runs no longer stop at the first holds, so this keeps one day from
+    filling action-needed. Only holds on feed jobs count, and only feed jobs wait. The
+    first time it engages on a day, the system log gets one line.
+    """
+    limit = number(settings, "max_new_holds_per_day", 8)
+    today = now.strftime("%Y-%m-%d")
+    names = [name for name in (*workflow.SOURCES, *workflow.SOURCE_ALIASES) if is_feed(name)]
+    held = conn.execute(
+        "SELECT COUNT(DISTINCT e.application_id) FROM application_events e JOIN "
+        "application_queue q ON q.id=e.application_id WHERE e.kind='needs_action' "
+        f"AND e.created_at LIKE ? AND q.source IN ({','.join('?' * len(names))})",
+        (today + "%", *names),
+    ).fetchone()[0]
+    if held < limit:
+        return False
+    said = conn.execute("SELECT value FROM intake_marks WHERE name=?", (HOLD_BRAKE,)).fetchone()
+    if not said or said["value"] != today:
+        conn.execute("INSERT OR REPLACE INTO intake_marks VALUES(?,?)", (HOLD_BRAKE, today))
+        conn.commit()  # nothing stays locked while the line is posted
+        workflow.system_line(
+            "intake",
+            f"hold brake · {held} feed jobs stopped for you today, so feed jobs wait until "
+            "tomorrow · your own links and picks still go",
+        )
+    return True
 
 
 def resting_platforms(conn, settings: dict, now: datetime) -> set[str]:
@@ -1198,9 +1313,16 @@ def digest_reply(message: dict, owner: str, channel: str) -> bool:
         application_id = None
         if answer == "yes":
             title = f"{line.get('company') or ''} — {line.get('title') or ''}".strip(" —")
-            result = workflow.enqueue(line["url"], source=OWNER_PICK, title=title)
+            # The source is spelled out here: this reply is the one place it is given.
+            result = workflow.enqueue(line["url"], source="owner_pick", title=title)
             name = str(line.get("company") or line.get("title") or "one")
-            if result["already_exists"]:
+            if result["already_exists"] and result["status"] == "DEFERRED":
+                # Parked earlier (the one-time sort of the old queue does this): the yes
+                # brings the same application back as the owner's pick.
+                application_id = result["application_id"]
+                workflow.set_state(application_id, "QUEUED", error=None)
+                queued.append(name)
+            elif result["already_exists"]:
                 tracked.append(name)  # the same link is an application already; nothing new
             else:
                 application_id = result["application_id"]

@@ -1179,32 +1179,51 @@ def prune_excluded() -> int:
     A job a hard rule now excludes, one whose listing scores below the digest bar, and a
     second copy of a role already queued for another place are parked with the reason; the
     rest keep a score for the queue order. A link the owner pasted, a job they picked
-    from the digest, and a job they told to go again are theirs to decide and never pruned.
+    from the digest, and a job they told to go again are theirs to decide and never pruned;
+    a link the agent queued has no such standing and is judged like a feed job.
+
+    The first run also sorts a queue filled under the old rules: feed jobs whose listing
+    scores in the digest tier leave the queue and wait for the owner's yes on the daily
+    list. A mark keeps that from happening twice.
     """
     with workflow.db() as conn:
-        rows = conn.execute(
-            "SELECT id,title,url,source_url FROM application_queue WHERE status='QUEUED' "
-            "AND source NOT IN ('owner_link','owner_pick') AND id NOT IN (SELECT application_id "
-            "FROM owner_commands WHERE kind IN ('resume','proceed','account'))"
+        queued = conn.execute(
+            "SELECT id,title,url,source_url,source FROM application_queue WHERE status='QUEUED' "
+            "AND id NOT IN (SELECT application_id FROM owner_commands "
+            "WHERE kind IN ('resume','proceed','account'))"
         ).fetchall()
+    rows = [row for row in queued if not workflow.source_policy(row["source"])["owner_decided"]]
+    # Once, a queue filled under the old rules is sorted by the new tiers.
+    first_sort = intake.mark(intake.QUEUE_SORTED) is None
     if not rows:
+        if first_sort:
+            intake.set_mark(intake.QUEUE_SORTED)
         return 0
-    pruned = 0
-    for application_id, reason in intake.rescore_queue(rows, matching.read_approved()):
+    parked = intake.rescore_queue(rows, matching.read_approved())
+    moved = intake.move_borderline(rows, {a for a, _ in parked}) if first_sort else []
+    for application_id, reason in [*parked, *moved]:
         workflow.set_state(application_id, "DEFERRED", error=reason)
-        pruned += 1
-    return pruned
+    if first_sort:
+        intake.set_mark(intake.QUEUE_SORTED)
+        workflow.system_line(
+            "intake",
+            f"sorted the existing queue · {len(rows) - len(parked) - len(moved)} stay queued · "
+            f"{len(moved)} moved to the daily list · {len(parked)} parked",
+        )
+    return len(parked) + len(moved)
 
 
 def next_queued(max_waiting: int):
     """The next application to prepare: the owner's resumes, then pasted links, then
-    digest picks, then feed jobs by score (the newest first within a score band).
+    digest picks, then everything else by score (the newest first within a score band).
 
-    With `auto_submit` on, holds waiting on the owner never stop the queue; the daily cap
-    and the per-platform gap are the brakes. The gap applies to every application, so a
-    job on a platform that just took a submission gives way to the best job on another
-    platform; the daily cap never stops what the owner resumed or pasted. With
-    `auto_submit` off, `max_waiting` holds stop feed jobs until the owner answers.
+    What the owner chose (see `workflow.SOURCES`) is never stopped by waiting holds, the
+    daily cap or the hold brake. With `auto_submit` on, holds waiting on the owner do not
+    stop feed jobs either; the daily cap, the per-platform gap and the hold brake are the
+    brakes. The gap applies to every application, so a job on a platform that just took
+    a submission gives way to the best job on another platform. With `auto_submit` off,
+    `max_waiting` holds stop the rest of the queue until the owner answers, and they
+    always stop a link the agent queued, which is never sent unattended.
     """
     settings = workflow.config()
     unattended = bool(settings.get("auto_submit"))
@@ -1223,8 +1242,14 @@ def next_queued(max_waiting: int):
                 None,
             )
 
+        queued = conn.execute(
+            "SELECT q.id,q.url,q.source,q.created_at,COALESCE(s.score,0) AS score "
+            "FROM application_queue q LEFT JOIN queue_scores s ON s.application_id=q.id "
+            "WHERE q.status='QUEUED' ORDER BY q.created_at"
+        ).fetchall()
+        policies = {row["id"]: workflow.source_policy(row["source"]) for row in queued}
         # An explicit owner resume/proceed is processed even while other applications
-        # wait, and a link the owner pasted is worked next, however many holds there are.
+        # wait; then the owner's own links and picks, however many holds there are.
         chosen = first_free(
             conn.execute(
                 "SELECT q.id,q.url FROM application_queue q JOIN owner_commands c "
@@ -1233,10 +1258,10 @@ def next_queued(max_waiting: int):
                 "ORDER BY c.created_at DESC"
             ).fetchall()
         ) or first_free(
-            conn.execute(
-                "SELECT id,url FROM application_queue WHERE status='QUEUED' "
-                "AND source='owner_link' ORDER BY created_at"
-            ).fetchall()
+            sorted(
+                (row for row in queued if policies[row["id"]]["owner_decided"]),
+                key=lambda row: -policies[row["id"]]["rank"],
+            )
         )
         if chosen:
             return chosen
@@ -1246,22 +1271,30 @@ def next_queued(max_waiting: int):
             or intake.inside_global_gap(conn, settings, now)
         ):
             return None
-        candidates = conn.execute(
-            "SELECT id,url FROM application_queue WHERE status='QUEUED' AND source='owner_pick' "
-            "ORDER BY created_at"
-        ).fetchall()
-        waiting = conn.execute(
-            "SELECT COUNT(*) FROM application_queue WHERE status IN ('NEEDS_USER','READY_FOR_REVIEW')"
-        ).fetchone()[0]
-        if unattended or waiting < max_waiting:
-            candidates += conn.execute(
-                "SELECT q.id,q.url FROM application_queue q LEFT JOIN queue_scores s "
-                "ON s.application_id=q.id WHERE q.status='QUEUED' "
-                "AND q.source NOT IN ('owner_link','owner_pick') "
-                "ORDER BY COALESCE(s.score,0)/? DESC,q.created_at DESC",
-                (intake.SCORE_BAND,),
-            ).fetchall()
-        return first_free(candidates)
+        stalled = (
+            conn.execute(
+                "SELECT COUNT(*) FROM application_queue "
+                "WHERE status IN ('NEEDS_USER','READY_FOR_REVIEW')"
+            ).fetchone()[0]
+            >= max_waiting
+        )
+        braked = None
+        rest = []
+        for row in reversed(queued):  # newest first, then by score band
+            policy = policies[row["id"]]
+            if policy["owner_decided"]:
+                continue
+            if not (unattended and policy["unattended"]):
+                # Not covered by unattended sending: waiting holds stop it as before.
+                if not stalled:
+                    rest.append(row)
+                continue
+            if braked is None:
+                braked = intake.hold_brake(conn, settings, now)
+            if not braked:
+                rest.append(row)
+        rest.sort(key=lambda row: -(row["score"] // intake.SCORE_BAND))
+        return first_free(rest)
 
 
 def tick() -> dict:

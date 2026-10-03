@@ -183,7 +183,8 @@ def test_agent_enqueued_links_get_no_owner_privileges(approved_state, monkeypatc
     # The daily cap paces it like a feed job.
     with workflow.db() as conn:
         conn.execute(
-            "INSERT INTO live_submission_attempts VALUES(?,?,?,?,?)",
+            "INSERT INTO live_submission_attempts"
+            "(application_id,package_hash,owner_message_id,status,created_at) VALUES(?,?,?,?,?)",
             ("aaaaaaaaaaaa", "a" * 64, "auto-submit:x", "APPLIED", datetime.now(UTC).isoformat()),
         )
     assert worker.next_queued(1) is None

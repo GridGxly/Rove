@@ -232,7 +232,8 @@ def attempt(app, minutes_before_now_ms=60, status="UNKNOWN_SUBMISSION"):
     clicked = datetime.fromtimestamp(NOW_MS / 1000 - minutes_before_now_ms * 60, UTC)
     with workflow.db() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO live_submission_attempts VALUES(?,?,?,?,?)",
+            "INSERT OR REPLACE INTO live_submission_attempts"
+            "(application_id,package_hash,owner_message_id,status,created_at) VALUES(?,?,?,?,?)",
             (app, "a" * 64, f"owner-{app}", status, clicked.isoformat()),
         )
 

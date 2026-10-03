@@ -469,7 +469,8 @@ def test_a_form_the_site_rejected_after_the_click_asks_for_go_in_plain_words(sta
     workflow.set_state(app, "SUBMITTING", package_hash="c" * 64)
     with workflow.db() as conn:
         conn.execute(
-            "INSERT INTO live_submission_attempts VALUES(?,?,?,?,?)",
+            "INSERT INTO live_submission_attempts"
+            "(application_id,package_hash,owner_message_id,status,created_at) VALUES(?,?,?,?,?)",
             (app, "c" * 64, f"auto-submit:{app}", "SUBMITTING", workflow.now()),
         )
     checks = {"no_form_error": False, "post_rejected": True, "post_accepted": False}
