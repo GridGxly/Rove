@@ -32,6 +32,8 @@ ANSWER_PROMPT = (
     "explanation. "
     + PADDING_NOTE
     + "Include every supplied question exactly once, using the exact provided field keys. "
+    "A question's control says what the form shows: a one-line field takes a short "
+    "answer, a textarea takes prose. "
     "When a question lists options, a proposal value must be one of those options verbatim. "
     "Write application prose in a direct, personal voice, with concrete facts and no marketing "
     "filler. Keep written answers below 130 words, and within max_chars when a question gives one. "

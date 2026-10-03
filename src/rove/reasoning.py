@@ -20,7 +20,7 @@ from typing import Annotated, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from . import draft_guard, fastpath, model_client, timing, unslop, vault, workflow
+from . import draft_guard, fastpath, model_client, postings, timing, unslop, vault, workflow
 from .evidence import career_evidence
 from .model_client import ModelUnavailable, PromptTooLong
 from .onboarding import read_approved
@@ -39,9 +39,6 @@ ANSWERS_PROMPT_VERSION = "2026-10-03.1"
 PROMPT_VERSION = ANSWERS_PROMPT_VERSION
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 REPOSITORY = Path(__file__).resolve().parents[2]
-# A drafting request carries at most this many questions; more go as several requests,
-# so a long form never runs into the output ceiling.
-QUESTION_BATCH = 8
 # The Hermes path puts its own system prompt in front of Rove's.
 HERMES_PROMPT_TOKENS = 600
 
@@ -219,20 +216,13 @@ def pad_to_block(system: str, context: dict) -> dict:
 
 
 # One read of Erga's approved evidence serves the fit review and the drafting of a pass,
-# and the same excerpts make the same leading cache block for every job.
+# and the same excerpts make the same leading cache block for every job. Inside a pass the
+# reads share the pass's one Erga process (erga_session); outside it each starts its own.
 EVIDENCE_QUERY = "skills experience projects TransferTrack OBI PayPals"
-EVIDENCE_SECONDS = 600
-_evidence: dict = {}
 
 
-def approved_evidence(profile_hash: str) -> dict:
-    key = (str(state_root()), str(profile_hash))
-    held = _evidence.get(key)
-    if held is None or time.monotonic() - held[0] > EVIDENCE_SECONDS:
-        held = (time.monotonic(), asyncio.run(career_evidence(EVIDENCE_QUERY)))
-        _evidence.clear()
-        _evidence[key] = held
-    return copy.deepcopy(held[1])
+def approved_evidence() -> dict:
+    return asyncio.run(career_evidence(EVIDENCE_QUERY))
 
 
 def model_alive() -> bool:
@@ -270,35 +260,78 @@ def model_facts(generated) -> dict:
     return facts
 
 
+def words_asked(question: dict) -> int:
+    """How many words a written answer may run to: a number the question names, else what
+    its character limit holds, else the drafting prompt's own ceiling."""
+    label = str(question.get("label", ""))
+    named = re.search(r"\b(\d{2,3})\s*(?:words|word limit)", label, re.IGNORECASE)
+    if named:
+        return min(int(named.group(1)), 400)
+    if question.get("max_chars"):
+        return max(10, min(int(question["max_chars"]) // 6, WORD_CEILING))
+    return WORD_CEILING
+
+
+def expected_output(question: dict) -> int:
+    """Output tokens one answer may take, erring high.
+
+    Measured on drafting replays: an answer's JSON (key, kind, sources or reason) runs
+    about 40 to 60 tokens at about 2.8 characters a token; prose about 1.45 tokens a
+    word, and a draft runs up to twice its word target before code shortens it.
+    """
+    control = {"kind": question["control"]} if question.get("control") else None
+    kind = fastpath.question_kind(question, control)
+    if kind == "writing":
+        return 45 + int(2.9 * words_asked(question))
+    return ANSWER_TOKENS[kind]
+
+
+ANSWER_TOKENS = {"owner": 40, "short": 60, "choice": 60}
+# Under this much expected output a form is one request; the server's ceiling is 2,048.
+OUTPUT_SPLIT_TOKENS = 1600
+
+
+def question_batches(questions: list) -> list[list]:
+    """The fewest runs of questions, in form order, each expected to fit under
+    OUTPUT_SPLIT_TOKENS; usually one."""
+    batches: list[list] = [[]]
+    size = 20  # the {"answers": [...]} around them
+    for question in questions:
+        need = expected_output(question)
+        if batches[-1] and size + need > OUTPUT_SPLIT_TOKENS:
+            batches.append([])
+            size = 20
+        batches[-1].append(question)
+        size += need
+    return batches
+
+
 def generate(directory: Path, context: dict, basename: str, attempts: int = 2) -> dict:
     """The model's answer to one structured prompt, through the configured transport.
 
-    A drafting context with more than QUESTION_BATCH questions goes as several requests
-    whose answers come back as one.
+    A drafting context whose answers may not fit under the output ceiling goes as the
+    fewest requests that do, and their answers come back as one.
     """
     questions = context.get("questions")
-    if isinstance(questions, list) and len(questions) > QUESTION_BATCH:
-        return generate_batches(directory, context, basename, attempts)
+    if isinstance(questions, list) and questions:
+        batches = question_batches(questions)
+        if len(batches) > 1:
+            return generate_batches(directory, context, basename, attempts, batches)
     return request(directory, context, basename, attempts)
 
 
-def generate_batches(directory: Path, context: dict, basename: str, attempts: int) -> dict:
-    questions = context["questions"]
+def generate_batches(
+    directory: Path, context: dict, basename: str, attempts: int, batches: list[list]
+) -> dict:
     answers: list = []
     usage: dict = {}
     generated: dict = {}
-    batches = range(0, len(questions), QUESTION_BATCH)
     # Everything but the questions is the same in every batch: it is padded to a cache
     # block too, so the second batch on reads only its own questions.
     shared = {k: v for k, v in context.items() if k != "questions"}
     tail = {k: shared.pop(k) for k in list(shared) if k == "previous_output_problem"}
-    for number, start in enumerate(batches, start=1):
-        part = {
-            **shared,
-            "cache_padding_application": "",
-            "questions": questions[start : start + QUESTION_BATCH],
-            **tail,
-        }
+    for number, batch in enumerate(batches, start=1):
+        part = {**shared, "cache_padding_application": "", "questions": batch, **tail}
         name = basename if number == 1 else f"{basename}-{number}"
         generated = request(directory, part, name, attempts)
         try:
@@ -704,6 +737,15 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     path = directory / "job-review.json"
     keep_posting(application_id, job_text, page.get("url") or item["url"])
     prior = fastpath.stored_review(application_id, cache_key)
+    board = postings.kept(application_id)
+    if not prior and postings.from_board(board):
+        # A review made before the browser opened, from the board's own copy of the
+        # posting, stands while the board still shows that posting word for word.
+        board_key = fastpath.review_key(board["text"], *cache_key[1:])
+        candidate = fastpath.stored_review(application_id, board_key)
+        if candidate and postings.still_current(application_id, page.get("url")):
+            prior, job_text, cache_key = candidate, board["text"], board_key
+            timing.note(board=board["source"])
     timing.note(cached=bool(prior))
     if prior:
         timing.note(background=bool(prior.get("background")))
@@ -754,7 +796,7 @@ def fit_context(approved: dict, item: dict, job_text: str, url: str, labels: lis
             key: approved["profile"][key]
             for key in ("identity", "education", "eligibility", "availability", "preferences")
         },
-        "career_evidence": approved_evidence(approved["profile_hash"]),
+        "career_evidence": approved_evidence(),
     }
     dynamic = {
         "expected_job_title": item["title"],
@@ -810,20 +852,21 @@ def fit_card_posted(application_id: str) -> bool:
 
 
 # The posting as it was keyed for the fit review, kept so a later review (a new profile
-# version or fit prompt) can run before the browser opens again.
-POSTING_FILE = "posting.json"
+# version or fit prompt) can run before the browser opens again. A copy read from the
+# board's own API (postings.py) is kept in the same file and is not replaced by the page.
+POSTING_FILE = postings.POSTING_FILE
 
 
 def keep_posting(application_id: str, text: str, url: str):
     if not text.strip():
         return
-    path = state_root() / "applications" / application_id / POSTING_FILE
-    try:
-        if json.loads(path.read_text()).get("text") == text:
-            return
-    except (OSError, ValueError, AttributeError):
-        pass
-    write_private(path, {"text": text, "url": url, "captured_at": workflow.now()})
+    current = postings.kept(application_id)
+    if postings.from_board(current) or current.get("text") == text:
+        return
+    postings.keep(
+        application_id,
+        {"text": text, "source": "browser", "url": url, "captured_at": workflow.now()},
+    )
 
 
 def stored_posting(application_id: str) -> str:
@@ -1023,7 +1066,7 @@ def review_application(application_id: str, page: dict) -> dict:
         "prompt_version": PROMPT_VERSION,
         "source_meaning": "keryx means discovered automatically in the Keryx GitHub jobs feed; this is trusted intake metadata, not a claimed employee referral",
         "profile": draft_guard.drafting_profile(profile),
-        "career_evidence": draft_guard.scrub(approved_evidence(approved["profile_hash"]), private),
+        "career_evidence": draft_guard.scrub(approved_evidence(), private),
     }
     voice = vault.voice_samples()
     if voice:
@@ -1055,7 +1098,14 @@ def review_application(application_id: str, page: dict) -> dict:
     directions = directory / "owner-context.json"
     if directions.exists():
         dynamic["owner_directions"] = draft_guard.scrub(json.loads(directions.read_text()), private)
-    dynamic["questions"] = questions
+    # Each question says what control it is (a one-line field, a text area, a list), so
+    # the draft fits it and the request can be sized by the answers it may need.
+    controls = {
+        f.get("key"): f.get("kind") for f in page.get("fields") or [] if isinstance(f, dict)
+    }
+    dynamic["questions"] = [
+        {**q, "control": controls[q["key"]]} if controls.get(q["key"]) else q for q in questions
+    ]
     context = static_first(system_prompt("answers"), static, dynamic)
     context_hash = fingerprint({k: v for k, v in context.items() if k != "cache_padding"})
     cached_path = directory / "answer-proposals.json"

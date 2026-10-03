@@ -1,25 +1,29 @@
-"""Model work done while the worker waits on its pacing, its holds or the owner.
+"""Work done while the worker waits on its pacing, its holds or the owner.
 
-Two things, both only when the worker has nothing it may start:
+Three things, only when the worker has nothing it may start:
 
-- Fit reviews of queued postings whose text is already kept, in the order the queue
-  would take them, a bounded number per tick, stored under the key a pass reads
-  (posting hash, profile snapshot, fit prompt version). A pass whose posting reads the
-  same then skips its model call; any other text is reviewed live, as before. Nothing
-  is posted to Discord here; the review reaches the thread with the first pass.
+- The posting text of the next queued job that has none, read from its board's public
+  API when the board has one (Greenhouse, Lever, Ashby; `postings.py`). One read a tick.
+- Fit reviews of queued postings whose text is kept, in the order the queue would take
+  them, a bounded number per tick, stored under the key a pass reads (posting hash,
+  profile snapshot, fit prompt version). A pass whose posting reads the same, or whose
+  board still shows the same posting, skips its model call; anything else is reviewed
+  live, as before. Nothing is posted to Discord here; the review reaches the thread
+  with the first pass.
 - A one-token ping that keeps the model loaded while jobs are queued
   (`model_keepalive`, on by default), so the next pass does not pay the reload.
 
-The server answers one request at a time, so neither starts while the server reports
-a request of anyone's in progress or waiting (a mail label, a pop-up question, the
-Discord agent). A live pass never overlaps: it runs in this same worker, in place of
-this idle work.
+The server answers one request at a time, so no review or ping starts while the server
+reports a request of anyone's in progress or waiting (a mail label, a pop-up question,
+the Discord agent). A live pass never overlaps: it runs in this same worker, in place
+of this idle work.
 """
 
 import contextlib
 import json
+from datetime import UTC, datetime, timedelta
 
-from . import fastpath, intake, model_client, reasoning, workflow
+from . import fastpath, intake, model_client, postings, reasoning, workflow
 from .onboarding import read_approved
 from .runtime import state_root, write_private
 
@@ -28,6 +32,9 @@ PER_TICK = 1
 # A posting whose review failed is left alone until its text, the profile or the prompt
 # changes; the pass will review it live and say why if it fails again.
 FAILED_FILE = "background-review-failed.json"
+# A board read that failed (gone, refused, a placeholder) is tried again this much later.
+FETCH_FAILED_FILE = "posting-fetch-failed.json"
+FETCH_RETRY = timedelta(hours=12)
 
 
 def queue_order() -> list[dict]:
@@ -52,6 +59,41 @@ def queue_order() -> list[dict]:
     rest = [row for row in reversed(rows) if not policies[row["id"]]["owner_decided"]]
     rest.sort(key=lambda row: -(row["score"] // intake.SCORE_BAND))
     return owner + rest
+
+
+def fetch_failed_recently(application_id: str, url: str) -> bool:
+    path = state_root() / "applications" / application_id / FETCH_FAILED_FILE
+    try:
+        marker = json.loads(path.read_text())
+        when = datetime.fromisoformat(marker["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return marker.get("url") == url and datetime.now(UTC) - when < FETCH_RETRY
+
+
+def fetch_next() -> str | None:
+    """Read one queued posting from its board's public API, in queue order: the first job
+    under the approved profile that has no kept text and sits on a board in the table.
+    One read a tick, whatever it returns; the application id it was for, if any."""
+    approved = read_approved()
+    for row in queue_order():
+        if row["profile_hash"] != approved["profile_hash"] or not row["url"]:
+            continue
+        if not postings.board_posting(row["url"]) or reasoning.stored_posting(row["id"]):
+            continue
+        if fetch_failed_recently(row["id"], row["url"]):
+            continue
+        posting = postings.fetch(row["url"])
+        if posting:
+            postings.keep(row["id"], posting)
+        else:
+            write_private(
+                state_root() / "applications" / row["id"] / FETCH_FAILED_FILE,
+                {"url": row["url"], "at": workflow.now()},
+            )
+            workflow.system_line(row["id"], "posting not readable from its board's API")
+        return row["id"]
+    return None
 
 
 def failed_before(application_id: str, key: tuple) -> bool:
@@ -117,7 +159,8 @@ def keep_warm(settings: dict) -> bool:
 
 
 def idle(settings: dict) -> dict:
-    """The worker's idle tick: background reviews, then the keepalive. Never raises.
+    """The worker's idle tick: one board read, background reviews, then the keepalive.
+    Never raises.
 
     Nothing runs until the model has served a request from this state root, so a fresh
     install (and the offline test suite) never reaches for the server from here.
@@ -125,7 +168,12 @@ def idle(settings: dict) -> dict:
     done: dict = {}
     if not model_client.last_use_path().exists():
         return done
-    for name, work in (("reviewed", review_queued), ("pinged", lambda: keep_warm(settings))):
+    steps = (
+        ("fetched", fetch_next),
+        ("reviewed", review_queued),
+        ("pinged", lambda: keep_warm(settings)),
+    )
+    for name, work in steps:
         try:
             done[name] = work()
         except Exception as error:  # noqa: BLE001 -- idle work never stops the tick
