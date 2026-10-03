@@ -330,7 +330,7 @@ def answer_paste() -> dict:
         stamp = datetime.fromisoformat(str(message.get("timestamp") or "1970-01-01T00:00:00+00:00"))
         if stamp.timestamp() < cutoff or not inbound.from_owner(message, owner):
             continue
-        line = inbound.control_line(message, for_agent=True)
+        line = inbound.control_line(message)
         if line:
             lines.append(line)
     if not lines:

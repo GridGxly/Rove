@@ -14,7 +14,6 @@ handles the things that are not a plain reply to one application's hold:
 """
 
 import re
-import time
 from datetime import UTC, datetime, timedelta
 
 from . import workflow
@@ -267,15 +266,11 @@ def owner_message(message: dict, channel: str, settings: dict, threads: dict) ->
 
 # --- one answer in agent-control --------------------------------------------------
 #
-# The Hermes agent answers every message in agent-control and cannot stay silent, so a
-# line from the worker would be a second answer. For a pasted link or `first` the agent
-# calls a tool that applies the owner's own newest messages (read back from Discord,
-# owner id checked, exactly as the worker would) and relays the line code wrote. Each
-# message is applied once, by whoever claims it first. A line the agent never picked up
-# (the gateway or the model is down) is posted by the worker after HAND_OVER.
-
-HAND_OVER = timedelta(seconds=45)
-CLAIM_WAIT = 5.0  # seconds the agent waits for a line the worker is writing that moment
+# A pasted link or `first` in agent-control is read by two readers: the Rove shortcut in
+# the Hermes gateway (`integrations/hermes/rove_shortcuts`), the moment it arrives, and
+# the worker on its next tick. Each message is applied once, by whichever reader claims
+# it first, and that reader posts the line; the other one says nothing. The shortcut
+# also tells Hermes the message is handled, so no model turn answers it as well.
 
 
 def control_table(conn):
@@ -302,11 +297,11 @@ def apply_control(message: dict) -> str:
         return str(error)
 
 
-def control_line(message: dict, *, for_agent: bool = False) -> str | None:
-    """Apply one owner message in agent-control once and return its line.
+def control_line(message: dict) -> str | None:
+    """Apply one owner message in agent-control once and return the line to post.
 
-    None when the message is not a paste or `first`. The worker gets "" for a message
-    the agent already took; the agent gets the line, also when the worker applied it.
+    None when the message is not a paste or `first`; "" when another reader already
+    applied it, and answered it.
     """
     if not is_control_request(message.get("content")):
         return None
@@ -319,70 +314,15 @@ def control_line(message: dict, *, for_agent: bool = False) -> str | None:
             "INSERT OR IGNORE INTO control_replies VALUES(?,?,?,NULL)",
             (message_id, "", workflow.now()),
         ).rowcount
-    if claimed:
-        line = apply_control(message)
-        with workflow.db() as conn:
-            conn.execute(
-                "UPDATE control_replies SET line=?,delivered=? WHERE message_id=?",
-                (line, workflow.now() if for_agent else None, message_id),
-            )
-        return line
-    if not for_agent:
-        return ""  # the agent took it and has answered
-    deadline = time.monotonic() + CLAIM_WAIT
-    while True:
-        with workflow.db() as conn:
-            row = conn.execute(
-                "SELECT line,delivered FROM control_replies WHERE message_id=?", (message_id,)
-            ).fetchone()
-        if row["line"] or time.monotonic() > deadline:
-            break
-        time.sleep(0.25)
-    if row["delivered"] or not row["line"]:
-        return ""  # already answered, or still being written: nothing to say twice
+    if not claimed:
+        return ""
+    line = apply_control(message)
     with workflow.db() as conn:
-        taken = conn.execute(
-            "UPDATE control_replies SET delivered=? WHERE message_id=? AND delivered IS NULL",
-            (workflow.now(), message_id),
-        ).rowcount
-    return row["line"] if taken else ""
-
-
-def held_for_agent(message: dict) -> bool:
-    """Whether the worker keeps this line back for the agent to say (agent-control only)."""
-    with workflow.db() as conn:
-        control_table(conn)
-        row = conn.execute(
-            "SELECT delivered FROM control_replies WHERE message_id=?",
-            (str(message.get("id") or ""),),
-        ).fetchone()
-    return bool(row) and row["delivered"] is None
-
-
-def flush_control_lines(channel: str | None):
-    """Post the lines the agent did not pick up within HAND_OVER; the worker calls this."""
-    if not channel:
-        return
-    cutoff = (datetime.now(UTC) - HAND_OVER).isoformat()
-    with workflow.db() as conn:
-        control_table(conn)
-        rows = conn.execute(
-            "SELECT message_id,line FROM control_replies WHERE delivered IS NULL AND line!='' "
-            "AND created_at<? ORDER BY created_at",
-            (cutoff,),
-        ).fetchall()
-    for row in rows:
-        with workflow.db() as conn:
-            taken = conn.execute(
-                "UPDATE control_replies SET delivered=? WHERE message_id=? AND delivered IS NULL",
-                (workflow.now(), row["message_id"]),
-            ).rowcount
-        if taken:
-            workflow.discord(
-                "POST",
-                f"/channels/{channel}/messages",
-                {"content": row["line"], "allowed_mentions": {"parse": []}},
-            )
+        conn.execute(
+            "UPDATE control_replies SET line=?,delivered=? WHERE message_id=?",
+            (line, workflow.now(), message_id),
+        )
+    return line
 
 
 # --- "Which one?" in action-needed and shortlist ----------------------------------

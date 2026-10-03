@@ -44,12 +44,14 @@ def main():
         "--last", type=int, metavar="N", help="report only the N most recent applications"
     )
     sub.add_parser("mcp")
+    # Used by the Hermes gateway plugin: one Discord message as JSON on stdin.
+    sub.add_parser("shortcut")
     smoke_parser = sub.add_parser("smoke")
     smoke_parser.add_argument("--hold-seconds", type=int, default=0)
     for command in ["start", "stop", "status"]:
         sub.add_parser(command)
     gw = sub.add_parser("gateway")
-    gw.add_argument("action", choices=["start", "stop", "restart", "status"])
+    gw.add_argument("action", choices=["start", "stop", "restart", "status", "install-shortcuts"])
     jobs = sub.add_parser("jobs")
     jobs.add_argument("action", choices=["sync", "status", "search", "read", "matches"])
     jobs.add_argument("--query", default="")
@@ -172,7 +174,16 @@ def main():
             print(f"Local API is unavailable: {type(error).__name__}")
             raise SystemExit(1) from None
     elif args.command == "gateway":
-        gateway(args.action)
+        if args.action == "install-shortcuts":
+            from .shortcuts import install
+
+            print("\n".join(install()))
+        else:
+            gateway(args.action)
+    elif args.command == "shortcut":
+        from .shortcuts import main as shortcut
+
+        shortcut()
     elif args.command == "benchmark":
         from .benchmark import run_suite
 

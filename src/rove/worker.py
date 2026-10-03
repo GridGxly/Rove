@@ -1309,7 +1309,7 @@ def poll_commands() -> bool:
                 handled = inbound.owner_message(message, channel, settings, threads)
                 if handled is not None:
                     # A pasted link, a reply on a mail card, or taking back a mail's step.
-                    if handled and not inbound.held_for_agent(message):  # agent-control: one answer
+                    if handled:
                         say(channel, handled)
                     continue
                 command = parse_command(message, owner, channel, channels, threads)
@@ -1341,7 +1341,6 @@ def poll_commands() -> bool:
                 conn.execute(
                     "INSERT OR REPLACE INTO workflow_checkpoints VALUES(?,?)", (channel, maximum)
                 )
-    inbound.flush_control_lines(settings.get("control_channel_id"))  # lines no agent picked up
     memory_channel.poll(owner)  # `#memory` keeps its own cursor and plain-word replies
     return True
 

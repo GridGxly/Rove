@@ -532,8 +532,13 @@ def test_the_owners_reply_to_a_foreign_card_is_refused_in_one_plain_line(state, 
     }
     pasted = {"author": {"id": OWNER}, "content": "https://boards.greenhouse.io/acme/jobs/1"}
     posted = poll(monkeypatch, {"action": [forged_reply], "control": [pasted]})
-    # The paste is applied at once; its line waits for the agent, which answers there.
-    assert posted == [("/channels/action/messages", NOT_MINE)]
+    # The worker read the paste before the gateway's shortcut did, so the worker answers it.
+    assert sorted(posted) == sorted(
+        [
+            ("/channels/action/messages", NOT_MINE),
+            ("/channels/control/messages", "Queued. It goes next."),
+        ]
+    )
     assert command_rows() == [] and workflow.get(app)["status"] == "NEEDS_USER"
     with workflow.db() as conn:
         rows = [tuple(r) for r in conn.execute("SELECT source,status FROM application_queue")]

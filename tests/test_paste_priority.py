@@ -205,40 +205,20 @@ def test_the_agent_applies_his_paste_and_says_the_line_and_the_worker_stays_quie
     # The worker reaches the same message later: nothing is applied twice or said twice.
     assert inbound.owner_message(message, "control", SETTINGS, {}) == ""
     assert line() == [app_of(1)]
-    inbound.flush_control_lines("control")
-    assert control["posted"] == []
     # Asked again, the agent has nothing new to say for it.
     assert chat.answer_paste()["found"] is False
 
 
-def test_when_the_worker_got_there_first_the_agent_says_its_line_once(control):
+def test_whoever_applies_a_paste_first_is_the_only_one_to_answer_it(control):
     first, again = said(link(1)), said(f"{link(2)} first")
     control["messages"] += [first, again]
-    for message in (first, again):
-        assert inbound.owner_message(message, "control", SETTINGS, {})
-        assert inbound.held_for_agent(message)  # applied at once, not posted
-    assert chat.answer_paste() == {"say": "Queued. It goes next.\nQueued. It goes next."}
+    # The worker got there first: it says the line itself (the caller posts it)...
+    assert inbound.owner_message(first, "control", SETTINGS, {}) == "Queued. It goes next."
+    # ...and the agent finds only the message the worker has not applied.
+    assert chat.answer_paste() == {"say": "Queued. It goes next."}
     assert line() == [app_of(2), app_of(1)]
-    assert not inbound.held_for_agent(first)
-    inbound.flush_control_lines("control")
-    assert control["posted"] == []
-
-
-def test_a_line_no_agent_picked_up_is_posted_by_the_worker_once(control):
-    message = said(link(1))
-    assert inbound.owner_message(message, "control", SETTINGS, {}) == "Queued. It goes next."
-    inbound.flush_control_lines("control")
-    assert control["posted"] == []  # the agent still has time
-    with workflow.db() as conn:
-        conn.execute(
-            "UPDATE control_replies SET created_at=?",
-            ((datetime.now(UTC) - timedelta(minutes=2)).isoformat(),),
-        )
-    inbound.flush_control_lines("control")
-    inbound.flush_control_lines("control")
-    assert control["posted"] == ["Queued. It goes next."]
-    control["messages"].append(message)
-    assert chat.answer_paste()["found"] is False  # already posted: never said twice
+    assert inbound.owner_message(again, "control", SETTINGS, {}) == ""
+    assert inbound.control_line(first) == "" and inbound.control_line(again) == ""
 
 
 def test_the_agent_applies_only_his_own_recent_messages(control):
