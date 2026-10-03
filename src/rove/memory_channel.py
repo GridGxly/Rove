@@ -9,6 +9,11 @@ matching in code; no model reads this channel and nothing typed here reaches one
 The list opens with what the approved profile holds, unnumbered, then the remembered
 answers, numbered because only they can be changed here.
 
+`warm up` lists the common application questions (common_questions.py) that nothing
+answers yet, numbered; the owner answers them by number, once, and the card is edited
+to strike each one as it is answered. The numbers in the channel always go with the
+list shown last: the warm-up questions, or the saved answers.
+
 Replies and the "Saved: ..." lines for answers learned in application threads go
 through a small outbox, so a Discord outage neither loses a line nor posts it twice.
 
@@ -24,7 +29,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from . import form_reading, workflow
+from . import common_questions, form_reading, questions, workflow
 from .discord_feed import discord
 from .live_browser import normalized, resolve_known
 from .onboarding import read_approved
@@ -32,13 +37,21 @@ from .runtime import state_root
 
 HELP_LINE = (
     "Ask `what do you know`, name a question (`relocation`), or say `forget 3`, "
-    "`change 3 to No`, or `remember: question = answer`."
+    "`change 3 to No`, `remember: question = answer`, or `warm up` to answer the common "
+    "application questions once."
 )
 EMPTY_ANSWERS = "No answers saved yet. I save each answer you give in an application thread."
 PRIVATE_HINT = "The ones marked saved are private; name one to see it."
+NUDGE_LINE = (
+    "Want to answer the common application questions once so I never stop for them? Say `warm up`."
+)
 PAGE_ITEMS = 12
 PAGE_CHARS = 1700
 MATCH_LIMIT = 6
+WARMUP_WORDS = re.compile(
+    r"warm ?-?up|fill (?:in )?the blanks|blanks|(?:the |common |application )*questions"
+)
+WARMUP_ANSWER = re.compile(r"(?:answer\s+)?#?(\d{1,2})\s*[:=]\s*(.*)", re.IGNORECASE)
 
 # Answers that are shown as "saved" in a list and spelled out only when named.
 SENSITIVE = re.compile(
@@ -123,6 +136,10 @@ def db():
         id INTEGER PRIMARY KEY CHECK(id=1), questions TEXT NOT NULL, shown INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_announced(
         question TEXT PRIMARY KEY, value_hash TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS memory_warmup(
+        page INTEGER PRIMARY KEY, outbox_key TEXT NOT NULL, ids TEXT NOT NULL,
+        first INTEGER NOT NULL, skipped TEXT NOT NULL DEFAULT '[]');
+      CREATE TABLE IF NOT EXISTS memory_marks(name TEXT PRIMARY KEY, created_at TEXT NOT NULL);
     """)
     return conn
 
@@ -282,6 +299,19 @@ PROFILE_FACTS = (
     ),
     ("Visa sponsorship", r"sponsor|\bvisa\b", sponsorship),
     ("Citizenship", r"citizen", citizenship),
+    ("Willing to relocate", r"relocat", lambda p: yes_no(p["preferences"]["relocate"])),
+    (
+        "Work styles",
+        r"remote|hybrid|on.?site|work (?:style|arrangement|setting)",
+        lambda p: (
+            ", ".join(
+                questions.WORK_STYLE_WORDS[s][0]
+                for s in p["preferences"]["work_styles"]
+                if s in questions.WORK_STYLE_WORDS
+            )
+            or None
+        ),
+    ),
 )
 # Shown as "saved" in the list; spelled out only when the owner names one.
 PRIVATE_PROFILE_FACTS = (
@@ -488,10 +518,35 @@ def save_listing(questions: list[str], shown_count: int):
         )
 
 
-def load_listing() -> tuple[list[str], int]:
+def listing() -> tuple[str, list[str], int]:
+    """What the numbers in the channel go with: ("answers" | "warmup" | "", items, shown)."""
     with db() as conn:
         row = conn.execute("SELECT questions,shown FROM memory_listing WHERE id=1").fetchone()
-    return (json.loads(row["questions"]), int(row["shown"])) if row else ([], 0)
+    if not row:
+        return "", [], 0
+    data = json.loads(row["questions"])
+    if isinstance(data, dict):
+        return "warmup", list(data.get("warmup") or []), int(row["shown"])
+    return "answers", list(data), int(row["shown"])
+
+
+def load_listing() -> tuple[list[str], int]:
+    """The saved answers last shown, numbered; empty while the warm-up list is current."""
+    mode, items, shown_count = listing()
+    return (items, shown_count) if mode == "answers" else ([], 0)
+
+
+def save_warmup_listing(ids: list[str], shown_count: int):
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_listing VALUES(1,?,?)",
+            (json.dumps({"warmup": ids}), shown_count),
+        )
+
+
+def warmup_listing() -> tuple[list[str], int]:
+    mode, items, shown_count = listing()
+    return (items, shown_count) if mode == "warmup" else ([], 0)
 
 
 def headings(rows: list[dict]) -> list[str]:
@@ -564,8 +619,12 @@ def list_all() -> str:
     return page([row["question"] for row in rows], 0, rows, lead, private)
 
 
-def more() -> str:
-    order, shown_count = load_listing()
+def more(message_id: str) -> str:
+    mode, order, shown_count = listing()
+    if mode == "warmup":
+        if shown_count >= len(order):
+            return "That is all the questions. Answer any of them with its number."
+        return warmup_page(order, shown_count, f"reply:{message_id}")
     if not order:
         return list_all()
     rows = stored()
@@ -579,6 +638,11 @@ def by_number(number: int, rows: list[dict]) -> dict:
     if not rows:
         raise Reply("No answers are saved, so there is nothing to change.")
     order, _ = load_listing()
+    if not order and warmup_listing()[0]:
+        raise Reply(
+            "The numbers go with the warm-up questions now. Say `list` first to change a "
+            "saved answer by its number."
+        )
     if not order:
         raise Reply("I have not shown you a list yet. Say `list` first.")
     if not 1 <= number <= len(order):
@@ -734,15 +798,30 @@ def remember(question: str, answer: str, message_id: str) -> str:
 
 def respond(text: str, message_id: str) -> str:
     """One reply for one owner message. A `Reply` carries the plain line to send."""
-    raw = " ".join(str(text).replace("`", " ").split())
-    raw = re.sub(r"^(?:<@[!&]?\d+>\s*)+", "", raw)  # a leading mention of the bot is not a word
+    lines = [line_text.strip() for line_text in str(text).replace("`", " ").splitlines()]
+    lines = [re.sub(r"^(?:<@[!&]?\d+>\s*)+", "", line_text) for line_text in lines if line_text]
+    raw = " ".join(" ".join(lines).split())  # a leading mention of the bot is not a word
     low = raw.lower().rstrip(".!?").strip()
     if not low or low in {"help", "commands"}:
         return HELP_LINE
+    if WARMUP_WORDS.fullmatch(low):
+        return start_warmup(message_id)
     if LIST_WORDS.fullmatch(low):
         return list_all()
     if low in {"more", "next", "show more"}:
-        return more()
+        return more(message_id)
+    if warmup_listing()[0]:
+        # The numbers go with the warm-up questions until another list is shown.
+        if any(WARMUP_ANSWER.fullmatch(line_text) for line_text in lines):
+            return warmup_answers(lines, message_id)
+        match = re.fullmatch(r"(?:forget|remove|delete|drop)\s+#?(\d{1,2})", low)
+        if match:
+            return warmup_forget(int(match[1]))
+        match = re.fullmatch(
+            r"(?:change|update|set|correct)\s+#?(\d{1,2})\s+to\s+(.+)", raw, re.IGNORECASE
+        )
+        if match:
+            return warmup_answers([f"{match[1]}: {match[2]}"], message_id)
     match = ABOUT.fullmatch(raw.rstrip(".!?").strip())
     if match:
         return about(match[1])
@@ -761,6 +840,241 @@ def respond(text: str, message_id: str) -> str:
     if match and not raw.endswith("?"):
         return change(match[1], match[2], message_id)
     return ask(raw) or HELP_LINE
+
+
+# ---------------------------------------------------------------------------
+# Warm-up: the common application questions nothing answers yet, asked once, by number.
+# Each message of the list is a card; a card is edited to strike what the owner answers.
+# ---------------------------------------------------------------------------
+WARMUP_PAGE = 12
+SKIP_WORDS = frozenset({"skip", "pass", "-", "later", "ask me later"})
+
+
+def open_warmup() -> list:
+    return common_questions.open_questions(approved_profile(), workflow.recall_answer)
+
+
+def warmup_state(entry, profile: dict | None, skipped: set[str]) -> tuple[str, str] | None:
+    """How a warm-up question stands: ("answered", value), ("skipped", ""), or None."""
+    value, _source = questions.resolve(
+        common_questions.field(entry), profile or {}, recall=workflow.recall_answer
+    )
+    if value is not None:
+        return "answered", value
+    return ("skipped", "") if entry.id in skipped else None
+
+
+def warmup_pages() -> list[dict]:
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM memory_warmup ORDER BY page").fetchall()
+    return [
+        {**dict(r), "ids": json.loads(r["ids"]), "skipped": json.loads(r["skipped"])} for r in rows
+    ]
+
+
+def warmup_card(page: dict, total: int) -> str:
+    """One message of the warm-up list, answered questions struck through."""
+    profile = approved_profile()
+    skipped = set(page["skipped"])
+    first = int(page["first"])
+    header = (
+        f"**Common application questions** · {total} to fill in. Answer with the number, "
+        "like `3: Jan 15 2027` or `5: yes`; `6: skip` leaves one; several at once, one "
+        "per line."
+    )
+    lines = [header if first == 1 else "**Common application questions** (continued)"]
+    for number, identifier in enumerate(page["ids"], start=first):
+        entry = common_questions.BY_ID[identifier]
+        state = warmup_state(entry, profile, skipped)
+        if state is None:
+            lines.append(f"{number}. {entry.label} ({common_questions.detail(entry)})")
+        elif state[0] == "skipped":
+            lines.append(f"~~{number}. {entry.label}~~ → skipped")
+        else:
+            value = "saved" if entry.sensitive else shown(state[1], 80)
+            lines.append(f"~~{number}. {entry.label}~~ → {value}")
+    left = total - (first - 1 + len(page["ids"]))
+    if left > 0:
+        lines.append(f"Say `more` for the other {left}.")
+    return "\n".join(lines)
+
+
+def warmup_page(ids: list[str], start: int, outbox_key: str) -> str:
+    """Record and render the next message of the warm-up list, from `start` on."""
+    page_ids = ids[start : start + WARMUP_PAGE]
+    with db() as conn:
+        number = conn.execute("SELECT COALESCE(MAX(page),0)+1 FROM memory_warmup").fetchone()[0]
+        conn.execute(
+            "INSERT INTO memory_warmup(page,outbox_key,ids,first) VALUES(?,?,?,?)",
+            (number, outbox_key, json.dumps(page_ids), start + 1),
+        )
+    save_warmup_listing(ids, start + len(page_ids))
+    page = {"page": number, "outbox_key": outbox_key, "ids": page_ids, "first": start + 1}
+    return warmup_card({**page, "skipped": []}, len(ids))
+
+
+def start_warmup(message_id: str) -> str:
+    pending = open_warmup()
+    with db() as conn:
+        conn.execute("DELETE FROM memory_warmup")
+    if not pending:
+        return (
+            "Nothing to fill in: the common application questions are all answered by your "
+            "profile, your earlier answers or your rules. Say `list` to see them."
+        )
+    return warmup_page([entry.id for entry in pending], 0, f"reply:{message_id}")
+
+
+def warmup_page_of(number: int) -> dict | None:
+    for page in warmup_pages():
+        if int(page["first"]) <= number < int(page["first"]) + len(page["ids"]):
+            return page
+    return None
+
+
+def set_skipped(page: dict, identifier: str, skipped: bool):
+    names = [i for i in page["skipped"] if i != identifier] + ([identifier] if skipped else [])
+    with db() as conn:
+        conn.execute(
+            "UPDATE memory_warmup SET skipped=? WHERE page=?", (json.dumps(names), page["page"])
+        )
+
+
+def queue_card_edit(page_number: int):
+    """Redraw one warm-up card in place, through the outbox, once its message is known."""
+    page = next((p for p in warmup_pages() if p["page"] == page_number), None)
+    if page is None:
+        return
+    with db() as conn:
+        sent = conn.execute(
+            "SELECT message_id FROM memory_outbox WHERE key=? AND delivery='sent'",
+            (page["outbox_key"],),
+        ).fetchone()
+    if not sent or not sent["message_id"]:
+        return
+    total = len(warmup_listing()[0]) or len(page["ids"])
+    moment = workflow.now()
+    with db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_outbox(key,content,created_at,message_id) "
+            "VALUES(?,?,?,?)",
+            (f"edit:{page_number}:{moment}", warmup_card(page, total), moment, sent["message_id"]),
+        )
+
+
+def keep_warmup_answer(entry, value: str, message_id: str) -> bool:
+    """Save one warm-up answer as the owner's general answer, under the entry's label and
+    any label the answer's own words call for (pay per hour, pay per year)."""
+    options = list(common_questions.choices(entry))
+    if not workflow.remember_answer(entry.label, options, value, f"memory:{message_id}"):
+        return False
+    mark_announced(workflow.question_fingerprint(entry.label), value)
+    for label in common_questions.alias_labels(entry, value):
+        if workflow.remember_answer(label, [], value, f"memory:{message_id}"):
+            mark_announced(workflow.question_fingerprint(label), value)
+    return True
+
+
+def warm_answer(number: int, text: str, message_id: str, ids: list[str], touched: set) -> str:
+    """One numbered warm-up answer: checked for its kind, kept, confirmed in one line."""
+    if not 1 <= number <= len(ids):
+        return f"{number}: there is no question {number}; the list goes up to {len(ids)}."
+    entry = common_questions.BY_ID[ids[number - 1]]
+    page = warmup_page_of(number)
+    if questions.normalized(text) in SKIP_WORDS:
+        if page:
+            set_skipped(page, entry.id, True)
+            touched.add(page["page"])
+        return f"{number}. {entry.label} → skipped; I will ask when a form needs it."
+    try:
+        value = common_questions.normalize(entry, text)
+    except common_questions.Unreadable as why:
+        return f"{number}. {words(entry.label, 70)}: I need {why}."
+    if not keep_warmup_answer(entry, value, message_id):
+        return (
+            f"{number}. {entry.label}: that is one I ask you every time a form brings it up, "
+            "so I do not keep it."
+        )
+    if page:
+        set_skipped(page, entry.id, False)
+        touched.add(page["page"])
+    return f"{number}. {entry.label} → {shown(value)}"
+
+
+def warmup_answers(lines: list[str], message_id: str) -> str:
+    ids, _ = warmup_listing()
+    touched: set = set()
+    results = []
+    for line_text in lines:
+        match = WARMUP_ANSWER.fullmatch(line_text.strip())
+        if not match:
+            results.append(
+                f"Could not read “{shown(line_text, 60)}”: answer with the number, like `3: yes`."
+            )
+            continue
+        results.append(warm_answer(int(match[1]), match[2], message_id, ids, touched))
+    for page_number in sorted(touched):
+        queue_card_edit(page_number)
+    profile = approved_profile()
+    left = [i for i in ids if warmup_state(common_questions.BY_ID[i], profile, set()) is None]
+    if not left:
+        results.append("That is all of them. I will not stop for these again.")
+    return "\n".join(results)
+
+
+def warmup_forget(number: int) -> str:
+    """Drop the answer kept for a warm-up question, so a form asks it again."""
+    ids, _ = warmup_listing()
+    if not 1 <= number <= len(ids):
+        raise Reply(f"There is no question {number}; the list goes up to {len(ids)}.")
+    entry = common_questions.BY_ID[ids[number - 1]]
+    labels = [entry.label, *(label for _, label in entry.aliases)]
+    gone = False
+    for label in labels:
+        for row in stored():
+            if row["question"] == workflow.question_fingerprint(label):
+                erase(row["question"])
+                gone = True
+                with db() as conn:
+                    conn.execute(
+                        "DELETE FROM memory_announced WHERE question=?", (row["question"],)
+                    )
+    page = warmup_page_of(number)
+    if page:
+        set_skipped(page, entry.id, False)
+        queue_card_edit(page["page"])
+    if not gone:
+        return f"Nothing is saved for {number} yet."
+    return f"Forgot “{entry.label}”. I will ask you the next time a form needs it."
+
+
+NUDGE_MARK = "warmup_nudge"
+
+
+def marked(name: str) -> bool:
+    with db() as conn:
+        return bool(conn.execute("SELECT 1 FROM memory_marks WHERE name=?", (name,)).fetchone())
+
+
+def mark(name: str):
+    """A one-time thing done; it stays done across ticks and restarts."""
+    with db() as conn:
+        conn.execute("INSERT OR IGNORE INTO memory_marks VALUES(?,?)", (name, workflow.now()))
+
+
+def nudge_once():
+    """One line, the first time the channel is read, pointing at the warm-up. Never again."""
+    if marked(NUDGE_MARK):
+        return
+    pending = open_warmup()
+    moment = workflow.now()
+    with db() as conn:
+        conn.execute("INSERT OR IGNORE INTO memory_marks VALUES(?,?)", (NUDGE_MARK, moment))
+        if pending:
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_outbox(key,content,created_at) VALUES(?,?,?)",
+                ("nudge:warmup", NUDGE_LINE, moment),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -962,31 +1276,54 @@ def announce_learned(quiet: bool = False):
 
 
 def flush(channel: str):
-    """Deliver waiting lines in order; a failure keeps the rest for the next pass."""
+    """Deliver waiting lines in order; a failure keeps the rest for the next pass.
+
+    A row keyed `edit:` redraws the message named by its `message_id` instead of posting.
+    Discord refusing a message outright (a 4xx) is final for that row and never holds up
+    the ones behind it; an outage is retried.
+    """
     with db() as conn:
         rows = conn.execute(
-            "SELECT id,content FROM memory_outbox WHERE delivery='pending' ORDER BY id"
+            "SELECT id,key,content,message_id FROM memory_outbox WHERE delivery='pending' "
+            "ORDER BY id"
         ).fetchall()
     for row in rows:
+        payload = {
+            "content": workflow.clip(row["content"], 1900),
+            "allowed_mentions": {"parse": []},
+        }
+        editing = str(row["key"]).startswith("edit:")
         try:
-            sent = discord(
-                "POST",
-                f"/channels/{channel}/messages",
-                {
-                    "content": workflow.clip(row["content"], 1900),
-                    "allowed_mentions": {"parse": []},
-                    "nonce": f"memory:{row['id']}",
-                    "enforce_nonce": True,
-                },
-            )
+            if editing:
+                sent = discord(
+                    "PATCH", f"/channels/{channel}/messages/{row['message_id']}", payload
+                )
+            else:
+                sent = discord(
+                    "POST",
+                    f"/channels/{channel}/messages",
+                    {**payload, "nonce": f"memory:{row['id']}", "enforce_nonce": True},
+                )
+        except httpx.HTTPStatusError as error:
+            workflow.delivery_failed("memory", row["id"], error)
+            status = error.response.status_code
+            if 400 <= status < 500 and status != 429:
+                with db() as conn:
+                    conn.execute(
+                        "UPDATE memory_outbox SET delivery='failed', content='' WHERE id=?",
+                        (row["id"],),
+                    )
+                continue
+            return
         except (httpx.HTTPError, OSError) as error:
             workflow.delivery_failed("memory", row["id"], error)
             return
         with db() as conn:
             # The words were delivered; the outbox keeps the fact, not a copy of them.
+            message_id = row["message_id"] if editing else str((sent or {}).get("id", ""))
             conn.execute(
                 "UPDATE memory_outbox SET delivery='sent', content='', message_id=? WHERE id=?",
-                (str((sent or {}).get("id", "")), row["id"]),
+                (message_id, row["id"]),
             )
 
 
@@ -1050,6 +1387,7 @@ def poll(owner: str):
         except (httpx.HTTPError, OSError) as error:
             workflow.delivery_failed("memory", "read", error)
         announce_learned(quiet=first)
+        nudge_once()
         flush(channel)
     except Exception as error:  # noqa: BLE001 -- reported in the system log, retried next tick
         workflow.system_line("memory", f"memory channel pass failed · {type(error).__name__}")

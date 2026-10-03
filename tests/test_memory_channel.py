@@ -9,8 +9,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from rove import memory_channel, workflow
+from rove import memory_channel, questions, workflow
 from rove.onboarding import approve, digest, draft, propose, read_approved
+from rove.worker import apply_command
 
 RELOCATE = "Are you willing to relocate?*"
 MONTHS = "How many months are you available for an internship?"
@@ -22,8 +23,10 @@ class FakeDiscord:
     def __init__(self):
         self.inbox: list[dict] = []
         self.posted: list[dict] = []
+        self.edits: list[tuple[str, str]] = []  # (message id, new content)
         self.down = False
         self.lose_response = False
+        self.refuse_edits = False
         self.cursor = 0
 
     def __call__(self, method, path, payload=None):
@@ -32,6 +35,14 @@ class FakeDiscord:
         if method == "GET" and path.startswith("/channels/mem/messages"):
             after = re.search(r"after=(\d+)", path)
             return [m for m in self.inbox if int(m["id"]) > int(after[1] if after else 0)]
+        if method == "PATCH":
+            assert path.startswith("/channels/mem/messages/")
+            if self.refuse_edits:
+                request = httpx.Request("PATCH", "https://discord.com/api/v10" + path)
+                response = httpx.Response(404, request=request, text="Unknown Message")
+                raise httpx.HTTPStatusError("gone", request=request, response=response)
+            self.edits.append((path.rsplit("/", 1)[1], payload["content"]))
+            return {"id": path.rsplit("/", 1)[1]}
         if method == "POST":
             assert path == "/channels/mem/messages"
             self.posted.append(payload)
@@ -96,6 +107,7 @@ def chat(state, monkeypatch):
     )
     monkeypatch.setattr(memory_channel, "discord", fake)
     monkeypatch.setattr(workflow, "discord", fake)
+    memory_channel.mark(memory_channel.NUDGE_MARK)  # the one-time nudge has its own test
     memory_channel.poll("owner")  # the first pass only sets the channel's cursor
     with workflow.db() as conn:
         fake.cursor = int(
@@ -435,6 +447,7 @@ def test_what_was_learned_before_the_channel_existed_is_not_replayed(state, monk
         lambda: {"enabled": True, "guild_id": "g", "memory_channel_id": "mem"},
     )
     monkeypatch.setattr(memory_channel, "discord", fake)
+    memory_channel.mark(memory_channel.NUDGE_MARK)
     workflow.remember_answer(RELOCATE, [], "Yes", "m1")
     fake.inbox.append({"id": "5", "author": {"id": "owner"}, "content": "forget relocation"})
     assert fake.tick() == [] and fake.tick() == []
@@ -516,6 +529,7 @@ def test_the_worker_polls_memory_without_treating_it_as_a_command_channel(state,
     monkeypatch.setattr(worker, "discord", fake)
     monkeypatch.setattr(memory_channel, "discord", fake)
     monkeypatch.setattr(workflow, "discord", fake)
+    memory_channel.mark(memory_channel.NUDGE_MARK)
     worker.poll_commands()
     with workflow.db() as conn:
         cursor = int(
@@ -734,3 +748,239 @@ def test_backfill_saves_only_what_the_owner_typed_for_past_applications(state, c
 
 def test_backfill_with_no_past_answers_saves_nothing(state):
     assert memory_channel.backfill_from_applications() == {"saved": 0, "labels": [], "skipped": {}}
+
+
+# --- the warm-up ---------------------------------------------------------------------
+# With the fixture's profile these corpus questions are open: the profile holds the
+# links, the graduation month, work authorization and sponsorship; contact consent has a
+# standing rule; GPA is not disclosed.
+OPEN_LABELS = [
+    "When can you start?",
+    "Until when are you available?",
+    "How many hours per week can you work?",
+    "Desired pay",
+    "Are you willing to relocate?",
+    "Preferred locations",
+    "Preferred work arrangement",
+    "Do you have an active security clearance?",
+    "Can you provide references?",
+    "Which languages do you speak?",
+    "Do you have a valid driver's licence?",
+    "Are you at least 18 years old?",
+    (
+        "Are you able to perform the essential functions of the job with or without "
+        "reasonable accommodation?"
+    ),
+    "Do you consent to a background check?",
+    "Pronouns",
+    "Preferred name",
+    "Street address",
+    "Country of residence",
+]
+
+
+def numbered_lines(card: str) -> list[str]:
+    return [line for line in card.split("\n") if re.match(r"(?:~~)?\d+\. ", line)]
+
+
+def form(label: str, options=(), kind: str = "text") -> dict:
+    return {"label": label, "kind": kind, "options": [{"label": o} for o in options]}
+
+
+def test_warm_up_lists_the_questions_nothing_answers_yet(state, chat):
+    (card,) = chat.say("warm up")
+    lines = card.split("\n")
+    assert lines[0].startswith("**Common application questions** · 18 to fill in. Answer with")
+    assert lines[1] == "1. When can you start? (a date, like Jan 15 2027)"
+    assert "7. Preferred work arrangement (Remote / Hybrid / On-site)" in lines
+    assert "8. Do you have an active security clearance? (Yes / No)" in lines
+    assert lines[-1] == "Say `more` for the other 6."
+    assert len(numbered_lines(card)) == 12 and len(card) < 2000
+    (rest,) = chat.say("more")
+    assert rest.startswith("**Common application questions** (continued)\n13. ")
+    asked = [re.sub(r"^\d+\. | \(.*\)$", "", line) for line in numbered_lines(card + "\n" + rest)]
+    assert asked == OPEN_LABELS
+    for answered_elsewhere in ("LinkedIn profile URL", "GitHub URL", "Expected graduation date"):
+        assert answered_elsewhere not in card + rest
+    assert chat.say("more") == ["That is all the questions. Answer any of them with its number."]
+    no_ids([card, rest])
+    # The other words for it start the list over.
+    for words in ("fill in the blanks", "questions", "Warm-up"):
+        assert chat.say(words)[0].startswith("**Common application questions** · 18")
+
+
+def test_warm_up_answers_are_checked_kept_and_struck_through(state, chat):
+    (card,) = chat.say("warm up")
+    (reply,) = chat.say("1: Jan 15 2027\n3: 40 hours\n5: yes\n8: no\n4: $32/hour")
+    assert reply.split("\n") == [
+        "1. When can you start? → January 15, 2027",
+        "3. How many hours per week can you work? → 40",
+        "5. Are you willing to relocate? → Yes",
+        "8. Do you have an active security clearance? → No",
+        "4. Desired pay → $32/hour",
+    ]
+    # The card is redrawn in place: answered questions struck, private ones not spelled out.
+    (target, redrawn) = chat.edits[-1]
+    assert target == "901" and redrawn.startswith(card.split("\n")[0])
+    assert "~~1. When can you start?~~ → January 15, 2027" in redrawn
+    assert "~~3. How many hours per week can you work?~~ → 40" in redrawn
+    assert "~~8. Do you have an active security clearance?~~ → saved" in redrawn
+    assert "~~4. Desired pay~~ → saved" in redrawn and "$32" not in redrawn
+    assert "2. Until when are you available? (a date, like Aug 20 2027)" in redrawn
+    # Kept under the canonical id, as the owner's own words, with the sensitive marker.
+    rows = {row["canonical_id"]: row for row in workflow.remembered_answers()}
+    assert rows["security_clearance"]["sensitivity"] == "sensitive"
+    assert rows["security_clearance"]["origin"] == "owner"
+    assert rows["salary_expectation_hourly"]["value"] == "$32/hour"
+    assert rows["start_availability"]["sensitivity"] == "plain"
+    # The live resolver finds them under a form's own wording.
+    profile = read_approved()["profile"]
+    for label, options, value in (
+        ("What is your earliest available start date?", (), "January 15, 2027"),
+        ("Start date", (), "January 15, 2027"),
+        ("Hours per week available", (), "40"),
+        # Willingness rules read past extra words, so an answer holds for its own wording.
+        ("Are you willing to relocate? (Required)", ("Yes", "No"), "Yes"),
+        ("Do you currently hold an active security clearance?", ("Yes", "No"), "No"),
+        ("Expected hourly rate", (), "$32/hour"),
+        ("Salary expectations", (), "$32/hour"),
+    ):
+        kind = "select-one" if options else "text"
+        got = questions.resolve(form(label, options, kind), profile, recall=workflow.recall_answer)
+        assert got == (value, questions.REMEMBERED), label
+    # Not news for the channel, and no longer open.
+    assert chat.tick() == []
+    (again,) = chat.say("warm up")
+    assert "13 to fill in" in again and "When can you start?" not in again
+    no_ids([reply, redrawn])
+
+
+def test_an_answer_of_the_wrong_kind_is_refused_and_nothing_is_kept(state, chat):
+    chat.say("warm up")
+    (reply,) = chat.say("1: soon\n3: 500\n8: maybe\n7: tuesday\n99: yes\nhello there")
+    assert reply.split("\n") == [
+        "1. When can you start?: I need a date like Jan 15 2027 or 2027-01-15.",
+        "3. How many hours per week can you work?: I need a number between 1 and 80.",
+        "8. Do you have an active security clearance?: I need yes or no.",
+        "7. Preferred work arrangement: I need one of Remote / Hybrid / On-site.",
+        "99: there is no question 99; the list goes up to 18.",
+        "Could not read “hello there”: answer with the number, like `3: yes`.",
+    ]
+    assert workflow.remembered_answers() == [] and chat.edits == []
+
+
+def test_skip_leaves_a_question_for_run_time(state, chat):
+    chat.say("warm up")
+    assert chat.say("10: skip") == [
+        "10. Which languages do you speak? → skipped; I will ask when a form needs it."
+    ]
+    assert "~~10. Which languages do you speak?~~ → skipped" in chat.edits[-1][1]
+    assert workflow.recall_answer("Which languages do you speak?") is None
+    assert "Which languages do you speak?" in chat.say("warm up")[0]
+
+
+def test_forget_and_change_go_with_the_warm_up_numbers_until_another_list(state, chat):
+    chat.say("warm up")
+    chat.say("5: yes")
+    assert chat.say("change 5 to no") == ["5. Are you willing to relocate? → No"]
+    assert workflow.recall_answer("Are you willing to relocate?", ["Yes", "No"]) == "No"
+    assert chat.say("forget 5") == [
+        "Forgot “Are you willing to relocate?”. I will ask you the next time a form needs it."
+    ]
+    assert workflow.recall_answer("Are you willing to relocate?") is None
+    assert "5. Are you willing to relocate? (Yes / No)" in chat.edits[-1][1]
+    assert chat.say("forget 5") == ["Nothing is saved for 5 yet."]
+    chat.say("3: 40")
+    # After `list`, the numbers go with the saved answers again.
+    assert "1. How many hours per week can you work? → 40" in chat.say("list")[0]
+    assert chat.say("1: 35") == [
+        "Updated: when a form asks “How many hours per week can you work?”, I now answer 35."
+    ]
+    assert chat.say("forget 7") == ["There is no 7 in the last list; it goes up to 1."]
+    # And while the warm-up list is current, a saved answer is not reached by number.
+    chat.say("warm up")
+    chat.say("list")
+    chat.say("questions")
+    assert chat.say("forget relocation") == [
+        "I have nothing saved about that. Say `list` to see what I remember."
+    ]
+
+
+def test_the_warm_up_nudge_is_posted_once(state, monkeypatch):
+    fake = FakeDiscord()
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {"enabled": True, "guild_id": "g", "memory_channel_id": "mem"},
+    )
+    monkeypatch.setattr(memory_channel, "discord", fake)
+    monkeypatch.setattr(workflow, "discord", fake)
+    assert fake.tick() == [memory_channel.NUDGE_LINE]
+    assert fake.tick() == [] and fake.tick() == []
+    assert memory_channel.marked(memory_channel.NUDGE_MARK)
+
+
+def test_no_nudge_when_there_is_nothing_to_fill_in(state, monkeypatch):
+    fake = FakeDiscord()
+    monkeypatch.setattr(
+        workflow,
+        "config",
+        lambda: {"enabled": True, "guild_id": "g", "memory_channel_id": "mem"},
+    )
+    monkeypatch.setattr(memory_channel, "discord", fake)
+    monkeypatch.setattr(memory_channel, "open_warmup", list)
+    assert fake.tick() == [] and memory_channel.marked(memory_channel.NUDGE_MARK)
+    with workflow.db() as conn:
+        fake.cursor = int(
+            conn.execute(
+                "SELECT message_id FROM workflow_checkpoints WHERE channel_id='mem'"
+            ).fetchone()[0]
+        )
+    assert fake.say("warm up")[0].startswith("Nothing to fill in:")
+
+
+def test_a_card_edit_discord_refuses_does_not_hold_up_the_replies(state, chat):
+    chat.say("warm up")
+    chat.refuse_edits = True
+    assert chat.say("3: 40") == ["3. How many hours per week can you work? → 40"]
+    with workflow.db() as conn:
+        rows = conn.execute(
+            "SELECT key,delivery FROM memory_outbox WHERE key LIKE 'edit:%'"
+        ).fetchall()
+    assert [row["delivery"] for row in rows] == ["failed"]
+    assert "memory" in (state / "logs/delivery-failures.log").read_text()
+    chat.refuse_edits = False
+    assert chat.say("5: yes") == ["5. Are you willing to relocate? → Yes"]
+    assert "~~5. Are you willing to relocate?~~ → Yes" in chat.edits[-1][1]
+
+
+def test_a_corpus_question_left_open_is_asked_once_at_run_time_then_remembered(state, chat):
+    profile = read_approved()["profile"]
+    asked = {
+        "label": "How many hours per week are you available?",
+        "name": "hours",
+        "kind": "text",
+        "required": True,
+        "options": [],
+    }
+    # Nothing answers it: the run stops and asks the owner, as before the warm-up.
+    assert questions.resolve(asked, profile, recall=workflow.recall_answer) == (None, None)
+    app = workflow.enqueue("https://job-boards.greenhouse.io/acme/jobs/1001")["application_id"]
+    asked["key"] = workflow.field_key(asked)
+    directory = state / "applications" / app
+    directory.mkdir(parents=True)
+    (directory / "observation.json").write_text(json.dumps({"fields": [asked]}))
+    apply_command(
+        {"kind": "answer", "application_id": app, "field_key": asked["key"], "value": "40"}, "m1"
+    )
+    # Once: the next form, in other words, is filled from that reply.
+    later = form("Hours per week available")
+    assert questions.resolve(later, profile, recall=workflow.recall_answer) == (
+        "40",
+        questions.REMEMBERED,
+    )
+    assert chat.tick() == [
+        "Saved: when a form asks “How many hours per week are you available?”, I answer 40."
+    ]
+    (card,) = chat.say("warm up")
+    assert "hours per week" not in card.lower() and "17 to fill in" in card
