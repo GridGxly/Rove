@@ -178,52 +178,77 @@ __READING__
  // References belong to this observation only: an element that left the form, or stopped
  // being a control the observation names, keeps none.
  for(const name of ['data-rove-field','data-rove-choice','data-rove-submit','data-rove-nav','data-rove-link','data-rove-auth'])
-   document.querySelectorAll('['+name+']').forEach(e=>e.removeAttribute(name));
- const controls=[...document.querySelectorAll(CONTROLS)].filter(shown);
+   deepAll('['+name+']').forEach(e=>e.removeAttribute(name));
+ // A submit inside a shadow root never reaches the document's own guard: each root gets
+ // the same guard, armed by the same flag.
+ if(SHADOW)for(const r of ROOTS)if(!r.host.hasAttribute('data-rove-guard')){r.host.setAttribute('data-rove-guard','1');
+   r.addEventListener('submit',e=>{if(document.documentElement.getAttribute('data-rove-submit-armed')!=='1'){e.preventDefault();e.stopImmediatePropagation();}},true);}
+ const controls=deepAll(CONTROLS).filter(shown);
  const fields=controls.map((e,i)=>{
    // The reference goes on what a person would click: the control, or the visible face of a hidden or covered one.
-   const native=e.matches(NATIVE);const face=faceOf(e);const styled=!!wrapperOf(e);
-   const widget=!native?'listbox':face&&!styled?(e.tagName==='SELECT'?'toggle':'shell'):null;
+   const native=e.matches(NATIVE);const rich=!native&&e.matches(RICH);const face=faceOf(e);const styled=!!wrapperOf(e);
+   const widget=rich?null:!native?'listbox':face&&!styled?(e.tagName==='SELECT'?'toggle':'shell'):null;
    (face||e).setAttribute('data-rove-field',String(i));
    // A grouped radio or checkbox is one option of its group's question, never a question itself.
-   const g=groupFor(e,controls);const read=g?readOption(e):readLabel(e);const chosen=widget?picked(e,face):null;
-   const options=e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):(native?[]:listed(e));
-   return {ref:String(i),label:read.text,group:g?g.label:'',name:e.name||e.getAttribute('name')||'',id:e.id,kind:native?e.type:'combobox',tag:(widget==='toggle'?face:e).tagName.toLowerCase(),role:widget?'combobox':e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
+   const g=groupFor(e,controls);const column=g&&g.column?g.column(e):'';const read=g?(column?{text:column}:readOption(e)):readLabel(e);const chosen=widget?picked(e,face):null;
+   const options=e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):(native||rich?[]:listed(e));
+   return {ref:String(i),label:read.text,group:g?g.label:'',name:e.name||e.getAttribute('name')||'',id:e.id,kind:native?e.type:rich?'textarea':'combobox',tag:(widget==='toggle'?face:e).tagName.toLowerCase(),role:rich?'textbox':widget?'combobox':e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||chosen,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
     required:!!e.required || e.getAttribute('aria-required')==='true' || requiredBy(e) || !!read.required || (!!face&&(face.hasAttribute('required')||face.getAttribute('aria-required')==='true')),
     disabled:native?e.disabled:e.getAttribute('aria-disabled')==='true',readonly:native?e.readOnly:e.getAttribute('aria-readonly')==='true',
     checked:styled?(e.checked||face.getAttribute('aria-checked')==='true'):(native?e.checked:false),
-    value:native?(['password','hidden','file'].includes(e.type)?null:e.value):(chosen||''),maxlength:(e.maxLength>0?e.maxLength:null),
+    value:native?(['password','hidden','file'].includes(e.type)?null:e.value):rich?e.innerText.trim():(chosen||''),maxlength:(e.maxLength>0?e.maxLength:null),
     options:widget==='toggle'?options.filter(o=>o.label.trim()):options,
-    ...(widget?{widget}:{}),...(read.missing?{label_missing:true}:{}),...(g?{_group:{key:g.key,required:g.required,missing:g.missing}}:{})};
+    ...(widget?{widget}:{}),...(rich?{rich:true}:{}),...(read.missing?{label_missing:true}:{}),...(g?{_group:{key:g.key,required:g.required,missing:g.missing}}:{}),_section:sectionOf(e)};
  }).filter(e=>e.kind!=='hidden');
- const boxes=[...new Set([...document.querySelectorAll('button[aria-pressed]')].filter(visible).map(b=>b.parentElement))].filter(c=>c.querySelectorAll(':scope > button[aria-pressed]').length>=2);
+ const boxes=[...new Set(deepAll('button[aria-pressed]').filter(visible).map(b=>b.parentElement))].filter(c=>c.querySelectorAll(':scope > button[aria-pressed]').length>=2);
  const choices=boxes.map((c,i)=>{c.setAttribute('data-rove-choice',String(i));const buttons=[...c.querySelectorAll(':scope > button[aria-pressed]')];const box=c.querySelector('input');const read=readContainer(c);
    return {ref:String(i),label:read.text,group:'',name:box?.name||'',id:box?.id||'',kind:'choice',tag:'buttons',role:'choice',selected:null,selection_code:null,
     required:!!read.required||!!(c.parentElement&&[...c.parentElement.querySelectorAll('label')].some(l=>/required/i.test(l.className)||/\*\s*$/.test(l.innerText))),disabled:false,readonly:false,checked:false,
     value:buttons.find(b=>b.getAttribute('aria-pressed')==='true')?.innerText.trim()||'',options:buttons.map(b=>({label:b.innerText.trim(),value:b.getAttribute('data-option')||b.innerText.trim()})),
-    ...(read.missing?{label_missing:true}:{})};});
+    ...(read.missing?{label_missing:true}:{}),_section:sectionOf(c)};});
  fields.push(...choices);
- const auth=[...document.querySelectorAll('button,input[type=submit],a[href],[role="button"]')].filter(visible).filter(e=>
+ const auth=deepAll('button,input[type=submit],a[href],[role="button"]').filter(visible).filter(e=>
    /^(create (an )?account|create (my )?profile|sign ?up|register|sign ?in|log ?in)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{
    e.setAttribute('data-rove-auth',String(i));const t=(e.innerText||e.value||'').trim();return {ref:String(i),label:t,intent:/sign ?in|log ?in/i.test(t)?'login':'register'};});
- const nav=[...document.querySelectorAll('button,input[type=submit],[role="button"]')].filter(visible).filter(e=>
-   /^(next|continue|save (and|&) continue|next step)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{
+ // The control that moves a multi-page form on: Next, Continue, Proceed, Review, "Next:
+ // Experience", "Save & Continue", "Continue to step 3". A "continue to" that leaves the
+ // form for another site or a sign-in never counts.
+ const NAV=/^(?:next|continue|proceed|review|next step|go to (?:the )?next step|save (?:and|&) (?:continue|next)|review (?:and|&) submit|review (?:my |your |the )?application|(?:continue|proceed|next|go) to (?:step \d+|the next step|(?!.*\b(?:linkedin|indeed|google|facebook|apple|site|website|home ?page|careers?|jobs?|search|sign ?in|log ?in)\b).{1,40})|next ?[:\-–—] ?.{1,40}|next \(?\d+ ?(?:of|\/) ?\d+\)?)$/i;
+ const navText=t=>squash(t).replace(/^[›»→>\s]+|[\s›»→>]+$/g,'');
+ const nav=deepAll('button,input[type=submit],[role="button"]').filter(visible).filter(e=>
+   NAV.test(navText(e.innerText||e.value||''))).map((e,i)=>{
    e.setAttribute('data-rove-nav',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};});
- const links=[...document.querySelectorAll('a[href],button,[role="button"]')].filter(visible).filter(e=>
+ const links=deepAll('a[href],button,[role="button"]').filter(visible).filter(e=>
    /^(apply( now| for this (job|position))?|apply on (the )?(employer|company) (site|website)|apply for this job|start application|continue application)$/i.test(e.innerText.trim())).map((e,i)=>{
    e.setAttribute('data-rove-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
  });
- return {title:document.title,http_status:(performance.getEntriesByType('navigation')[0]||{}).responseStatus||0,text:document.body.innerText.slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
- final_controls:[...document.querySelectorAll('button,input[type=submit],a,[role=button]')].filter(visible).filter(e=>/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{e.setAttribute('data-rove-submit',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};}),
+ // A step Rove does not take: a recorded video interview or an online assessment, embedded,
+ // linked, or the page itself.
+ const ASSESS=/(?:^|\.)(?:hirevue\.com|sparkhire\.com|modernhire\.com|willo\.video|myinterview\.com|vidcruiter\.com|interviewstream\.com|talview\.com|codility\.com|hackerrank\.com|codesignal\.com|testgorilla\.com|karat\.(?:com|io)|pymetrics\.(?:ai|com)|harver\.com|vervoe\.com|shl\.com|mettl\.com|criteriacorp\.com|coderbyte\.com|qualified\.io|devskiller\.com|wonderlic\.com|hackerearth\.com|imocha\.io|testdome\.com)$/i;
+ const VIDEO_HOST=/hirevue|sparkhire|modernhire|willo|myinterview|vidcruiter|interviewstream|talview/i;
+ const VIDEO_WORDS=/^(?:(?:start|begin|record|take)(?: (?:my|your|the|a))? (?:one-way |recorded )?video (?:interview|answers?|responses?|questions?)|record (?:my |your )?(?:answer|response)s?|start recording)$/i;
+ const TEST_WORDS=/^(?:start|begin|take|launch)(?: (?:my|your|the|an?))? (?:online |coding |technical |skills? )?(?:assessment|test|coding (?:test|challenge|exercise))$/i;
+ const address=u=>{try{return new URL(u,location.href);}catch(_){return null;}};
+ const assessment=(()=>{
+   for(const f of deepAll('iframe[src],embed[src]').filter(visible)){const u=address(f.getAttribute('src'));
+     if(u&&ASSESS.test(u.hostname))return {kind:VIDEO_HOST.test(u.hostname)?'video':'assessment',host:u.hostname,link:u.href};}
+   if(ASSESS.test(location.hostname))return {kind:VIDEO_HOST.test(location.hostname)?'video':'assessment',host:location.hostname,link:location.href};
+   for(const a of deepAll('a[href],button,[role=button]').filter(visible)){const t=squash(a.innerText||a.value||'');const u=a.href?address(a.href):null;const h=u&&ASSESS.test(u.hostname)?u.hostname:'';
+     const video=VIDEO_WORDS.test(t)||(!!h&&VIDEO_HOST.test(h));const test=TEST_WORDS.test(t)||(!!h&&!VIDEO_HOST.test(h));
+     if(video||test)return {kind:video?'video':'assessment',host:h||location.hostname,link:u?u.href:location.href};}
+   return null;})();
+ const shadowText=SHADOW?ROOTS.map(r=>[...r.children].filter(visible).map(c=>c.innerText||'').join('\n')).join('\n'):'';
+ return {title:document.title,http_status:(performance.getEntriesByType('navigation')[0]||{}).responseStatus||0,text:(shadowText?document.body.innerText+'\n'+shadowText:document.body.innerText).slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
+ final_controls:deepAll('button,input[type=submit],a,[role=button]').filter(visible).filter(e=>FINAL.test((e.innerText||e.value||'').trim())).map((e,i)=>{e.setAttribute('data-rove-submit',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};}),
  ats_markers:{captcha_challenge:[...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"],.g-recaptcha,.h-captcha,.cf-turnstile')].some(e=>{const r=e.getBoundingClientRect();return visible(e)&&r.width>=200&&r.height>=60;}),
  already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
  greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content'),
  lever_submit_success:!!document.querySelector('h3[data-qa="msg-submit-success"]'),
  lever_verification_error:/there was an error verifying your application/i.test(document.body.innerText),
  __BOARDS__
-  status_region:messages('__STATUS__'),form_error:messages('__ERROR__')}};
+  status_region:messages('__STATUS__'),form_error:messages('__ERROR__'),...(assessment?{assessment}:{})}};
 }""".replace("__MESSAGES__", MESSAGES_JS)
     .replace("__READING__", form_reading.READING_JS)
     .replace("__STATUS__", STATUS_SELECTOR)
@@ -835,8 +860,7 @@ class RecruitingBrowser:
         self.save()
         # One question with options, not one question per radio button or checkbox.
         data["fields"] = form_reading.group_choices(data["fields"])
-        for field in data["fields"]:
-            field["key"] = workflow.field_key(field)
+        form_reading.distinct_keys(data["fields"], workflow.field_key)
         passwords = [f for f in data["fields"] if f["kind"] == "password"]
         intents = {c["intent"] for c in data.get("auth_controls", [])}
         if passwords:

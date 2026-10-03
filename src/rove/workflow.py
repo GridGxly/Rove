@@ -2000,6 +2000,10 @@ def status() -> dict:
 
 def field_key(field: dict) -> str:
     identity = {k: field.get(k) for k in ("label", "name", "id", "kind", "options")}
+    if field.get("occurrence"):
+        # A later twin of another question on the same form: its section and its place
+        # among the twins tell it apart. A field without a twin keys as it always has.
+        identity.update(section=field.get("section") or "", occurrence=field["occurrence"])
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
 
 

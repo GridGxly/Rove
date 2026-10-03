@@ -5,17 +5,40 @@ and to recognise radio and checkbox groups; `group_choices` then turns each grou
 field with its options. A control whose question cannot be found is marked
 `label_missing`, with the closest text as a hint, and is never answered from a guess.
 
+The reader also walks open shadow roots (web-component forms), reads a rich-text editor
+as a long-text field, reads a grid of choices as one question per row, and leaves out the
+controls of a window that does not block the page, such as a chat box.
+
 This module imports nothing from the workflow or the browser, so both can use it.
 """
 
 import re
 
 # Injected into the observation script after `visible` is defined. The script uses
-# `shown`, `requiredBy`, `readLabel`, `readOption`, `readContainer` and `groupFor`.
+# `shown`, `requiredBy`, `readLabel`, `readOption`, `readContainer`, `groupFor`,
+# `deepAll`, `sectionOf` and `FINAL`.
 READING_JS = r"""
  const NATIVE='input:not([type=hidden]),select,textarea';
- // A control is a form element, or an ARIA dropdown that has no form element inside it.
- const CONTROLS=NATIVE+',[role=combobox]:not(input,select,textarea):not(:has('+NATIVE+'))';
+ // A rich-text editor (Quill, ProseMirror, Draft, Slate): the editable box itself.
+ const RICH='[contenteditable]:not([contenteditable=false]):is([role=textbox],.ql-editor,.ProseMirror,.public-DraftEditor-content,[data-slate-editor])';
+ // A control is a form element, an ARIA dropdown that has no form element inside it, or
+ // a rich-text editor.
+ const CONTROLS=NATIVE+',[role=combobox]:not(input,select,textarea):not(:has('+NATIVE+')),'+RICH;
+ // What sends an application, word for word.
+ const FINAL=/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i;
+ // Open shadow roots: a web-component form keeps its controls inside them. Without any,
+ // every query below is the plain document query it always was.
+ const rootsIn=r=>{const out=[];for(const e of r.querySelectorAll('*'))if(e.shadowRoot)out.push(e.shadowRoot,...rootsIn(e.shadowRoot));return out;};
+ const ROOTS=rootsIn(document);
+ const SHADOW=ROOTS.length>0;
+ // Every match under `root` and inside the open shadow roots below it, in reading order:
+ // a component's own controls come where the component stands.
+ const deepAll=(sel,root=document)=>{if(!SHADOW)return [...root.querySelectorAll(sel)];
+   const out=[];const walk=r=>{for(const e of r.querySelectorAll('*')){if(e.matches(sel))out.push(e);if(e.shadowRoot)walk(e.shadowRoot);}};walk(root);return out;};
+ const deepOne=sel=>document.querySelector(sel)||(SHADOW?deepAll(sel)[0]||null:null);
+ // An id names an element of the same tree: the document, or the shadow root around it.
+ const byId=(n,id)=>{const r=n.getRootNode();return (r!==document&&r.getElementById&&r.getElementById(id))||document.getElementById(id);};
+ const hostOf=e=>{const r=e.getRootNode();return r!==document&&r.host?r.host:null;};
  const SKIP='script,style,noscript,select,option,textarea,button,[aria-hidden=true],[role=alert],[role=tooltip]';
  const HEADING='legend,label,h1,h2,h3,h4,h5,h6,[role=heading],[class*="label" i],[class*="question" i],[class*="title" i],[class*="legend" i],[class*="heading" i],[class*="prompt" i]';
  const GENERIC_HINT=/^(?:please\s+)?(?:type|enter|write|add|start typing|select|choose|search|pick)?\s*(?:your|an?|the|one)?\s*(?:answer|response|text|value|option)?\s*(?:here)?\s*[.…:]*$/i;
@@ -51,9 +74,25 @@ READING_JS = r"""
    if(r.width<2||r.height<2||(c.parentElement&&c.parentElement.closest('[aria-hidden=true]')))return true;
    for(let p=c,d=0;p&&d<4;d++,p=p.parentElement){if(Number(getComputedStyle(p).opacity)===0)return true;}
    return false;};
+ // A control in a window that does not block the page (a chat box, a help widget) is not
+ // part of the application: a dialog that is not modal, with fewer than three controls,
+ // no upload, and no button that sends or continues an application.
+ const GOES_ON=/^(apply|apply now|next|continue)$/i;
+ const asideMemo=new WeakMap();
+ const aside=c=>{const d=c.closest('[role=dialog],[role=alertdialog],dialog');
+   if(!d||d.getAttribute('aria-modal')==='true'||(d.tagName==='DIALOG'&&d.matches(':modal')))return false;
+   if(!asideMemo.has(d)){const inside=[...d.querySelectorAll(CONTROLS)];
+     asideMemo.set(d,inside.length<3&&!inside.some(x=>x.type==='file')&&![...d.querySelectorAll('button,input[type=submit],[role=button]')].some(b=>{const t=(b.innerText||b.value||'').trim();return FINAL.test(t)||GOES_ON.test(t);}));}
+   return asideMemo.get(d);};
  const shownMemo=new WeakMap();
- const shown=c=>{if(!shownMemo.has(c)){const face=faceOf(c);shownMemo.set(c,(c.type==='file'||visible(c)||(!!face&&visible(face)))&&!trap(c));}return shownMemo.get(c);};
- const controlsIn=p=>[...p.querySelectorAll(CONTROLS)].filter(shown);
+ const shown=c=>{if(!shownMemo.has(c)){const face=faceOf(c);shownMemo.set(c,(c.type==='file'||visible(c)||(!!face&&visible(face)))&&!trap(c)&&!aside(c)&&!(c.matches(RICH)&&!!c.parentElement?.closest(RICH)));}return shownMemo.get(c);};
+ // The components that hold a shown control: in the tree around a component, the
+ // component stands for the controls inside it.
+ let HOSTS=null;
+ const hostsOf=()=>{if(!HOSTS){HOSTS=new Set();for(const c of deepAll(CONTROLS))if(shown(c))for(let h=hostOf(c);h;h=hostOf(h))HOSTS.add(h);}return HOSTS;};
+ const controlsIn=p=>{const light=[...p.querySelectorAll(CONTROLS)].filter(shown);if(!SHADOW)return light;
+   const held=[...p.querySelectorAll('*')].filter(x=>hostsOf().has(x));
+   return held.length?[...light,...held].sort((a,b)=>a===b?0:before(a,b)?-1:1):light;};
  // An input name or id is never a question: cards[..][field0], question_12345, input-17.
  const machine=t=>{t=squash(t);return !!t&&!/\s/.test(t)&&(/[\[\]{}=_]/.test(t)||/^[a-z]+[-.:]?\d+$/i.test(t)||/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t)||/^[0-9a-f]{12,}$/i.test(t));};
  // Human text inside `root`, in document order: before `stop`, after `after`, outside
@@ -78,7 +117,7 @@ READING_JS = r"""
    return {text:text.slice(0,600),required};
  };
  // A label belongs to a control when it points at it, or points nowhere and wraps no other control.
- const owns=(l,e)=>{const target=l.htmlFor?document.getElementById(l.htmlFor):null;if(target)return target===e||e.contains(target);
+ const owns=(l,e)=>{const target=l.htmlFor?byId(l,l.htmlFor):null;if(target)return target===e||e.contains(target);
    const inner=l.querySelector(CONTROLS);return !inner||inner===e||e.contains(inner);};
  // The closest unclaimed <label>: the one written for this control's part of the container.
  // `strict` takes only a label with no other control between it and this one; without it,
@@ -98,7 +137,7 @@ READING_JS = r"""
    }
    return null;};
  const nearestText=(e,mine,strict)=>{const l=nearestEl(e,mine,strict);const t=l?l.innerText.trim():'';return machine(t)?'':t;};
- const labelEls=e=>{const ls=[...(e.labels||[])];if(ls.length)return ls;const ids=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)).filter(Boolean);if(ids.length)return ids;const l=nearestEl(e);return l?[l]:[];};
+ const labelEls=e=>{const ls=[...(e.labels||[])];if(ls.length)return ls;const ids=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>byId(e,id)).filter(Boolean);if(ids.length)return ids;const l=nearestEl(e);return l?[l]:[];};
  // Required by its label (a class, a trailing asterisk or "(required)") or by the class of
  // the group that holds only this question.
  const requiredBy=e=>{if(labelEls(e).some(l=>/\brequired\b/i.test(l.className)||/(\*|\(\s*required\s*\))\s*$/i.test((l.innerText||'').trim())))return true;
@@ -118,7 +157,7 @@ READING_JS = r"""
    return null;};
  // Lever keeps each card's questions as JSON beside the card; fieldN is the Nth of them.
  const template=e=>{const m=/^(cards\[[^\]]+\])\[field(\d+)\]$/.exec(e.name||'');if(!m)return null;
-   const holder=[...document.querySelectorAll('input[type=hidden]')].find(h=>h.name===m[1]+'[baseTemplate]');
+   const holder=[...e.getRootNode().querySelectorAll('input[type=hidden]')].find(h=>h.name===m[1]+'[baseTemplate]');
    try{const f=JSON.parse(holder.value).fields[Number(m[2])];const text=squash(f.text);return text&&!machine(text)?{text,required:!!f.required}:null;}catch(_){return null;}};
  // The best guess when nothing names the control: the text just before it.
  const nearby=(first,mine)=>{let p=first.parentElement;
@@ -140,7 +179,7 @@ READING_JS = r"""
    if(own&&!machine(own))return {text:own,required};
    const aria=e.getAttribute('aria-label');
    if(aria&&!machine(aria))return {text:aria};
-   const by=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ').trim();
+   const by=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>byId(e,id)?.innerText||'').join(' ').trim();
    return by&&!machine(by)?{text:by}:null;
  };
  // The value a custom dropdown shows as chosen; a prompt such as "Select..." or "--" is none.
@@ -152,16 +191,16 @@ READING_JS = r"""
    return chosenText([...e.querySelectorAll('*')].filter(n=>!n.children.length&&visible(n)&&!n.closest('[role=listbox],[role=option],[role=menu]')).map(n=>n.textContent).join(' '));};
  // The options an ARIA dropdown already holds in the page, shown or not.
  const listed=e=>{const ids=((e.getAttribute('aria-owns')||'')+' '+(e.getAttribute('aria-controls')||'')).split(' ').filter(Boolean);
-   const roots=[e,...ids.map(id=>document.getElementById(id)).filter(Boolean)];
+   const roots=[e,...ids.map(id=>byId(e,id)).filter(Boolean)];
    return [...new Set(roots.flatMap(r=>[...r.querySelectorAll('[role=option]')]))].map(o=>squash(o.textContent)).filter(Boolean).map(t=>({label:t,value:t})).slice(0,300);};
  // One option of a group: its own text, never the group's question.
  const readOption=e=>{const own=ownText(e);const text=own?own.text:trailing(e);if(text)return {text};
    const value=e.getAttribute('value')||'';return {text:value&&value!=='on'&&!machine(value)?value:''};};
- const readLabel=e=>{
+ const readLabelOwn=e=>{
    const file=e.type==='file';
    if(file){
      // An upload is named by what its ARIA name points at, minus the button's own caption.
-     const by=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>squash(document.getElementById(id)?.innerText)).filter(t=>t&&!CAPTION.test(t)).join(' ');
+     const by=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>squash(byId(e,id)?.innerText)).filter(t=>t&&!CAPTION.test(t)).join(' ');
      if(by&&!machine(by))return {text:by};
    }
    const own=ownText(e);
@@ -174,6 +213,9 @@ READING_JS = r"""
    if(lead)return lead;
    const card=template(e);
    if(card)return card;
+   // A control inside a web component: what names the component, or the text around it.
+   const outer=hostName(e);
+   if(outer)return outer;
    // A label that another control stands between is a weaker claim than the question's own text.
    const far=nearestText(e);
    if(far)return {text:far};
@@ -188,6 +230,27 @@ READING_JS = r"""
    }
    return {text:nearby(e,[e]),missing:true};
  };
+ const hostName=e=>{for(let h=hostOf(e);h;h=hostOf(h)){
+     const named=squash(h.getAttribute('aria-label')||h.getAttribute('label')||h.getAttribute('label-hint'));
+     if(named&&!machine(named))return {text:named};
+     const own=[...(h.labels||[])].map(l=>squash(l.innerText)).join(' ');
+     if(own&&!machine(own))return {text:own};
+     const near=nearestText(h,[h],true);if(near)return {text:near};
+     const lead=leading(h,[h]);if(lead)return lead;}
+   return null;};
+ // A month, day or year box is one part of a date question: it carries the question, so
+ // "Month" reads as "Expected graduation date — Month".
+ const DATE_PART=/^(?:month|day|year|mm|dd|yy|yyyy)$/i;
+ const partName=c=>{const own=ownText(c);return squash(own?own.text:(c.getAttribute&&c.getAttribute('placeholder'))||'');};
+ const partOf=(e,read)=>{if(read.missing||!DATE_PART.test(squash(read.text)))return read;
+   for(let p=e.parentElement,d=0;p&&d<4&&!p.matches('form,body,html');d++,p=p.parentElement){
+     const mine=controlsIn(p);if(mine.length<2)continue;
+     if(!mine.every(c=>c.matches(CONTROLS)&&DATE_PART.test(partName(c))))return read;
+     const near=nearestText(mine[0],mine,true);
+     const q=(p.matches('fieldset,[role=group]')?boxTitle(p,mine[0],mine,false):null)||leading(mine[0],mine)||(near?{text:near}:null);
+     return q&&q.text?{text:q.text+' — '+squash(read.text),required:!!read.required||!!q.required}:read;}
+   return read;};
+ const readLabel=e=>partOf(e,readLabelOwn(e));
  // A button group or other widget read as one question.
  const readContainer=c=>{const mine=controlsIn(c);
    const near=nearestText(c,mine,true);
@@ -202,7 +265,7 @@ READING_JS = r"""
  // holds nothing but the options) a label of its own that points at no control.
  const boxTitle=(box,first,members,loose)=>{
    const title=box.querySelector('legend')||(loose?[...box.querySelectorAll('label')].find(l=>owns(l,first)&&l.control!==first&&!members.includes(l.control)):null);
-   const named=title?title.innerText.trim():(box.getAttribute('aria-label')||(box.getAttribute('aria-labelledby')||'').split(' ').map(id=>document.getElementById(id)?.innerText||'').join(' ')).trim();
+   const named=title?title.innerText.trim():(box.getAttribute('aria-label')||(box.getAttribute('aria-labelledby')||'').split(' ').map(id=>byId(box,id)?.innerText||'').join(' ')).trim();
    if(!named||machine(named))return null;
    return {text:named,required:box.getAttribute('aria-required')==='true'||(!!title&&(/\brequired\b/i.test(title.className)||!!title.querySelector('[class*="required" i]')||/\*\s*$/.test(named)))};};
  // The question a radio or checkbox group answers; never one option's text.
@@ -221,7 +284,7 @@ READING_JS = r"""
  };
  const choiceOnly=(box,type)=>{const inside=controlsIn(box);return inside.length&&inside.every(c=>c.type===type)?inside:null;};
  const membersOf=(e,all)=>{
-   if(e.name){const same=all.filter(x=>x.type===e.type&&x.name===e.name&&x.form===e.form);if(same.length>=2)return same;}
+   if(e.name){const same=all.filter(x=>x.type===e.type&&x.name===e.name&&x.form===e.form&&x.getRootNode()===e.getRootNode());if(same.length>=2)return same;}
    const box=e.closest(e.type==='radio'?'fieldset,[role=radiogroup],[role=group]':'fieldset,[role=group]');
    const boxed=box&&choiceOnly(box,e.type);
    if(boxed&&(boxed.length>=2||(e.type==='checkbox'&&(box.querySelector('legend')||box.getAttribute('aria-label')||box.getAttribute('aria-labelledby')))))return boxed;
@@ -231,16 +294,49 @@ READING_JS = r"""
      if(carded&&[...row.querySelectorAll('.application-label')].some(l=>!l.closest('label')&&pieces(l).text))return carded;
    }
    return null;};
+ // A grid of choices (a table with a header row over two or more rows of options, each
+ // option in its own cell): every row is one question, named by the grid's title and the
+ // row's own heading, and every option by its column's heading.
+ const GRID='table,[role=table],[role=grid]';
+ const cells=r=>[...r.children].filter(c=>c.matches('td,th,[role=cell],[role=gridcell],[role=columnheader],[role=rowheader]'));
+ const cellOf=e=>e.closest('td,th,[role=cell],[role=gridcell]');
+ const gridOf=e=>{const row=e.closest('tr,[role=row]');const table=row&&row.closest(GRID);if(!table)return null;
+   const rows=[...table.querySelectorAll('tr,[role=row]')].filter(r=>r.closest(GRID)===table);
+   const kind=r=>[...r.querySelectorAll('input[type='+e.type+']')].filter(shown);
+   const full=rows.filter(r=>kind(r).length>=2);
+   if(full.length<2||!full.includes(row))return null;
+   const members=kind(row);
+   if(new Set(members.map(cellOf)).size!==members.length||members.some(m=>!cellOf(m)))return null;
+   const head=rows.find(r=>before(r,full[0])&&!r.querySelector(CONTROLS)&&cells(r).length>=2);
+   return head?{table,row,head,members}:null;};
+ const gridTitle=g=>{const caption=g.table.querySelector('caption');let t=caption?squash(caption.innerText):'';
+   if(!t)t=squash(g.table.getAttribute('aria-label')||(g.table.getAttribute('aria-labelledby')||'').split(' ').map(id=>byId(g.table,id)?.innerText||'').join(' '));
+   if(!t){const box=g.table.closest('fieldset');const l=box&&box.querySelector('legend');if(l&&controlsIn(box).every(c=>g.table.contains(c)))t=squash(l.innerText);}
+   if(!t){const lead=leading(g.table,controlsIn(g.table));t=lead?lead.text:'';}
+   if(!t){const corner=cells(g.head)[0];t=corner?squash(corner.innerText):'';}
+   return machine(t)?'':t;};
+ const rowTitle=g=>{const c=cells(g.row).find(c=>!c.querySelector(CONTROLS)&&squash(c.innerText));return c?squash(c.innerText):'';};
+ const columnOf=(g,e)=>{const i=cells(g.row).indexOf(cellOf(e));const h=i>=0?cells(g.head)[i]:null;return h?squash(h.innerText):'';};
+ const gridLabel=g=>{let t=gridTitle(g);const required=/[*✱]\s*$/.test(t);t=t.replace(/\s*[*✱]+\s*$/,'');const r=rowTitle(g);
+   if(!t&&!r)return {text:nearby(g.members[0],g.members),missing:true};
+   return {text:t&&r?t+' — '+r:(t||r),required};};
  const groupFor=(()=>{const found=new Map();const list=[];
    return (e,all)=>{
      if(e.type!=='radio'&&e.type!=='checkbox')return null;
      if(found.has(e))return found.get(e);
-     const members=membersOf(e,all);
+     const grid=gridOf(e);
+     const members=grid?grid.members:membersOf(e,all);
      if(!members){found.set(e,null);return null;}
-     const read=groupLabel(members);
-     const group={key:String(list.length),label:read.text,required:!!read.required,missing:!!read.missing};
+     const read=grid?gridLabel(grid):groupLabel(members);
+     const group={key:String(list.length),label:read.text,required:!!read.required,missing:!!read.missing,...(grid?{column:m=>columnOf(grid,m)}:{})};
      list.push(group);members.forEach(m=>found.set(m,group));
      return group;};})();
+ // The heading of the part of the form a control sits in: the last heading or legend before it.
+ const SECTION='h1,h2,h3,h4,h5,h6,[role=heading],legend';
+ let HEADS=null;
+ const sectionOf=e=>{if(!HEADS)HEADS=deepAll(SECTION).filter(h=>visible(h)&&squash(h.innerText));
+   let last=null;for(const h of HEADS){if(!h.contains(e)&&before(h,e))last=h;}
+   return last?squash(last.innerText).slice(0,120):'';};
 """
 
 VISIBLE_JS = (
@@ -248,21 +344,29 @@ VISIBLE_JS = (
     " && e.getAttribute('aria-hidden')!=='true';\n"
 )
 
+# The first element a selector names in the document, else inside an open shadow root.
+DEEP_ONE_JS = r""" const deepOne=sel=>{const walk=r=>{const hit=r.querySelector(sel);if(hit)return hit;
+   for(const e of r.querySelectorAll('*'))if(e.shadowRoot){const h=walk(e.shadowRoot);if(h)return h;}return null;};return walk(document);};
+"""
+
 # Given a field reference: the options an opened custom dropdown offers, each marked with
 # `data-rove-option`. A list with ARIA roles is read by them; a list without is read as the
 # text rows of the element the dropdown says it owns.
 OPTIONS_JS = (
     "(ref) => {\n"
     + VISIBLE_JS
+    + DEEP_ONE_JS
     + r""" const squash=s=>(s||'').replace(/\s+/g,' ').trim();
  document.querySelectorAll('[data-rove-option]').forEach(e=>e.removeAttribute('data-rove-option'));
- const face=document.querySelector('[data-rove-field="'+ref+'"]');
+ const face=deepOne('[data-rove-field="'+ref+'"]');
  if(!face)return [];
+ const root=face.getRootNode();
  const ids=[face,...face.querySelectorAll('[aria-owns],[aria-controls]')].flatMap(o=>['aria-owns','aria-controls','data-menu-id'].flatMap(a=>(o.getAttribute(a)||'').split(' '))).filter(Boolean);
- const owned=ids.map(id=>document.getElementById(id)).filter(Boolean);
+ const owned=ids.map(id=>(root!==document&&root.getElementById(id))||document.getElementById(id)).filter(Boolean);
  const roles='[role=option],[role=menuitem],[role=menuitemradio]';
  let found=[...new Set([face,...owned].flatMap(r=>[...r.querySelectorAll(roles)]))].filter(visible);
  if(!found.length)found=[...document.querySelectorAll(roles)].filter(visible);
+ if(!found.length&&root!==document)found=[...root.querySelectorAll(roles)].filter(visible);
  if(!found.length)found=owned.flatMap(r=>[...r.querySelectorAll('*')]).filter(n=>visible(n)&&squash(n.textContent)&&![...n.children].some(c=>squash(c.textContent)));
  return found.slice(0,300).map((o,i)=>{o.setAttribute('data-rove-option',String(i));return squash(o.textContent);});
 }"""
@@ -273,9 +377,9 @@ PICKED_JS = (
     "(ref) => {\n"
     + VISIBLE_JS
     + READING_JS
-    + r""" const face=document.querySelector('[data-rove-field="'+ref+'"]');
+    + r""" const face=deepOne('[data-rove-field="'+ref+'"]');
  if(!face)return null;
- const e=face.matches(CONTROLS)?face:[...document.querySelectorAll(NATIVE)].find(c=>faceOf(c)===face);
+ const e=face.matches(CONTROLS)?face:deepAll(NATIVE).find(c=>faceOf(c)===face);
  return e?picked(e,e===face?null:face):null;
 }"""
 )
@@ -288,12 +392,12 @@ CHECKED_JS = (
 
 # What a form holds right now: its controls, their values and the dialogs in front of it.
 # Two equal readings a moment apart mean nothing is still filling the form in.
-FORM_STATE_JS = (
-    "() => JSON.stringify([...document.querySelectorAll('input,select,textarea')]"
-    ".map(e=>[e.type,e.name||e.id,e.type==='file'?e.files.length:e.value,!!e.checked]))"
-    "+'|'+[...document.querySelectorAll('[role=dialog],dialog')]"
-    ".filter(d=>d.getClientRects().length).length"
-)
+FORM_STATE_JS = r"""() => {
+ const all=[];const walk=r=>{for(const e of r.querySelectorAll('*')){if(e.matches('input,select,textarea'))all.push(e);if(e.shadowRoot)walk(e.shadowRoot);}};
+ walk(document);
+ return JSON.stringify(all.map(e=>[e.type,e.name||e.id,e.type==='file'?e.files.length:e.value,!!e.checked]))
+  +'|'+[...document.querySelectorAll('[role=dialog],dialog')].filter(d=>d.getClientRects().length).length;
+}"""
 
 UNREADABLE = "A question on the form that Rove could not read"
 
@@ -405,7 +509,33 @@ def group_field(members: list[dict], detail: dict) -> dict:
     }
     if detail.get("missing"):
         group["label_missing"] = True
+    if "_section" in members[0]:
+        group["_section"] = members[0]["_section"]
     return group
+
+
+def distinct_keys(fields: list[dict], key) -> None:
+    """Give every question its key, and twins (two "City" fields, "Email" twice) their own.
+
+    `key(field)` is `workflow.field_key`. The first of several questions with the same
+    label, name, id, kind and options keeps the plain key, so an answer stored for it
+    before still lands on it, and a form without twins keys exactly as it always did.
+    Each later twin also carries its section heading and its place among the twins, so
+    one answer never lands on two fields. A group's own options are not questions and
+    keep the plain key.
+    """
+    seen: dict[str, int] = {}
+    for field in fields:
+        section = field.pop("_section", None)
+        field["key"] = key(field)
+        if field.get("in_group"):
+            continue
+        count = seen.get(field["key"], 0)
+        seen[field["key"]] = count + 1
+        if count:
+            field["section"] = section or ""
+            field["occurrence"] = count
+            field["key"] = key(field)
 
 
 def words(text) -> str:

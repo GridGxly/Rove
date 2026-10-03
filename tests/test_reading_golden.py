@@ -89,7 +89,9 @@ def readings(tmp_path_factory):
             def serve(route):
                 url = route.request.url
                 if route.request.method == "GET" and url in served:
-                    route.fulfill(status=200, content_type="text/html; charset=utf-8", body=served[url])
+                    route.fulfill(
+                        status=200, content_type="text/html; charset=utf-8", body=served[url]
+                    )
                 else:
                     route.abort()
 
