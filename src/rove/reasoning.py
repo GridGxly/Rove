@@ -201,21 +201,20 @@ def static_first(system: str, static: dict, dynamic: dict) -> dict:
 
 
 def pad_to_block(system: str, context: dict) -> dict:
-    """The context with its shared part padded on the server's own count of it, so the
-    whole shared part fills cache blocks. Unchanged when the server cannot count; an
-    empty padding is dropped."""
-    keys = list(context)
-    if "cache_padding" not in keys:
-        return context
-    end = keys.index("cache_padding")
-    shared = json.dumps({k: context[k] for k in keys[:end]}, ensure_ascii=False)
-    tokens = model_client.prefix_tokens(system, shared)
-    padding = context["cache_padding"]
-    if tokens is not None:
-        padding = "0" * model_client.padding_for(tokens, exact=True)
-    padded = {k: (padding if k == "cache_padding" else v) for k, v in context.items()}
-    if not padding:
-        del padded["cache_padding"]
+    """The context with each shared part padded on the server's own count of it, so the
+    shared part fills whole cache blocks. A `cache_padding…` key ends each shared part:
+    the one every job shares, then (for a form drafted in batches) the part every batch
+    of one application shares. Unchanged where the server cannot count; an empty padding
+    is dropped."""
+    padded = dict(context)
+    for marker in [k for k in context if k.startswith("cache_padding")]:
+        keys = list(padded)
+        before = {k: padded[k] for k in keys[: keys.index(marker)]}
+        tokens = model_client.prefix_tokens(system, json.dumps(before, ensure_ascii=False))
+        if tokens is not None:
+            padded[marker] = "0" * model_client.padding_for(tokens, exact=True)
+        if not padded[marker]:
+            del padded[marker]
     return padded
 
 
@@ -289,8 +288,17 @@ def generate_batches(directory: Path, context: dict, basename: str, attempts: in
     usage: dict = {}
     generated: dict = {}
     batches = range(0, len(questions), QUESTION_BATCH)
+    # Everything but the questions is the same in every batch: it is padded to a cache
+    # block too, so the second batch on reads only its own questions.
+    shared = {k: v for k, v in context.items() if k != "questions"}
+    tail = {k: shared.pop(k) for k in list(shared) if k == "previous_output_problem"}
     for number, start in enumerate(batches, start=1):
-        part = {**context, "questions": questions[start : start + QUESTION_BATCH]}
+        part = {
+            **shared,
+            "cache_padding_application": "",
+            "questions": questions[start : start + QUESTION_BATCH],
+            **tail,
+        }
         name = basename if number == 1 else f"{basename}-{number}"
         generated = request(directory, part, name, attempts)
         try:
@@ -320,7 +328,7 @@ def request(directory: Path, context: dict, basename: str, attempts: int = 2) ->
     ensure_model()
     # The Hermes prompt comes first, so no padding of Rove's part lines up with a block.
     context = (
-        {k: v for k, v in context.items() if k != "cache_padding"}
+        {k: v for k, v in context.items() if not k.startswith("cache_padding")}
         if hermes
         else pad_to_block(system, context)
     )
@@ -1022,9 +1030,9 @@ def review_application(application_id: str, page: dict) -> dict:
         # The owner's own writing, bounded by the vault reader; a style sample the
         # prompt must not copy or cite, never a source of facts.
         static["owner_voice"] = draft_guard.scrub(voice, private)
+    # The questions go last: a form drafted in batches shares everything before them.
     dynamic = {
         "application_id": application_id,
-        "questions": questions,
         "intake_source": item["source"],
         "intake_url": draft_guard.scrub(item["source_url"], private),
         "owner_answers": {
@@ -1047,6 +1055,7 @@ def review_application(application_id: str, page: dict) -> dict:
     directions = directory / "owner-context.json"
     if directions.exists():
         dynamic["owner_directions"] = draft_guard.scrub(json.loads(directions.read_text()), private)
+    dynamic["questions"] = questions
     context = static_first(system_prompt("answers"), static, dynamic)
     context_hash = fingerprint({k: v for k, v in context.items() if k != "cache_padding"})
     cached_path = directory / "answer-proposals.json"

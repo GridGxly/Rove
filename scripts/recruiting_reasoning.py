@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Shared by both structured prompts: the static part of every context is padded so the
 # local server's prefix cache can reuse it, and the padding carries nothing.
-PADDING_NOTE = "cache_padding, when present, is filler for the local cache: ignore it. "
+PADDING_NOTE = "Fields named cache_padding... are filler for the local cache: ignore them. "
 
 ANSWER_PROMPT = (
     "You are Qwen, the local recruiting agent. Interpret the supplied "

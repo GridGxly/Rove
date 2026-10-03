@@ -67,9 +67,10 @@ class FakeServer:
         body = json.loads(request.content)
         if path == "/v1/messages/count_tokens":
             self.counted.append(body)
-            if self.count is None:
+            count = self.count(body) if callable(self.count) else self.count
+            if count is None:
                 return httpx.Response(404)
-            return httpx.Response(200, json={"input_tokens": self.count})
+            return httpx.Response(200, json={"input_tokens": count})
         self.requests.append(body)
         reply = self.replies.pop(0) if self.replies else None
         if isinstance(reply, httpx.Response):
@@ -492,12 +493,28 @@ def test_a_long_form_is_drafted_in_batches_of_eight(state, server, evidence):
         "pending": questions,
         "text": "",
     }
+
+    def count(body):
+        # The part every job shares, then the part every batch of this form shares.
+        return 5900 if "application_id" in body["messages"][0]["content"] else 3309
+
+    server.count = count
     with timing.stage(app, "drafting"):
         result = reasoning.review_application(app, page)
-    assert [len(sent_context(body)["questions"]) for body in server.requests] == [8, 8, 3]
+    sent = [sent_context(body) for body in server.requests]
+    assert [len(c["questions"]) for c in sent] == [8, 8, 3]
     assert [a["key"] for a in result["answers"]] == [q["key"] for q in questions]
     calls = [r for r in timing.rows() if r["stage"] == "model"]
     assert len(calls) == 3
+    # Each batch is the same text up to its questions, padded to whole cache blocks:
+    # the job-wide part to 4,096 tokens, this form's part to 6,144.
+    texts = [user_turn(body) for body in server.requests]
+    shared = {t[: t.index('"questions"')] for t in texts}
+    assert len(shared) == 1
+    assert list(sent[0])[-2:] == ["cache_padding_application", "questions"]
+    assert len(sent[0]["cache_padding"]) == 4096 - 3309 + 48
+    assert len(sent[0]["cache_padding_application"]) == 6144 - 5900 + 48
+    assert len(server.counted) == 2  # once per shared part, then kept
 
 
 # --- while the worker waits -------------------------------------------------------

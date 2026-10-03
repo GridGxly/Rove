@@ -534,7 +534,9 @@ def process(application_id: str) -> dict:
                 fit = review_job(application_id, page, posting_text)
                 workflow.system_line(
                     application_id,
-                    f"fit · {fit['decision']}" + (" · stored review" if fit.get("cached") else ""),
+                    f"fit · {fit['decision']}"
+                    + (" · stored review" if fit.get("cached") else "")
+                    + (" · reviewed in the background" if fit.get("background") else ""),
                 )
                 # A link the owner pasted is a decision already made: never ask again.
                 if (
