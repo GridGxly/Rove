@@ -5,6 +5,7 @@ or `first` right after pasting it, puts it ahead of his other pasted links that 
 started. The line Rove posts always says where the link stands.
 """
 
+import itertools
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -37,11 +38,27 @@ def state(tmp_path, monkeypatch):
     return root
 
 
-def paste(text: str, reply_to: str | None = None) -> str | None:
-    message = {"id": "1", "author": {"id": "1001"}, "content": text}
+OWNER = "1001"
+IDS = itertools.count(9000)
+
+
+def said(text: str, reply_to: str | None = None, **extra) -> dict:
+    """One owner message in agent-control, as Discord returns it (a fresh id each time)."""
+    message = {
+        "id": str(next(IDS)),
+        "author": {"id": OWNER},
+        "content": text,
+        "timestamp": datetime.now(UTC).isoformat(),
+        **extra,
+    }
     if reply_to:
         message["message_reference"] = {"message_id": reply_to}
-    return inbound.owner_message(message, "control", SETTINGS, {})
+    return message
+
+
+def paste(text: str, reply_to: str | None = None) -> str | None:
+    """What the worker's code says to one message (it holds the line for the agent)."""
+    return inbound.owner_message(said(text, reply_to), "control", SETTINGS, {})
 
 
 def link(n: int) -> str:
@@ -155,3 +172,90 @@ def test_first_is_read_only_in_agent_control(state):
 
 def test_the_help_tells_him_about_first(state):
     assert "add `first` to jump the line" in chat.help_text(SETTINGS)
+
+
+# --- one answer in agent-control -----------------------------------------------------
+
+
+@pytest.fixture
+def control(state, monkeypatch):
+    """Discord as the agent's tool and the worker's flush see it: the channel's newest
+    messages, and what gets posted there."""
+    from rove import discord_feed
+
+    channel = {"messages": [], "posted": []}
+
+    def fake(method, path, payload=None):
+        if method == "GET":
+            return list(reversed(channel["messages"]))  # newest first, as Discord returns them
+        channel["posted"].append(payload["content"])
+        return {"id": "p"}
+
+    monkeypatch.setattr(discord_feed, "discord", fake)
+    monkeypatch.setattr(workflow, "discord", fake)
+    monkeypatch.setattr(discord_feed, "private_env", lambda: {"DISCORD_OWNER_USER_ID": OWNER})
+    return channel
+
+
+def test_the_agent_applies_his_paste_and_says_the_line_and_the_worker_stays_quiet(control):
+    message = said(f"{link(1)} please")
+    control["messages"].append(message)
+    assert chat.answer_paste() == {"say": "Queued. It goes next."}
+    assert line() == [app_of(1)]
+    # The worker reaches the same message later: nothing is applied twice or said twice.
+    assert inbound.owner_message(message, "control", SETTINGS, {}) == ""
+    assert line() == [app_of(1)]
+    inbound.flush_control_lines("control")
+    assert control["posted"] == []
+    # Asked again, the agent has nothing new to say for it.
+    assert chat.answer_paste()["found"] is False
+
+
+def test_when_the_worker_got_there_first_the_agent_says_its_line_once(control):
+    first, again = said(link(1)), said(f"{link(2)} first")
+    control["messages"] += [first, again]
+    for message in (first, again):
+        assert inbound.owner_message(message, "control", SETTINGS, {})
+        assert inbound.held_for_agent(message)  # applied at once, not posted
+    assert chat.answer_paste() == {"say": "Queued. It goes next.\nQueued. It goes next."}
+    assert line() == [app_of(2), app_of(1)]
+    assert not inbound.held_for_agent(first)
+    inbound.flush_control_lines("control")
+    assert control["posted"] == []
+
+
+def test_a_line_no_agent_picked_up_is_posted_by_the_worker_once(control):
+    message = said(link(1))
+    assert inbound.owner_message(message, "control", SETTINGS, {}) == "Queued. It goes next."
+    inbound.flush_control_lines("control")
+    assert control["posted"] == []  # the agent still has time
+    with workflow.db() as conn:
+        conn.execute(
+            "UPDATE control_replies SET created_at=?",
+            ((datetime.now(UTC) - timedelta(minutes=2)).isoformat(),),
+        )
+    inbound.flush_control_lines("control")
+    inbound.flush_control_lines("control")
+    assert control["posted"] == ["Queued. It goes next."]
+    control["messages"].append(message)
+    assert chat.answer_paste()["found"] is False  # already posted: never said twice
+
+
+def test_the_agent_applies_only_his_own_recent_messages(control):
+    stranger = said(link(1), author={"id": "666"})
+    bot = said(link(2), author={"id": OWNER, "bot": True})
+    old = said(link(3), timestamp=(datetime.now(UTC) - timedelta(hours=1)).isoformat())
+    chatter = said("how is it going")
+    control["messages"] += [stranger, bot, old, chatter]
+    assert chat.answer_paste()["found"] is False
+    with workflow.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM application_queue").fetchone()[0] == 0
+    control["messages"].append(said("first"))
+    assert chat.answer_paste() == {
+        "say": "Nothing you pasted is waiting. Paste a link with `first` to put it at the front."
+    }
+
+
+def test_a_bad_link_is_one_plain_line_through_the_agent(control):
+    control["messages"].append(said("http://127.0.0.1/admin"))
+    assert "public HTTPS" in chat.answer_paste()["say"]

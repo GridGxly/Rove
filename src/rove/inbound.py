@@ -14,6 +14,7 @@ handles the things that are not a plain reply to one application's hold:
 """
 
 import re
+import time
 from datetime import UTC, datetime, timedelta
 
 from . import workflow
@@ -219,13 +220,7 @@ def owner_message(message: dict, channel: str, settings: dict, threads: dict) ->
     """
     content = message.get("content") or ""
     if channel == settings.get("control_channel_id"):
-        links = pasted_links(content)
-        if links:
-            return queue_pasted(links, first=wants_first(content))
-        if words(content) in FIRST_REPLIES:
-            replied = bool((message.get("message_reference") or {}).get("message_id"))
-            return move_up(replied=replied)
-        return None
+        return control_line(message)
     if channel == settings.get("recruiting_channel_id"):
         from . import mail
 
@@ -238,6 +233,126 @@ def owner_message(message: dict, channel: str, settings: dict, threads: dict) ->
     if channel in cards and not (message.get("message_reference") or {}).get("message_id"):
         return answer_which_one(message, channel, cards[channel])
     return None
+
+
+# --- one answer in agent-control --------------------------------------------------
+#
+# The Hermes agent answers every message in agent-control and cannot stay silent, so a
+# line from the worker would be a second answer. For a pasted link or `first` the agent
+# calls a tool that applies the owner's own newest messages (read back from Discord,
+# owner id checked, exactly as the worker would) and relays the line code wrote. Each
+# message is applied once, by whoever claims it first. A line the agent never picked up
+# (the gateway or the model is down) is posted by the worker after HAND_OVER.
+
+HAND_OVER = timedelta(seconds=45)
+CLAIM_WAIT = 5.0  # seconds the agent waits for a line the worker is writing that moment
+
+
+def control_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS control_replies(message_id TEXT PRIMARY KEY, "
+        "line TEXT NOT NULL, created_at TEXT NOT NULL, delivered TEXT)"
+    )
+
+
+def is_control_request(content) -> bool:
+    """A pasted link, or `first` on its own: the two things code answers in agent-control."""
+    return bool(pasted_links(content)) or words(content) in FIRST_REPLIES
+
+
+def apply_control(message: dict) -> str:
+    content = message.get("content") or ""
+    links = pasted_links(content)
+    try:
+        if links:
+            return queue_pasted(links, first=wants_first(content))
+        replied = bool((message.get("message_reference") or {}).get("message_id"))
+        return move_up(replied=replied)
+    except (ValueError, PermissionError) as error:
+        return str(error)
+
+
+def control_line(message: dict, *, for_agent: bool = False) -> str | None:
+    """Apply one owner message in agent-control once and return its line.
+
+    None when the message is not a paste or `first`. The worker gets "" for a message
+    the agent already took; the agent gets the line, also when the worker applied it.
+    """
+    if not is_control_request(message.get("content")):
+        return None
+    message_id = str(message.get("id") or "")
+    if not message_id:
+        return apply_control(message)
+    with workflow.db() as conn:
+        control_table(conn)
+        claimed = conn.execute(
+            "INSERT OR IGNORE INTO control_replies VALUES(?,?,?,NULL)",
+            (message_id, "", workflow.now()),
+        ).rowcount
+    if claimed:
+        line = apply_control(message)
+        with workflow.db() as conn:
+            conn.execute(
+                "UPDATE control_replies SET line=?,delivered=? WHERE message_id=?",
+                (line, workflow.now() if for_agent else None, message_id),
+            )
+        return line
+    if not for_agent:
+        return ""  # the agent took it and has answered
+    deadline = time.monotonic() + CLAIM_WAIT
+    while True:
+        with workflow.db() as conn:
+            row = conn.execute(
+                "SELECT line,delivered FROM control_replies WHERE message_id=?", (message_id,)
+            ).fetchone()
+        if row["line"] or time.monotonic() > deadline:
+            break
+        time.sleep(0.25)
+    if row["delivered"] or not row["line"]:
+        return ""  # already answered, or still being written: nothing to say twice
+    with workflow.db() as conn:
+        taken = conn.execute(
+            "UPDATE control_replies SET delivered=? WHERE message_id=? AND delivered IS NULL",
+            (workflow.now(), message_id),
+        ).rowcount
+    return row["line"] if taken else ""
+
+
+def held_for_agent(message: dict) -> bool:
+    """Whether the worker keeps this line back for the agent to say (agent-control only)."""
+    with workflow.db() as conn:
+        control_table(conn)
+        row = conn.execute(
+            "SELECT delivered FROM control_replies WHERE message_id=?",
+            (str(message.get("id") or ""),),
+        ).fetchone()
+    return bool(row) and row["delivered"] is None
+
+
+def flush_control_lines(channel: str | None):
+    """Post the lines the agent did not pick up within HAND_OVER; the worker calls this."""
+    if not channel:
+        return
+    cutoff = (datetime.now(UTC) - HAND_OVER).isoformat()
+    with workflow.db() as conn:
+        control_table(conn)
+        rows = conn.execute(
+            "SELECT message_id,line FROM control_replies WHERE delivered IS NULL AND line!='' "
+            "AND created_at<? ORDER BY created_at",
+            (cutoff,),
+        ).fetchall()
+    for row in rows:
+        with workflow.db() as conn:
+            taken = conn.execute(
+                "UPDATE control_replies SET delivered=? WHERE message_id=? AND delivered IS NULL",
+                (workflow.now(), row["message_id"]),
+            ).rowcount
+        if taken:
+            workflow.discord(
+                "POST",
+                f"/channels/{channel}/messages",
+                {"content": row["line"], "allowed_mentions": {"parse": []}},
+            )
 
 
 # --- "Which one?" in action-needed and shortlist ----------------------------------

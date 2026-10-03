@@ -289,7 +289,7 @@ def test_the_owners_pasted_link_is_his_own_and_outranks_the_agents_copy(state, m
     workflow.enqueue(link, source="keryx")
     assert source_of(app) == "owner_link"
     fresh = inbound.owner_message(
-        owner_says("https://jobs.lever.co/acme/1 https://jobs.lever.co/acme/2"),
+        owner_says("https://jobs.lever.co/acme/1 https://jobs.lever.co/acme/2", "5001"),
         "control",
         SETTINGS,
         {},
@@ -359,8 +359,10 @@ def test_only_the_control_channel_turns_a_link_into_an_owner_link(state, monkeyp
         assert [r[0] for r in conn.execute("SELECT source FROM application_queue")] == [
             "owner_link"
         ]
-    with pytest.raises(ValueError, match="public HTTPS"):
-        inbound.owner_message(owner_says("http://127.0.0.1/admin"), "control", SETTINGS, {})
+    refused = inbound.owner_message(
+        owner_says("http://127.0.0.1/admin", "5001"), "control", SETTINGS, {}
+    )
+    assert "public HTTPS" in refused
 
 
 # --- M8: replies in shared channels, and who is read at all ----------------------
@@ -522,12 +524,8 @@ def test_the_owners_reply_to_a_foreign_card_is_refused_in_one_plain_line(state, 
     }
     pasted = {"author": {"id": OWNER}, "content": "https://boards.greenhouse.io/acme/jobs/1"}
     posted = poll(monkeypatch, {"action": [forged_reply], "control": [pasted]})
-    assert sorted(posted) == sorted(
-        [
-            ("/channels/action/messages", NOT_MINE),
-            ("/channels/control/messages", "Queued. It goes next."),
-        ]
-    )
+    # The paste is applied at once; its line waits for the agent, which answers there.
+    assert posted == [("/channels/action/messages", NOT_MINE)]
     assert command_rows() == [] and workflow.get(app)["status"] == "NEEDS_USER"
     with workflow.db() as conn:
         rows = [tuple(r) for r in conn.execute("SELECT source,status FROM application_queue")]

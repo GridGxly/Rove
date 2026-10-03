@@ -304,6 +304,43 @@ def company_history(company: str) -> dict:
     return {"say": "\n".join(lines)}
 
 
+RECENT = 600  # seconds: how far back the agent looks for the owner's paste or `first`
+
+
+def answer_paste() -> dict:
+    """Apply the owner's newest pasted links or `first` in agent-control and say where they stand.
+
+    The messages are read back from Discord and only the configured owner's own are
+    applied, exactly as the worker applies them: the model's words carry no authority
+    here, and a message is applied once whoever gets to it first (see `inbound`).
+    """
+    from . import inbound
+    from .discord_feed import discord, private_env
+
+    settings = workflow.config()
+    target = settings.get("control_channel_id")
+    env = private_env()
+    owner = env.get("DISCORD_OWNER_USER_ID") or env.get("DISCORD_ALLOWED_USERS", "").split(",")[0]
+    if not settings.get("enabled") or not target or not owner:
+        return {"say": "The application queue is switched off, so I cannot queue links right now."}
+    messages = discord("GET", f"/channels/{target}/messages?limit=10")
+    cutoff = datetime.now(UTC).timestamp() - RECENT
+    lines = []
+    for message in sorted(messages or [], key=lambda m: int(m["id"])):
+        stamp = datetime.fromisoformat(str(message.get("timestamp") or "1970-01-01T00:00:00+00:00"))
+        if stamp.timestamp() < cutoff or not inbound.from_owner(message, owner):
+            continue
+        line = inbound.control_line(message, for_agent=True)
+        if line:
+            lines.append(line)
+    if not lines:
+        return {
+            "found": False,
+            "note": "No new pasted link or `first` from him; answer him yourself.",
+        }
+    return {"say": "\n".join(lines)}
+
+
 # --- the pinned help message in agent-control ----------------------------------
 
 HELP_TITLE = "What you can ask Rove"

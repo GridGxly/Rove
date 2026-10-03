@@ -56,6 +56,7 @@ WORDS = {
     "pause_feed": "paused the feed",
     "resume_feed": "resumed the feed",
     "company_history": "looked up one company",
+    "answer_paste": "applied a pasted link or first",
     "what_you_can_ask": "showed the help",
 }
 # One worker posts the lines in order, so a slow Discord never delays a tool's answer.
@@ -382,6 +383,13 @@ def resume_feed() -> dict:
 def company_history(company: str) -> dict:
     """What happened with one company: its applications and any feed job skipped, with why."""
     return chat.company_history(company)
+
+
+@tool
+def answer_paste() -> dict:
+    """When his message is only job links (maybe with apply or first) or only `first`:
+    applies it as his and returns where it stands. Reads his real message, not yours."""
+    return chat.answer_paste()
 
 
 @tool
