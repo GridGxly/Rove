@@ -281,7 +281,7 @@ def test_the_owners_pasted_link_is_his_own_and_outranks_the_agents_copy(state, m
     # The owner pastes the same link in agent-control: the wait ends, the link is his.
     posted.clear()
     line = inbound.owner_message(owner_says(f"apply to this one <{link}>"), "control", SETTINGS, {})
-    assert line == "Already tracked: back in the queue."
+    assert line == "Already queued. It goes next."
     assert source_of(app) == "owner_link" and workflow.get(app)["status"] == "QUEUED"
     assert workflow.intake_hold(workflow.get(app)) is None
     # And nothing weaker takes that back.
@@ -294,7 +294,10 @@ def test_the_owners_pasted_link_is_his_own_and_outranks_the_agents_copy(state, m
         SETTINGS,
         {},
     )
-    assert fresh == "Queued 2 of your links. They go next."
+    # The link pasted a moment ago is still his and still ahead of these two.
+    assert fresh == (
+        "Queued 2 of your links. 1 of your links is ahead of them; say `first` to move them up."
+    )
 
 
 def test_the_feed_listing_an_agent_link_makes_it_a_feed_job(state, monkeypatch):
@@ -350,7 +353,7 @@ def test_only_the_control_channel_turns_a_link_into_an_owner_link(state, monkeyp
     with workflow.db() as conn:
         assert conn.execute("SELECT COUNT(*) FROM application_queue").fetchone()[0] == 0
     assert inbound.owner_message(owner_says(link), "control", SETTINGS, {}) == (
-        "Queued your link. It goes next."
+        "Queued. It goes next."
     )
     with workflow.db() as conn:
         assert [r[0] for r in conn.execute("SELECT source FROM application_queue")] == [
@@ -522,7 +525,7 @@ def test_the_owners_reply_to_a_foreign_card_is_refused_in_one_plain_line(state, 
     assert sorted(posted) == sorted(
         [
             ("/channels/action/messages", NOT_MINE),
-            ("/channels/control/messages", "Queued your link. It goes next."),
+            ("/channels/control/messages", "Queued. It goes next."),
         ]
     )
     assert command_rows() == [] and workflow.get(app)["status"] == "NEEDS_USER"

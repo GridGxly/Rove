@@ -285,7 +285,9 @@ def company_history(company: str) -> dict:
     shown = 0
     for decision in decisions:
         payload = json.loads(decision["payload"])
-        if plain_company(payload.get("company")) != wanted or decision["application_id"] in seen:
+        name = plain_company(payload.get("company"))
+        named = wanted == name or (len(wanted) >= 3 and f" {wanted} " in f" {name} ")
+        if not named or decision["application_id"] in seen:
             continue
         if decision["status"] in {"queued", "picked"} and matched:
             continue  # the application line already tells that story
@@ -317,7 +319,7 @@ def help_text(settings: dict | None = None) -> str:
         [
             f"**{HELP_TITLE}**",
             "Type here like you would text someone. These work:",
-            "• Paste a job link — I queue it as yours",
+            "• Paste a job link — I queue it as yours (add `first` to jump the line)",
             "• `status` — what I'm doing, the queue, sends today",
             "• `what's waiting on me` — what needs you, and where",
             "• `why did you skip Acme` — what happened with one company",

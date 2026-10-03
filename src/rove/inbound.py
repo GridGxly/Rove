@@ -27,9 +27,17 @@ PASTE_WORDS = frozenset(
         *("apply", "queue", "add", "start", "prepare", "do", "submit", "send", "go", "ahead"),
         *("to", "for", "in", "the", "this", "that", "these", "one", "it", "here", "now", "next"),
         *("job", "role", "posting", "link", "please", "pls", "and", "also", "too"),
-        *("me", "can", "could", "you"),
+        *("me", "can", "could", "you", "first", "priority", "asap"),
     }
 )
+# Next to a pasted link, any of these puts it ahead of his other pasted links.
+PRIORITY_WORDS = frozenset({"now", "first", "next", "priority", "asap"})
+# Alone in agent-control, or as a reply to Rove's line about a paste: move the latest paste up.
+FIRST_REPLIES = frozenset(
+    {"first", "move it up", "do this one first", "do that one first", "do it first"}
+)
+# How long after a paste a bare `first` still means that paste.
+JUST_PASTED = timedelta(minutes=30)
 MAX_LINKS = 5
 UNDO_WORDS = frozenset(
     {"not rejected", "undo", "undo that", "wrong mail", "that mail was wrong", "that was wrong"}
@@ -67,16 +75,138 @@ def pasted_links(text) -> list[str]:
     return list(dict.fromkeys(links))
 
 
-def queue_pasted(links: list[str]) -> str:
-    """Queue the owner's links as his own and say so in one plain line."""
+def wants_first(text) -> bool:
+    """Whether a pasted link came with a word that asks for it first."""
+    rest = set(re.findall(r"[a-z0-9']+", LINK.sub(" ", str(text or "")).lower()))
+    return bool(rest & PRIORITY_WORDS)
+
+
+# --- the owner's line of pasted links ---------------------------------------------
+#
+# His pasted links run before any feed job, oldest first (`worker.next_queued`). One he
+# marks `first` goes ahead of the others that have not started; the latest mark wins.
+
+
+def order_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS owner_link_order(application_id TEXT PRIMARY KEY, "
+        "pasted_at TEXT NOT NULL, first_at TEXT)"
+    )
+
+
+def jump_key(conn, application_id: str) -> tuple:
+    """Sort key among the owner's own links: marked `first` (latest mark first), then the rest."""
+    order_table(conn)
+    row = conn.execute(
+        "SELECT first_at FROM owner_link_order WHERE application_id=?", (application_id,)
+    ).fetchone()
+    if row and row[0]:
+        return (0, -datetime.fromisoformat(row[0]).timestamp())
+    return (1, 0.0)
+
+
+def mark_pasted(application_ids: list[str], first: bool = False):
+    """Remember when he pasted these links, and mark them `first` when he asked."""
+    stamp = workflow.now()
+    with workflow.db() as conn:
+        order_table(conn)
+        for application_id in application_ids:
+            conn.execute(
+                "INSERT INTO owner_link_order VALUES(?,?,?) ON CONFLICT(application_id) DO "
+                "UPDATE SET pasted_at=excluded.pasted_at,first_at=COALESCE(excluded.first_at,first_at)",
+                (application_id, stamp, stamp if first else None),
+            )
+
+
+def line_of_mine(conn) -> list[str]:
+    """The order `worker.next_queued` takes the owner's choices in: his explicit resumes,
+    then his links and picks by source rank, `first` marks, and age."""
+    resumes = conn.execute(
+        "SELECT q.id FROM application_queue q JOIN owner_commands c ON c.application_id=q.id "
+        "WHERE q.status='QUEUED' AND c.kind IN ('resume','proceed','account') "
+        "AND c.status='applied' ORDER BY c.created_at DESC"
+    ).fetchall()
+    queued = conn.execute(
+        "SELECT id,source FROM application_queue WHERE status='QUEUED' ORDER BY created_at"
+    ).fetchall()
+    chosen = sorted(
+        (row for row in queued if workflow.source_policy(row["source"])["owner_decided"]),
+        key=lambda row: (
+            -workflow.source_policy(row["source"])["rank"],
+            *jump_key(conn, row["id"]),
+        ),
+    )
+    return list(dict.fromkeys([row["id"] for row in resumes] + [row["id"] for row in chosen]))
+
+
+def where_it_stands(application_id: str, *, many: bool = False, offer: bool = False) -> str:
+    """Where one of his queued links stands among his own choices, in one plain sentence."""
+    with workflow.db() as conn:
+        line = line_of_mine(conn)
+    ahead = line.index(application_id) if application_id in line else len(line)
+    if not ahead:
+        return "The first goes next." if many else "It goes next."
+    them = "them" if many else "it"
+    text = f"{ahead} of your links {'is' if ahead == 1 else 'are'} ahead of {them}"
+    return text + (f"; say `first` to move {them} up." if offer else ".")
+
+
+def move_up(*, replied: bool) -> str:
+    """`first` after a paste: his latest pasted links that have not started go to the front.
+
+    As a reply it means the paste he replied about; alone it counts only for a paste in
+    the last half hour.
+    """
+    with workflow.db() as conn:
+        order_table(conn)
+        rows = conn.execute(
+            "SELECT o.application_id,o.pasted_at,q.status FROM owner_link_order o JOIN "
+            "application_queue q ON q.id=o.application_id ORDER BY o.pasted_at DESC"
+        ).fetchall()
+    if not rows:
+        return "Nothing you pasted is waiting. Paste a link with `first` to put it at the front."
+    latest = rows[0]["pasted_at"]
+    if not replied and datetime.now(UTC) - datetime.fromisoformat(latest) > JUST_PASTED:
+        return (
+            "Nothing you pasted in the last half hour is waiting. Paste the link again with "
+            "`first` to put it at the front."
+        )
+    batch = [row for row in rows if row["pasted_at"] == latest]
+    waiting = [row["application_id"] for row in batch if row["status"] == "QUEUED"]
+    if not waiting:
+        return "That link already started, so there is nothing to move."
+    stamp = workflow.now()
+    with workflow.db() as conn:
+        for application_id in waiting:
+            conn.execute(
+                "UPDATE owner_link_order SET first_at=? WHERE application_id=?",
+                (stamp, application_id),
+            )
+    many = len(waiting) > 1
+    return ("Moved them up. " if many else "Moved it up. ") + where_it_stands(waiting[0], many=many)
+
+
+def queue_pasted(links: list[str], first: bool = False) -> str:
+    """Queue the owner's links as his own and say in one plain line where they stand.
+
+    With `first` (a priority word next to the links) they go ahead of his other pasted
+    links that have not started.
+    """
     results = [workflow.enqueue(link, source="owner_link") for link in links]
+    mark_pasted([r["application_id"] for r in results], first=first)
     fresh = [r for r in results if not r["already_exists"]]
-    if fresh and len(results) == 1:
-        return "Queued your link. It goes next."
+    waiting = [r for r in results if r["status"] == "QUEUED"]
+    if not waiting:
+        states = {workflow.STATE_WORDS.get(r["status"], "tracked").lower() for r in results}
+        return "Already tracked: " + ", ".join(sorted(states)) + "."
+    many = len(waiting) > 1
     if fresh:
-        return f"Queued {len(fresh)} of your links. They go next."
-    states = {workflow.STATE_WORDS.get(r["status"], "tracked").lower() for r in results}
-    return "Already tracked: " + ", ".join(sorted(states)) + "."
+        lead = f"Queued {len(fresh)} of your links." if len(fresh) > 1 else "Queued."
+    else:
+        lead = "Already queued."
+    if len(fresh) not in (0, len(results)):
+        lead += f" {len(results) - len(fresh)} {'was' if len(results) - len(fresh) == 1 else 'were'} already tracked."
+    return lead + " " + where_it_stands(waiting[0]["application_id"], many=many, offer=True)
 
 
 def owner_message(message: dict, channel: str, settings: dict, threads: dict) -> str | None:
@@ -90,7 +220,12 @@ def owner_message(message: dict, channel: str, settings: dict, threads: dict) ->
     content = message.get("content") or ""
     if channel == settings.get("control_channel_id"):
         links = pasted_links(content)
-        return queue_pasted(links) if links else None
+        if links:
+            return queue_pasted(links, first=wants_first(content))
+        if words(content) in FIRST_REPLIES:
+            replied = bool((message.get("message_reference") or {}).get("message_id"))
+            return move_up(replied=replied)
+        return None
     if channel == settings.get("recruiting_channel_id"):
         from . import mail
 

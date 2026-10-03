@@ -1518,7 +1518,7 @@ def next_queued(max_waiting: int):
         ) or first_free(
             sorted(
                 (row for row in queued if policies[row["id"]]["owner_decided"]),
-                key=lambda row: -policies[row["id"]]["rank"],
+                key=lambda row: (-policies[row["id"]]["rank"], *inbound.jump_key(conn, row["id"])),
             )
         )
         if chosen:
