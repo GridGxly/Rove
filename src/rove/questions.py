@@ -1381,11 +1381,9 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
             # The month of the earliest start, with its year; a bare month only from a
             # list of months.
             values = [when.strftime("%B %Y"), when.strftime("%b %Y")]
-            return (
-                (values + [when.strftime("%B"), when.strftime("%b")], source)
-                if (has_options)
-                else (values, source)
-            )
+            if has_options:
+                values += [when.strftime("%B"), when.strftime("%b")]
+            return values, source
         values = [f"{when.strftime('%B')} {when.day}, {when.year}", day]
         if has_options and canonical == "start_availability":
             values += [when.strftime("%B %Y"), when.strftime("%b %Y")]  # a list of months
@@ -1846,8 +1844,9 @@ def fills_long_text(source) -> bool:
 
 
 # --- the resolver --------------------------------------------------------------------
-# Facts a board offers in its own words: the option is chosen by mapping, never typed.
+# Facts a board offers in its own words: the approved value is mapped onto its list.
 BY_OPTIONS = frozenset({"degree", "major", "gpa"})
+FIRST_PAGE = 100  # Greenhouse's pickers load their lists a hundred at a time
 
 
 def choose(question: Question, labels: list[str], values: list, profile: dict, loose: bool):
@@ -1899,6 +1898,14 @@ def resolve(
         chosen = choose(question, labels, values, profile, loose)
         if chosen is not None:
             return chosen, source
+        if (
+            question.canonical_id in {"degree", "major"}
+            and field.get("role") == "combobox"
+            and len(labels) >= FIRST_PAGE
+        ):
+            # A long picker list may be only its first page: the picker searches for the
+            # approved words and commits only an option that is exactly them.
+            return values[0], source
     policy = POLICY_KEYS.get(question.topic)
     section = (profile.get(policy[0]) or {}) if policy else {}
     decline_first = bool(policy) and section.get(policy[1]) == "decline_when_optional"

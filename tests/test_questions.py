@@ -1288,6 +1288,13 @@ def test_the_major_is_mapped_to_the_boards_discipline_list_or_left_for_the_owner
     # Another question with options still goes to the model.
     other = {"key": "k2", "label": "Favorite course area", "options": DISCIPLINES}
     assert fastpath.question_kind(other) == "choice"
+    # A picker that showed its first hundred options only: it searches the approved words,
+    # and commits only an option that is exactly them.
+    first_page = [f"Field {n:03d}" for n in range(100)]
+    picker = {**field("Discipline", first_page, "text"), "role": "combobox"}
+    maths = student(major="Mathematics")
+    assert resolve(picker, maths) == ("Mathematics", "education.schools.0.major")
+    assert resolve({**picker, "role": None}, maths) == (None, None)
 
 
 def education(label, options=(), kind="select-one", key="start-month--0", **extra):
