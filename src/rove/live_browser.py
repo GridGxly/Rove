@@ -748,6 +748,7 @@ class RecruitingBrowser:
     def close_run(self, run_id: str) -> dict:
         page = self.pages.pop(run_id, None)
         self.runs.pop(run_id, None)
+        self.frames.pop(run_id, None)
         if page is not None and not page.is_closed():
             page.close()
         if self.run and self.run["id"] == run_id:
@@ -2560,17 +2561,30 @@ class RecruitingBrowser:
 
     def next_step(self, state: str, url: str, timeout_ms: int = 6000):
         """After a Next click: wait until the step changed (another address, or other
-        controls and values), then for the new step's fields or its final control."""
+        controls and values), then for a loading indicator to go and for the new step's
+        fields or its final control. A step that shows neither (a video interview, an
+        assessment) is read after a short bound, not the ten seconds a fresh page gets."""
         deadline = time.monotonic() + timeout_ms / 1000
+        loaded = False
         while time.monotonic() < deadline:
             self.page.wait_for_timeout(100)
             try:
-                if self.form.url != url or self.form.evaluate(form_reading.FORM_STATE_JS) != state:
+                if self.form.url != url:
+                    loaded = True
+                    break
+                if self.form.evaluate(form_reading.FORM_STATE_JS) != state:
                     break
             except PlaywrightError:
-                break  # the document is being replaced: the step changed
-        self.settle()
-        self.wait_for_fields(script=STEP_JS)
+                loaded = True  # the document is being replaced: the step changed
+                break
+        with contextlib.suppress(PlaywrightError):
+            if loaded:
+                self.form.wait_for_load_state("domcontentloaded", timeout=15000)
+        self.dismiss_consent()
+        self.clear_overlays()
+        with contextlib.suppress(PlaywrightError):
+            self.form.wait_for_function(BUSY_JS, timeout=10000)
+        self.wait_for_fields(8000 if loaded else 4000, script=STEP_JS)
 
 
 def socket_path() -> Path:
