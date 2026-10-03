@@ -595,9 +595,9 @@ def test_qwen_reads_a_sanitized_excerpt_and_only_picks_a_label(state, monkeypatc
     first, second = events(app, "recruiting_mail")
     assert first["classifier"] == "qwen" and first["deadline"] is None  # not quoted from the mail
     assert second["label"] == "other" and second["classifier"] == "qwen_failed"
-    assert ["→ Mail from example.com · “One more thing”"] == workflow.event_embeds(
-        app, "recruiting_mail", second
-    )
+    assert workflow.event_embeds(app, "recruiting_mail", second) == [
+        "→ Mail from example.com · “One more thing”"
+    ]
     assert any(
         p and p.get("content", "").startswith("→ **Recruiting mail**")
         for _, path, p in posted
