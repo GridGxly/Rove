@@ -521,9 +521,10 @@ def distinct_keys(fields: list[dict], key) -> None:
     label, name, id, kind and options keeps the plain key, so an answer stored for it
     before still lands on it, and a form without twins keys exactly as it always did.
     Each later twin also carries its section heading and its place among the twins, so
-    one answer never lands on two fields. A group's own options are not questions and
-    keep the plain key.
+    one answer never lands on two fields; the first is marked `twins`. A group's own
+    options are not questions and keep the plain key.
     """
+    first: dict[str, dict] = {}
     seen: dict[str, int] = {}
     for field in fields:
         section = field.pop("_section", None)
@@ -532,10 +533,13 @@ def distinct_keys(fields: list[dict], key) -> None:
             continue
         count = seen.get(field["key"], 0)
         seen[field["key"]] = count + 1
-        if count:
-            field["section"] = section or ""
-            field["occurrence"] = count
-            field["key"] = key(field)
+        if not count:
+            first[field["key"]] = field
+            continue
+        first[field["key"]]["twins"] = True
+        field["section"] = section or ""
+        field["occurrence"] = count
+        field["key"] = key(field)
 
 
 def review_step(reading: dict) -> bool:

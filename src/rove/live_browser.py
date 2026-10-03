@@ -2099,10 +2099,14 @@ class RecruitingBrowser:
 
         def resolve(field: dict, picker: bool = False):
             # Approved profile, then the owner's earlier answer, then a standing default.
+            # Twins (two questions in the same words) cannot be told apart by what is
+            # remembered by their words, and a later twin takes only its own answer.
+            if field.get("occurrence"):
+                return None, None
             return questions.resolve(
                 field,
                 approved["profile"],
-                recall=workflow.recall_answer,
+                recall=None if field.get("twins") else workflow.recall_answer,
                 employer=employer,
                 picker=picker,
             )
