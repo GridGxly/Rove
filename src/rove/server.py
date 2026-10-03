@@ -239,6 +239,7 @@ def propose_onboarding_section(section: str, values: dict, expected_hash: str) -
 def read_candidate_section(section: str) -> dict:
     """Read one validated, owner-approved real candidate section. Null means unknown.
 
+    Call it before stating any fact about the owner; never answer one from memory.
     Does not read draft or synthetic values. Manual vault changes block use until reviewed.
     """
     if section not in SECTIONS:
