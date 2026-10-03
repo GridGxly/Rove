@@ -1,32 +1,286 @@
 name: ci
 
+# Every job is its own required check. Each step runs one command, so a red check names
+# the command to run locally; CONTRIBUTING.md lists them all under "Checks".
+
 on:
   push:
     branches: [main, docs-initial-setup]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+  PYTHONUNBUFFERED: "1"
 
 jobs:
-  test:
+  lint:
+    name: lint
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
           enable-cache: true
-
       - name: install
         run: uv sync --frozen
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format
+        run: uv run ruff format --check .
 
-      - name: browser for fixture tests
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      - name: lint findings held at their ceilings (scripts/baselines/quality.json)
+        run: uv run python scripts/ratchet.py quality
+      - name: duplicate code (8 or more similar lines)
+        run: uv run pylint src/rove
+
+  types:
+    name: types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      - name: mypy findings held at their ceilings (scripts/baselines/types.json)
+        run: uv run python scripts/ratchet.py types
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      # No browser is installed here: a test that starts one without the e2e marker fails.
+      - name: unit and functional tests
+        run: uv run pytest -m "not e2e and not performance" --cov=rove --cov-branch --cov-report= --cov-fail-under=0
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/coverage/.coverage.tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-tests
+          path: ${{ runner.temp }}/coverage/.coverage.tests
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      - name: browser version
+        id: browser
+        run: echo "patchright=$(uv run python -c 'import importlib.metadata as m; print(m.version("patchright"))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: chromium
+        with:
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ runner.arch }}-patchright-${{ steps.browser.outputs.patchright }}
+      - name: chromium
+        if: steps.chromium.outputs.cache-hit != 'true'
         run: uv run patchright install --with-deps chromium
+      - name: chromium system libraries
+        if: steps.chromium.outputs.cache-hit == 'true'
+        run: uv run patchright install-deps chromium
+      - name: browser scenario tests
+        run: uv run pytest -m "e2e and not performance" --durations=15 --cov=rove --cov-branch --cov-report= --cov-fail-under=0
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/coverage/.coverage.e2e
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-e2e
+          path: ${{ runner.temp }}/coverage/.coverage.e2e
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: lint
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
+  coverage:
+    name: coverage
+    needs: [tests, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: ${{ runner.temp }}/coverage
+          merge-multiple: true
+      - name: combine the tests and e2e runs
+        run: uv run coverage combine ${{ runner.temp }}/coverage
+      - name: floor (fail_under in pyproject.toml)
+        run: uv run coverage report
+      - name: html report
+        if: ${{ !cancelled() }}
+        run: uv run coverage html -d ${{ runner.temp }}/coverage-report
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-report
+          path: ${{ runner.temp }}/coverage-report
+          retention-days: 14
 
-      - name: tests
-        run: uv run pytest -q
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      - name: browser version
+        id: browser
+        run: echo "patchright=$(uv run python -c 'import importlib.metadata as m; print(m.version("patchright"))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: chromium
+        with:
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ runner.arch }}-patchright-${{ steps.browser.outputs.patchright }}
+      - name: chromium
+        if: steps.chromium.outputs.cache-hit != 'true'
+        run: uv run patchright install --with-deps chromium
+      - name: chromium system libraries
+        if: steps.chromium.outputs.cache-hit == 'true'
+        run: uv run patchright install-deps chromium
+      - name: build sdist and wheel
+        run: uv build --out-dir dist
+      - name: install the wheel in a fresh virtualenv and run it
+        run: uv run pytest -m smoke -v
+        env:
+          ROVE_SMOKE_DIST: dist
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  performance:
+    name: performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      - name: browser version
+        id: browser
+        run: echo "patchright=$(uv run python -c 'import importlib.metadata as m; print(m.version("patchright"))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: chromium
+        with:
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ runner.arch }}-patchright-${{ steps.browser.outputs.patchright }}
+      - name: chromium
+        if: steps.chromium.outputs.cache-hit != 'true'
+        run: uv run patchright install --with-deps chromium
+      - name: chromium system libraries
+        if: steps.chromium.outputs.cache-hit == 'true'
+        run: uv run patchright install-deps chromium
+      - name: fixture application against its budgets (tests/test_performance.py)
+        run: uv run pytest -m performance -v
+        env:
+          ROVE_CI_ARTIFACTS: ${{ runner.temp }}/bench
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: bench
+          path: ${{ runner.temp }}/bench
+          retention-days: 14
+
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      - name: secrets and private files in every tracked file
+        run: uv run python scripts/check_staged.py --all
+      - name: personal data, links, documented config, CI wiring
+        run: uv run pytest tests/test_repo_hygiene.py -v
+
+  macos:
+    name: macos
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: install
+        run: uv sync --frozen
+      - name: browser version
+        id: browser
+        run: echo "patchright=$(uv run python -c 'import importlib.metadata as m; print(m.version("patchright"))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: chromium
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: chromium-${{ runner.os }}-${{ runner.arch }}-patchright-${{ steps.browser.outputs.patchright }}
+      - name: chromium
+        if: steps.chromium.outputs.cache-hit != 'true'
+        run: uv run patchright install chromium
+      # The product runs on macOS: every test, the browser, smoke and performance ones too.
+      - name: full suite
+        run: uv run pytest -m "smoke or not smoke" --durations=15

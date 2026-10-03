@@ -59,6 +59,39 @@ uv sync
 
 As implementation lands, keep verified test commands here or in [Getting started](docs/getting-started.md).
 
+## Checks
+
+Every push and pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Each job below is a required check, and each runs the command beside it, so a red check tells you what to run locally. Run `uv sync` first; the browser checks also need `uv run patchright install chromium` once.
+
+| Check | What it holds | Run it locally |
+| --- | --- | --- |
+| `lint` | The ruff rules selected in `pyproject.toml`, and formatting. | `uv run ruff check .` and `uv run ruff format --check .` |
+| `quality` | Rules the older code still breaks, counted per file and held at the ceilings in `scripts/baselines/quality.json`; a reason on every suppressed blind `except` or security finding (`# noqa: BLE001 -- why`); no block of 8 or more lines copied between modules. | `uv run python scripts/ratchet.py quality` and `uv run pylint src/rove` |
+| `types` | mypy findings, counted per file and error code and held at `scripts/baselines/types.json`. | `uv run python scripts/ratchet.py types` |
+| `tests` | Every test that needs no browser, in random order, with branch coverage. No browser is installed for it. | `uv run pytest -m "not e2e and not performance"` |
+| `e2e` | Every test that drives a fixture Chromium, including the end-to-end scenarios. | `uv run pytest -m "e2e and not performance"` |
+| `coverage` | Branch coverage of `tests` and `e2e` together, at or above `fail_under` in `pyproject.toml`. | `uv run pytest -m "not performance" --cov=rove --cov-branch` |
+| `smoke` | The sdist and wheel build; the wheel installs into a fresh virtualenv; `rove --help`, every subcommand's `--help`, every module's import and `rove bench fixture` work from it; the app icon ships. | `uv run pytest -m smoke` |
+| `performance` | The offline fixture application against the time and call budgets in `tests/test_performance.py`. | `uv run pytest -m performance` |
+| `hygiene` | No secret, private file, real Discord ID, personal address or machine path in any tracked file; relative links in the Markdown resolve; every `config/workflow.json` key the code reads is in [Requirements](docs/requirements.md#configworkflowjson). | `uv run python scripts/check_staged.py --all` and `uv run pytest tests/test_repo_hygiene.py` |
+| `macos` | The whole suite on macOS, where Rove runs. | `uv run pytest -m "smoke or not smoke"` |
+
+A plain `uv run pytest` runs everything except `smoke`, which builds and installs the package and so runs only when the `-m` expression names it.
+
+What the suite enforces on every run:
+
+- **Order.** Tests run in a random order (pytest-randomly). The seed is printed at the top; `-p randomly --randomly-seed=N` repeats a run and `-p no:randomly` turns shuffling off while you debug. A test that passes only in one order has an isolation bug.
+- **Browser tests are found, not remembered.** A test that starts a Chromium, directly or through a fixture or helper under `tests/`, is marked `e2e` when the suite is collected (`tests/ci_marks.py`). A test without the marker that still starts one fails and names itself; add `@pytest.mark.e2e` to it.
+- **Hangs fail fast.** Each test has 120 seconds (pytest-timeout).
+- **Hidden failures are failures.** An exception raised in a thread or a finalizer, a file or socket left open, and a coroutine never awaited all fail the test. Unknown markers and unknown config keys are errors, and an `xfail` test that passes fails.
+
+Ceilings and floors only move one way:
+
+- **Coverage floor.** When a change raises total coverage, set `fail_under` in `pyproject.toml` to the new total minus two points, in the same pull request. Never lower it.
+- **Lint and type ceilings.** When you fix findings, run `uv run python scripts/ratchet.py quality --update` (or `types --update`) and commit the lower numbers; the check fails until you do, so an improvement cannot be spent later. A new finding fails the check. `--update --allow-increase` exists for a reviewed exception and shows in the diff as a larger number. When a rule reaches zero everywhere, remove it from `ignore` and `external` in `[tool.ruff.lint]` so `lint` enforces it.
+- **Performance budgets.** Time budgets are generous multiples of measured medians and catch regressions like a fixed sleep per field, not drift. Call counts are exact or ceilings. When a change moves one on purpose, update the table in `tests/test_performance.py` and say why in the commit.
+- **Configuration keys.** A new `config/workflow.json` key needs a row in the table in `docs/requirements.md`. Keys that were undocumented when the check was added are listed in `tests/test_repo_hygiene.py`; document one and remove it from that list.
+
 ## Public repo and test data
 
 Treat anything committed here as public.
