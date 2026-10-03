@@ -1677,6 +1677,28 @@ def test_a_submit_that_never_returns_is_unknown_and_never_retried(board, site, m
     never_twice(runtime, run_id, package_hash, state)
 
 
+def test_no_adapter_reads_a_refusal_while_the_send_is_unanswered(board, site, monkeypatch):
+    """Whatever an adapter's own reading, a POST the click started and nobody answered
+    keeps the outcome unknown: that request may still store the application."""
+    runtime, _base, state = board
+    live.generic_only(monkeypatch)
+
+    class Eager(live.LocalGenericV1):
+        @classmethod
+        def rejected(cls, checks: dict) -> bool:
+            return True  # a board contract that reads any error as a refusal
+
+    monkeypatch.setitem(submission.ADAPTERS, "generic_v1", Eager)
+    Site.pages["/acme/jobs/507"] = live.GENERIC_FORM
+    Site.hanging.add("/acme/jobs/507")
+    run_id, package_hash = live.prepared(runtime, site, state, 507)
+    approve(run_id, package_hash)
+    result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert result["status"] == "UNKNOWN_SUBMISSION", result
+    assert not result["checks"]["posts_answered"]
+    never_twice(runtime, run_id, package_hash, state)
+
+
 THANKS_THEN_ERROR = b"""document.querySelector('form').addEventListener('submit', async e => {
   e.preventDefault();
   await fetch(location.pathname, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});

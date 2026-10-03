@@ -1175,8 +1175,10 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
                 confirmation_text=after.get("text", "")[:4000],
                 screenshot=after.get("screenshot"),
             )
-        elif adapter.rejected(checks):
-            # The site kept the form and said no: nothing was sent.
+        elif adapter.rejected(checks) and checks["posts_answered"]:
+            # The site kept the form and said no: nothing was sent. Never while a POST
+            # the click started is still unanswered, whatever the adapter reads: that
+            # request may yet store the application, so the outcome stays unknown.
             result.update(status="NOT_SUBMITTED", reason=adapter.reason(checks, after))
             if checks.get("captcha_rejected"):
                 # Only a person can satisfy the CAPTCHA: the owner finishes this one.
