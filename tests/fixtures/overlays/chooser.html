@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- Synthetic: the apply page opens on a chooser, "Apply with LinkedIn" or "Apply manually";
+     the form is drawn only after the manual choice. -->
+<html lang="en"><head><meta charset="utf-8"><title>Harborview Logistics - Apply</title>
+<style>
+  #chooser { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #application-form { display: none; }
+</style></head>
+<body>
+<header><h1>Harborview Logistics</h1><p>Dispatcher, Harborview yard.</p></header>
+<div id="chooser" role="dialog" aria-modal="true" aria-labelledby="ch">
+  <h2 id="ch">How would you like to apply?</h2>
+  <button type="button" id="linkedin">Apply with LinkedIn</button>
+  <button type="button" id="manual">Apply manually</button>
+</div>
+<form id="application-form">
+  <div><label for="first">First name</label><input id="first" name="first" required></div>
+  <div><label for="email">Email</label><input id="email" name="email" required></div>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+  document.getElementById('manual').addEventListener('click', () => {
+    document.getElementById('chooser').remove();
+    document.getElementById('application-form').style.display = 'block';
+  });
+  document.getElementById('linkedin').addEventListener('click', () => { document.body.dataset.linkedin = '1'; });
+</script>
+</body></html>

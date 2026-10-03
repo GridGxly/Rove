@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- Synthetic: a talent-community dialog with its own email field, "Join" and "Skip",
+     drawn by one wrapper that is both backdrop and dialog container. -->
+<html lang="en"><head><meta charset="utf-8"><title>Harborview Logistics - Apply</title>
+<style>
+  #talent-popup { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; }
+  #talent-popup .box { background: #fff; padding: 24px; width: 420px; }
+</style></head>
+<body>
+<form id="application-form">
+  <div><label for="first">First name</label><input id="first" name="first" required></div>
+  <div><label for="email">Email</label><input id="email" name="email" required></div>
+  <button type="submit">Submit application</button>
+</form>
+<div id="talent-popup">
+  <div class="box" role="dialog" aria-modal="true" aria-label="Join our talent community">
+    <h3>Join our talent community</h3>
+    <p>Hear about roles like this one before they are posted.</p>
+    <label for="tc-email">Your email</label><input id="tc-email" type="email">
+    <button type="button" id="join">Join</button>
+    <button type="button" id="skip">Skip</button>
+  </div>
+</div>
+<script>
+  document.getElementById('skip').addEventListener('click', () => document.getElementById('talent-popup').remove());
+  document.getElementById('join').addEventListener('click', () => { document.body.dataset.joined = '1'; document.getElementById('talent-popup').remove(); });
+  document.getElementById('tc-email').addEventListener('keydown', () => { document.body.dataset.typed = '1'; });
+</script>
+</body></html>

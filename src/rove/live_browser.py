@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import sync_playwright
 
-from . import boards, form_reading, questions, timing, workflow
+from . import boards, form_reading, overlays, questions, timing, workflow
 from .jobs import lookup_job_link, public_link
 from .onboarding import read_approved
 from .runtime import state_root, write_private
@@ -531,6 +531,7 @@ class RecruitingBrowser:
             if owner and run_file and run_file.is_file() and owner["id"] not in self.pages:
                 self.pages[owner["id"]] = page
                 self.runs[owner["id"]] = json.loads(run_file.read_text())
+                self.watch_dialogs(page)
             else:
                 with contextlib.suppress(PlaywrightError):
                     page.close()
@@ -538,13 +539,16 @@ class RecruitingBrowser:
     def new_page(self):
         """A background tab (or a background window when none exists): never steals focus."""
         if self.cdp is None:
-            return self.context.new_page()
+            page = self.context.new_page()
+            self.watch_dialogs(page)
+            return page
         first = not any(not page.is_closed() for page in self.context.pages)
         with self.context.expect_page(timeout=15000) as created:
             self.cdp.send(
                 "Target.createTarget",
                 {"url": "about:blank", "newWindow": first, "background": True},
             )
+        self.watch_dialogs(created.value)
         return created.value
 
     @contextlib.contextmanager
@@ -556,9 +560,11 @@ class RecruitingBrowser:
         daemon sits idle. The guard is attached per operation and removed afterwards.
         """
         page.route("**/*", self._route)
+        self.operating = getattr(self, "operating", 0) + 1  # a leave-page warning is Rove's own
         try:
             yield page
         finally:
+            self.operating -= 1
             with contextlib.suppress(PlaywrightError):
                 page.unroute("**/*")
 
@@ -645,6 +651,7 @@ class RecruitingBrowser:
         except PlaywrightError:
             pass
         self.dismiss_consent()
+        self.clear_overlays()
         try:
             self.page.wait_for_function(BUSY_JS, timeout=timeout)
         except PlaywrightError:
@@ -780,7 +787,9 @@ class RecruitingBrowser:
                 continue
             try:
                 member.set_checked(wanted, timeout=3000)
-            except PlaywrightError:
+            except PlaywrightError as error:
+                if overlays.blocked_click(error):
+                    raise  # something sits on top of the form: cleared, then tried again
                 # Styled boxes hide the input; its associated label is the visible target.
                 target = member.get_attribute("id")
                 if target:
@@ -1159,7 +1168,9 @@ class RecruitingBrowser:
             member = self.page.locator(f'[data-rove-field="{int(field["member_refs"][index])}"]')
             try:
                 member.check(timeout=3000)
-            except PlaywrightError:
+            except PlaywrightError as error:
+                if overlays.blocked_click(error):
+                    raise  # something sits on top of the form: cleared, then tried again
                 if not member.evaluate(form_reading.CHECKED_JS):
                     # Styled radios hide the input; its associated label is the visible target.
                     target = member.get_attribute("id")
@@ -1196,7 +1207,9 @@ class RecruitingBrowser:
         ref = int(field["ref"])
         try:
             self.click(locator, timeout=4000)
-        except PlaywrightError:
+        except PlaywrightError as error:
+            if overlays.blocked_click(error):
+                raise  # something sits on top of the form: cleared, then tried again
             return False
         texts, matches = [], []
         for attempt in range(10):
@@ -1306,6 +1319,7 @@ class RecruitingBrowser:
         learns the new ones so they are not reported as having appeared unasked.
         """
         self.form_changed = self.resume_attached = False
+        self.clear_overlays()  # nothing in front of the form before a batch is typed
         handled: dict = {}
 
         def remaining(fields):
@@ -1342,6 +1356,221 @@ class RecruitingBrowser:
                 f for f in before["fields"] if f["key"] not in known
             ]
             queue = list(remaining(fresh["fields"]))
+
+    # --- pop-ups, page dialogs and stray tabs ---------------------------------------
+
+    def run_id_of(self, page) -> str | None:
+        return next((r for r, p in self.pages.items() if p is page), None) or (
+            self.run["id"] if self.run and page is self.page else None
+        )
+
+    def note(self, line: str, detail: str):
+        """One quiet thread line for the owner and one system-log line, never a card."""
+        run_id = self.run["id"] if self.run else None
+        if run_id:
+            workflow.record(run_id, "overlay", {"line": line, "detail": detail})
+            with contextlib.suppress(Exception):  # a log line never breaks the work
+                workflow.flush_events(run_id)
+
+    def watch_dialogs(self, page):
+        """Answer the page's own dialogs by a fixed policy, once per page.
+
+        An alert is acknowledged. A confirm is accepted only while this application is
+        being sent (the site asking "Submit now?" under Rove's own click); any other
+        confirm and every prompt is dismissed. A leave-page warning is accepted only while
+        Rove itself is driving the page. Each dialog leaves one quiet line, its text
+        clipped and scrubbed.
+        """
+        if getattr(page, "_rove_dialogs", False):
+            return
+        page._rove_dialogs = True
+
+        def answer(dialog):
+            kind, text = dialog.type, overlays.scrubbed(dialog.message)
+            run_id = self.run_id_of(page)
+            if kind == "alert":
+                accept = True
+            elif kind == "confirm":
+                try:
+                    accept = bool(run_id) and workflow.get(run_id)["status"] == "SUBMITTING"
+                except Exception:  # noqa: BLE001 -- an unknown run is never being sent
+                    accept = False
+            elif kind == "beforeunload":
+                accept = page is self.page and getattr(self, "operating", 0) > 0
+            else:
+                accept = False
+            try:
+                dialog.accept() if accept else dialog.dismiss()
+            except PlaywrightError:
+                return  # already answered by the owner in the window
+            if run_id:
+                self.note(
+                    f"{'Accepted' if accept else 'Dismissed'} the page's {kind} dialog: “{text}”",
+                    f"dialog · {kind} · {'accepted' if accept else 'dismissed'} · {text}",
+                )
+
+        page.on("dialog", answer)
+
+    def close_stray_tabs(self):
+        """Tabs the page opened on its own (ads, chat, sign-in windows) are closed.
+
+        A tab that belongs to an application, the tab being driven, and anything the owner
+        opened by hand (no opener) stay. `follow` has already adopted the apply tab it was
+        waiting for by the time the page settles.
+        """
+        if not self.context:
+            return
+        for page in list(self.context.pages):
+            try:
+                if page.is_closed() or page is self.page or page in self.pages.values():
+                    continue
+                if page.opener() is None:
+                    continue
+                where = overlays.scrubbed(page.url, 120)
+                page.close()
+                self.note("Closed a tab the page opened on its own", f"stray tab closed · {where}")
+            except PlaywrightError:
+                continue
+
+    def find_overlays(self, after_failure: bool = False) -> list[dict]:
+        """The pop-ups in the way of the page right now, the one with controls first."""
+        try:
+            found = self.page.evaluate(overlays.FIND_JS)
+        except PlaywrightError:
+            return []
+        return overlays.in_the_way(found, after_failure)
+
+    def overlay_gone(self, overlay: dict, timeout_ms: int = 2500) -> bool:
+        try:
+            self.page.wait_for_function(overlays.GONE_JS, arg=overlay["ref"], timeout=timeout_ms)
+            return True
+        except PlaywrightError:
+            return False
+
+    def press_overlay_button(self, overlay: dict, button: dict) -> bool:
+        locator = self.page.locator(f'[data-rove-overlay-button="{int(button["ref"])}"]')
+        try:
+            self.click(locator, timeout=4000)
+        except PlaywrightError:
+            return False
+        return self.overlay_gone(overlay)
+
+    def dismiss_overlay(self, overlay: dict, button: dict | None) -> str | None:
+        """Close one pop-up: its control, then Escape, then its backdrop; how, or None."""
+        if button is not None and self.press_overlay_button(overlay, button):
+            return f"button “{button['label']}”"
+        with contextlib.suppress(PlaywrightError):
+            self.page.keyboard.press("Escape")
+        if self.overlay_gone(overlay, 1200):
+            return "Escape"
+        point = None
+        with contextlib.suppress(PlaywrightError):
+            point = self.page.evaluate(overlays.BACKDROP_POINT_JS, overlay["ref"])
+        if point:
+            with contextlib.suppress(PlaywrightError):
+                self.page.mouse.click(point[0], point[1])
+            if self.overlay_gone(overlay, 1200):
+                return "its backdrop"
+        return None
+
+    def ask_about_overlay(self, overlay: dict) -> dict | None:
+        """Qwen picks one of the pop-up's buttons; the choice passes the same never-list.
+
+        The screenshot taken before asking stays in the application directory. None when
+        the model is away, refuses, or names something code may not press.
+        """
+        from . import reasoning
+
+        directory = state_root() / f"applications/{self.run['id']}"
+        count = int(self.run.get("popups_asked", 0)) + 1
+        self.run["popups_asked"] = count
+        with contextlib.suppress(PlaywrightError, OSError):
+            shot = directory / f"popup-{count}.png"
+            self.page.screenshot(path=str(shot))
+            shot.chmod(0o600)
+        context = overlays.qwen_context(overlay, self.page.title())
+        try:
+            generated = reasoning.generate(directory, context, f"popup-{count}", attempts=1)
+            parsed = reasoning.load_json(reasoning.completed_response(generated))
+        except Exception as error:  # noqa: BLE001 -- away, refused or malformed: all mean "do not guess"
+            self.note(
+                "Asked Qwen about a pop-up and got no usable answer",
+                f"popup · qwen · {type(error).__name__}: {str(error)[:160]}",
+            )
+            return None
+        return overlays.qwen_choice(parsed, overlay)
+
+    def hold_for_overlay(self, overlay: dict):
+        """Stop with a screenshot and plain words: the owner closes it and replies go."""
+        directory = state_root() / f"applications/{self.run['id']}"
+        with contextlib.suppress(PlaywrightError, OSError):
+            self.page.screenshot(path=str(directory / "failure.png"))
+            (directory / "failure.png").chmod(0o600)
+        self.note(
+            f"A pop-up is in the way: “{overlays.describe(overlay)}”",
+            f"popup held · {overlays.scrubbed(overlay.get('text'), 160)} · buttons "
+            + " / ".join(b["label"] for b in overlay.get("buttons", [])[:8]),
+        )
+        raise overlays.OverlayInTheWay(overlays.HOLD_WORDS)
+
+    def clear_overlays(self, after_failure: bool = False) -> int:
+        """Get pop-ups out of the way of the form; how many were closed.
+
+        Code decides first: the application itself is kept; a step that goes on without
+        signing up for anything is taken; anything else is closed with its dismissive
+        control, Escape, or its backdrop. Qwen is asked only when the buttons are ones
+        code cannot place. A pop-up still in the way afterwards stops the run for the
+        owner, unless the page is a site's front door, where nothing is being filled.
+        """
+        if self.page is None or self.page.is_closed() or not self.run:
+            return 0
+        self.close_stray_tabs()
+        closed = 0
+        # A site's front door is only visited for the sake of the visit: nothing is filled
+        # there, so a pop-up that stays is left alone instead of stopping the run.
+        front_door = urlsplit(self.page.url).path in ("", "/")
+        for _ in range(3):
+            found = self.find_overlays(after_failure)
+            if not found:
+                return closed
+            overlay = found[0]
+            if int(self.run.get("popups_closed", 0)) >= overlays.MAX_CLOSED_PER_RUN:
+                self.hold_for_overlay(overlay)
+            choice = overlays.choose(overlay)
+            button = choice["button"] if choice else None
+            asked = False
+            if button is None and overlay.get("buttons") and not front_door:
+                button, asked = self.ask_about_overlay(overlay), True
+            how = self.dismiss_overlay(overlay, button)
+            if how is None:
+                if front_door:
+                    return closed
+                self.hold_for_overlay(overlay)
+            closed += 1
+            self.run["popups_closed"] = int(self.run.get("popups_closed", 0)) + 1
+            self.note(
+                f"Closed a pop-up: “{overlays.describe(overlay)}”",
+                f"popup closed · {overlays.scrubbed(overlay.get('text'), 120)} · via {how}"
+                + (" · chosen by qwen" if asked else ""),
+            )
+        return closed
+
+    def fill_cleared(self, run_id: str, before: dict, approved: dict, answers: dict):
+        """One fill pass; when something on top stops a click or a fill, the pop-up is
+        closed, the page observed again and the pass run once more."""
+        try:
+            return self._fill_page(run_id, before, approved, answers)
+        except PlaywrightError as error:
+            if not re.search(
+                r"intercepts pointer events|not visible|Timeout \d+ms exceeded", str(error)
+            ):
+                raise
+            if not self.clear_overlays(after_failure=True):
+                raise
+            fresh = self.observe()
+            before.clear()
+            before.update(fresh)
+            return self._fill_page(run_id, before, approved, answers)
 
     def _auth_control(self, observation: dict, intent: str):
         control = next(
@@ -1616,7 +1845,10 @@ class RecruitingBrowser:
                 if hashlib.sha256(resume.read_bytes()).hexdigest() != self.run["resume_sha256"]:
                     raise PermissionError("Frozen resume changed")
                 upload_control = locator.element_handle()
-                self.upload(locator, resume)
+                if upload_control.evaluate("e=>e.files.length===1&&e.files[0].name==='resume.pdf'"):
+                    self.resume_attached = True  # a pass run again: the file is already on
+                else:
+                    self.upload(locator, resume)
                 if (
                     upload_control.evaluate(
                         "e=>e.files.length===1 && e.files[0].name==='resume.pdf'"
@@ -1809,7 +2041,7 @@ class RecruitingBrowser:
         result = before
         for _step in range(4):
             pages.append(before["url"])
-            page_filled, page_pending = self._fill_page(run_id, before, approved, answers)
+            page_filled, page_pending = self.fill_cleared(run_id, before, approved, answers)
             filled.extend(page_filled)
             pending.extend(page_pending)
             self.run.update(status="NEEDS_REVIEW", filled=filled, pending=pending)

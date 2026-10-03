@@ -429,6 +429,8 @@ def system_note(kind: str, data: dict) -> str | None:
         return f"model unavailable · {data.get('phase', '')}"
     if kind == "browser_access_blocked":
         return f"blocked · {data.get('url', '')} · {data.get('marker', '')}"
+    if kind == "overlay":
+        return clip(str(data.get("detail") or data.get("line") or ""), 400)
     if kind == "recruiting_mail":
         return (
             f"recruiting mail · {data.get('label', '')} · {data.get('sender_domain', '')} · "
@@ -1206,6 +1208,8 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         return ["→ Preparing the resume from your approved evidence"]
     if kind == "browser_retry":
         return ["→ Retried once through the site's front door"]
+    if kind == "overlay":
+        return [f"→ {clip(data.get('line', 'Closed a pop-up'), 200)}"]
     if kind == "company_research":
         return [research_line(data)]
     if kind == "qwen_failure":

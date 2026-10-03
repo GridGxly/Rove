@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- Synthetic: a full-screen "get our app" interstitial with no dialog role or modal
+     name, found only by sitting on top; "Continue to site" takes it away. -->
+<html lang="en"><head><meta charset="utf-8"><title>Harborview Logistics - Apply</title>
+<style>
+  #promo-screen { position: fixed; inset: 0; background: #123; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+</style></head>
+<body>
+<form id="application-form">
+  <div><label for="first">First name</label><input id="first" name="first" required></div>
+  <div><label for="email">Email</label><input id="email" name="email" required></div>
+  <button type="submit">Submit application</button>
+</form>
+<div id="promo-screen">
+  <h1>Get the Harborview app</h1>
+  <p>Track your application from your phone.</p>
+  <button type="button" id="download">Download the app</button>
+  <a href="#" id="continue">Continue to site</a>
+</div>
+<script>
+  document.getElementById('continue').addEventListener('click', e => { e.preventDefault(); document.getElementById('promo-screen').remove(); });
+  document.getElementById('download').addEventListener('click', () => { document.body.dataset.download = '1'; });
+</script>
+</body></html>

@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- Synthetic: the form's own submit raises a browser alert, then asks with a confirm,
+     then sends and moves to the thank-you page. -->
+<html lang="en"><head><meta charset="utf-8"><title>Harborview Logistics - Apply</title></head>
+<body>
+<form id="application-form">
+  <div><label for="first">First name</label><input id="first" name="first" required></div>
+  <div><label for="email">Email</label><input id="email" name="email" required></div>
+  <div><label for="resume">Resume</label><input id="resume" name="resume" type="file"></div>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+  document.querySelector('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    alert('Please double-check your details before sending.');
+    if (!confirm('Send your application now?')) { document.body.dataset.cancelled = '1'; return; }
+    const r = await fetch(location.pathname, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    if (r.ok) location.assign(location.pathname + '/done');
+  });
+</script>
+</body></html>

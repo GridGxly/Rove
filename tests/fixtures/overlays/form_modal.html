@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- Synthetic: the application form itself is a modal dialog over the posting. It sends
+     its own request, then moves to a thank-you page the way an employer site would. -->
+<html lang="en"><head><meta charset="utf-8"><title>Harborview Logistics - Dispatcher</title>
+<style>
+  #apply-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); }
+  #apply-modal { position: fixed; top: 10%; left: 25%; width: 50%; background: #fff; padding: 24px; }
+</style></head>
+<body>
+<h1>Dispatcher</h1>
+<p>Coordinate drivers and loads across the Harborview yard.</p>
+<div id="apply-backdrop"></div>
+<div id="apply-modal" role="dialog" aria-modal="true" aria-labelledby="am">
+  <h2 id="am">Apply for Dispatcher</h2>
+  <form id="application-form">
+    <div><label for="first">First name</label><input id="first" name="first" required></div>
+    <div><label for="email">Email</label><input id="email" name="email" required></div>
+    <div><label for="resume">Resume</label><input id="resume" name="resume" type="file"></div>
+    <button type="submit">Submit application</button>
+  </form>
+</div>
+<script>
+  document.querySelector('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const r = await fetch(location.pathname, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    if (r.ok) location.assign(location.pathname + '/done');
+  });
+</script>
+</body></html>

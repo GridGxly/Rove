@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import fastpath, inbound, intake, matching, memory_channel, timing, workflow
+from . import fastpath, inbound, intake, matching, memory_channel, overlays, timing, workflow
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
 from .reasoning import GATE_KINDS
@@ -1398,6 +1398,8 @@ def tick() -> dict:
                     f"The site changed the value I typed for “{label}”. Check it in the "
                     "recruiting browser, then reply `go`."
                 )
+            elif detail.startswith(overlays.HOLD_WORDS):
+                reason = overlays.HOLD_WORDS  # a pop-up code would not guess on
             else:
                 reason = (
                     f"Preparation stopped during {failure.phase.replace('_', ' ')}: "
