@@ -56,11 +56,37 @@ BROWSER_GONE = (
     PLAIN_STOP + "The recruiting browser was closed, so this application's page is gone. I "
     "started the browser again; reply `go` and I open the page afresh."
 )
+TAB_GONE = (
+    PLAIN_STOP + "The recruiting browser stopped answering for a while, and this "
+    "application's page was not open any more when it came back. Nothing was sent; reply "
+    "`go` and I open the page afresh."
+)
 BROWSER_DOWN = (
     PLAIN_STOP + "The recruiting browser was closed and I could not start it again. Nothing "
     "was typed or sent. Open it, or restart the browser service, then reply `go`."
 )
+BROWSER_UNSTEADY = (
+    PLAIN_STOP + "The recruiting browser closed again while I was working on this one, "
+    "right after I had started it again. Nothing was sent. Reply `go` to try once more."
+)
+STEP_CUT = (
+    PLAIN_STOP + "The recruiting browser closed in the middle of this step. A click there "
+    "may already have reached the site, so I did not repeat it on my own. The browser is "
+    "running again; check the application in it, then reply `go`."
+)
+# A send stopped before its click is recorded: the claim comes first, and everything
+# after the claim ends as a recorded outcome, never as an error.
+SEND_CUT = (
+    PLAIN_STOP + "The recruiting browser closed before the send, so nothing was sent. It "
+    "is running again; reply `go` and I prepare this one afresh."
+)
 RESTARTED = "The recruiting browser was closed; I restarted it"
+RECONNECTED = (
+    "The recruiting browser stopped answering (a sleep or a dropped connection); I reconnected"
+)
+# Operations run a second time when the browser died under the first try. A send and an
+# account creation are not: their click may already have reached the site.
+RETRIED_ACTIONS = frozenset({"open", "observe", "follow", "prepare", "login", "reopen"})
 # Pages the browser shows on its own: a new tab, a navigation that failed.
 BROWSER_PAGES = ("about:blank", "chrome-error://")
 RUN_ID = re.compile(r"[a-f0-9]{12}")
@@ -668,7 +694,9 @@ class RecruitingBrowser:
         self.warmed = set()
         self.hops = []
         self.secrets = set()
-        self.lost = set()  # applications whose tab died with a browser that was restarted
+        # Applications whose tab went with a session that was dropped, and the plain words
+        # that say what happened to it.
+        self.lost: dict[str, str] = {}
         self.port = None
         self.launcher = ChromeLauncher()
         # Per application: the child frame its form lives in, and the tab address it was
@@ -838,17 +866,25 @@ class RecruitingBrowser:
         self.playwright = self.browser = self.context = self.cdp = None
         self.port = None
         self.page = self.run = self.observation = None
-        self.lost |= set(self.pages)
+        self.lost.update(dict.fromkeys(self.pages, BROWSER_GONE))
         self.pages.clear()
         self.runs.clear()
         self.dns.clear()
         self.warmed.clear()
 
     def ensure(self) -> bool:
-        """A live browser to drive. Returns True when a dead one had to be started again."""
+        """A live browser to drive. Returns True when a dead session had to be replaced.
+
+        The owner quitting the browser, or a DevTools session that died (a laptop sleep,
+        a crash), leaves a stale session behind: it is dropped and the browser reached
+        again through the launcher, which reuses a browser that is still running and
+        starts one otherwise. The tabs still open are adopted back by their applications.
+        One system-log line says which of the two it was.
+        """
         if self.context and self.alive():
             return False
         restarted = self.context is not None
+        port, dropped = self.port, list(self.pages)
         self.reset()
         try:
             self.launch()
@@ -857,20 +893,36 @@ class RecruitingBrowser:
                 raise  # the first launch says in its own words what is missing
             raise RuntimeError(BROWSER_DOWN) from error
         if restarted:
+            same = bool(port) and self.port == port  # the browser itself never went away
+            if same:
+                # Not adopted back although the browser stayed up: the tab itself is gone.
+                self.lost.update({r: TAB_GONE for r in dropped if r in self.lost})
             with contextlib.suppress(Exception):  # a log line never blocks the recovery
-                workflow.system_line("browser", RESTARTED)
+                workflow.system_line("browser", RECONNECTED if same else RESTARTED)
         return restarted
 
-    def recovering(self, operation):
-        """Run one browser operation; when it fails because the browser died under it,
-        start the browser again once and run it once more."""
+    def recovering(self, operation, retry: bool = True, words=lambda: STEP_CUT):
+        """Run one browser operation. When it fails because the browser died under it,
+        the browser is reached again once and, if `retry`, the operation runs once more.
+
+        A failure on a live browser is the operation's own and is raised as it is. An
+        operation that is not retried (`words` says why in plain words), or a retry that
+        dies too, ends in plain words.
+        """
         try:
             return operation()
-        except PlaywrightError:
+        except Exception as error:
             if self.alive():
                 raise
-            self.ensure()
+            self.ensure()  # raises the plain BROWSER_DOWN when it cannot
+            if not retry:
+                raise RuntimeError(words()) from error
+        try:
             return operation()
+        except Exception as error:
+            if self.alive():
+                raise
+            raise RuntimeError(BROWSER_UNSTEADY) from error
 
     def launch(self):
         self.playwright = sync_playwright().start()
@@ -901,11 +953,14 @@ class RecruitingBrowser:
         if self.cdp is not None:
             self.adopt_pages()
 
-    def adopt_pages(self):
-        """After a reconnect, map the tabs still open in Chrome back to their applications.
+    def adopt_pages(self, only: str | None = None):
+        """Map the tabs still open in the browser back to their applications.
 
-        A tab whose URL belongs to an application waiting on the owner is kept and
-        re-registered; anything else left over (blank tabs, finished runs) is closed.
+        After a reconnect every tab is looked at: one showing a page of an application
+        still being worked on (its posting, or the form it last observed) is kept and
+        registered again; anything else left over (blank tabs, finished runs) is closed.
+        With `only`, just that application's tab is looked for among the tabs no
+        application holds, and nothing is closed.
         """
         with workflow.db() as conn:
             waiting = [
@@ -914,27 +969,47 @@ class RecruitingBrowser:
                     "SELECT id,url FROM application_queue WHERE run_id IS NOT NULL AND status IN "
                     "('NEEDS_USER','READY_FOR_REVIEW','MANUAL_TAKEOVER','PREPARING')"
                 )
+                if only is None or r["id"] == only
             ]
+        runs = {}
+        for item in waiting:
+            run_file = state_root() / f"applications/{item['id']}/run.json"
+            with contextlib.suppress(OSError, ValueError):
+                runs[item["id"]] = json.loads(run_file.read_text())
         for page in list(self.context.pages):
-            if page.is_closed():
+            if page.is_closed() or any(page is held for held in self.pages.values()):
                 continue
             owner = next(
                 (
                     item
                     for item in waiting
-                    if job_scope(page.url) == job_scope(item["url"])
-                    or page.url.startswith(item["url"].rstrip("/"))
+                    if item["id"] in runs
+                    and item["id"] not in self.pages
+                    and self.shows(page.url, item["url"], runs[item["id"]])
                 ),
                 None,
             )
-            run_file = state_root() / f"applications/{owner['id']}/run.json" if owner else None
-            if owner and run_file and run_file.is_file() and owner["id"] not in self.pages:
+            if owner:
                 self.pages[owner["id"]] = page
-                self.runs[owner["id"]] = json.loads(run_file.read_text())
+                self.runs[owner["id"]] = runs[owner["id"]]
+                self.lost.pop(owner["id"], None)
                 self.watch_dialogs(page)
-            else:
+            elif only is None:
                 with contextlib.suppress(PlaywrightError):
                     page.close()
+
+    @staticmethod
+    def shows(url: str, queued: str, run: dict) -> bool:
+        """The tab's address is a page of this application: its posting, its target, or
+        the page it last observed (a form on another host after an Apply link)."""
+        if not str(url or "").startswith(("https://", "http://")):
+            return False  # a blank tab or the browser's own error page is nobody's
+        for known in (queued, run.get("target_url"), run.get("url")):
+            if not known or not str(known).startswith(("https://", "http://")):
+                continue
+            if same_job(known, url) or url.startswith(str(known).rstrip("/")):
+                return True
+        return False
 
     def new_page(self):
         """A background tab (or a background window when none exists): never steals focus."""
@@ -1026,6 +1101,7 @@ class RecruitingBrowser:
         page = self.pages.pop(run_id, None)
         self.runs.pop(run_id, None)
         self.frames.pop(run_id, None)
+        self.lost.pop(run_id, None)  # closed on purpose, not lost
         if page is not None and not page.is_closed():
             page.close()
         if self.run and self.run["id"] == run_id:
@@ -1117,7 +1193,13 @@ class RecruitingBrowser:
         return result
 
     def navigate(self, target: str):
-        """Load a page and settle it. Where it landed is checked before the page is touched."""
+        """Load a page and settle it. Where it landed is checked before the page is touched.
+
+        The body only has to exist: a page whose whole content is a full-screen fixed
+        layer (an interstitial in front of the form) has a body with no height, which
+        Playwright never calls visible, and waiting for that would skip the settle and
+        the pop-up step that clears the layer.
+        """
         try:
             self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
         except PlaywrightError as error:
@@ -1126,7 +1208,10 @@ class RecruitingBrowser:
             return
         self.require_public_page()
         try:
-            self.page.locator("body").wait_for()
+            self.page.locator("body").wait_for(state="attached", timeout=5000)
+        except PlaywrightError as error:
+            self.run["navigation_error"] = type(error).__name__
+        try:
             self.settle()
         except PlaywrightError as error:
             self.run["navigation_error"] = type(error).__name__
@@ -1540,7 +1625,7 @@ class RecruitingBrowser:
                 resume_is_tailored=manifest.get("tailored", False),
             )
         self.runs[run_id], self.pages[run_id] = self.run, self.page
-        self.lost.discard(run_id)
+        self.lost.pop(run_id, None)
         workflow.set_state(run_id, "PREPARING", run_id=run_id)
         workflow.ensure_forum(run_id)
         self.save()
@@ -1616,15 +1701,33 @@ class RecruitingBrowser:
         return result
 
     def check(self, run_id: str):
+        """Make this application's own tab the one being driven.
+
+        A tab the daemon lost sight of while the browser lived on (a laptop sleep, a
+        dropped DevTools session) is found again: a dead session is replaced, and the
+        tab is adopted back from the tabs still open. Only a tab that is really gone is
+        reported, in plain words when a closed or silent browser took it.
+        """
         page = self.pages.get(run_id)
         if page is None or page.is_closed() or run_id not in self.runs:
+            page = self.find_tab(run_id)
+        self.page, self.run = page, self.runs[run_id]
+
+    def find_tab(self, run_id: str):
+        if not self.alive():
+            self.ensure()  # a new session adopts every application's open tab
+        page = self.pages.get(run_id)
+        if (page is None or page.is_closed() or run_id not in self.runs) and self.context:
+            self.pages.pop(run_id, None)
+            self.adopt_pages(only=run_id)
+            page = self.pages.get(run_id)
+        if page is None or page.is_closed() or run_id not in self.runs:
+            self.pages.pop(run_id, None)
             if run_id in self.lost:
-                # The browser was closed and started again: its tabs did not come back.
-                self.lost.discard(run_id)
-                raise ValueError(BROWSER_GONE)
+                raise ValueError(self.lost.pop(run_id))
             # Never act on another application's tab: a missing tab is reopened, not reused.
             raise ValueError("This application's tab is not open; reopen it before continuing")
-        self.page, self.run = page, self.runs[run_id]
+        return page
 
     def select_combobox(self, locator, field, value, profile) -> bool:
         """Select a unique visible exact option; text input alone is not selection."""
@@ -2972,10 +3075,27 @@ def handle_request(browser, request: dict):
         raise PermissionError("Unsupported browser action")
     run_id = checked_run_id(request)
     # The browser starts with the first call that needs it. One the owner quit is noticed
-    # here, started again once, and the operation is run once more if it dies under it;
-    # a tab that did not survive says so plainly.
+    # here and reached again once; an operation it dies under is run once more, except a
+    # send or an account creation, whose click may already have gone out. A tab that did
+    # not survive says so plainly.
     browser.ensure()
-    return browser.recovering(lambda: perform(browser, action, run_id, request))
+    operation = lambda: perform(browser, action, run_id, request)
+    if action in RETRIED_ACTIONS:
+        return browser.recovering(operation)
+    return browser.recovering(operation, retry=False, words=lambda: cut_words(action, run_id))
+
+
+def cut_words(action: str, run_id: str | None) -> str:
+    """What to tell the owner about a step the browser died under and Rove did not repeat.
+
+    A send that never got as far as its claim sent nothing; one that did has its outcome
+    on record already, and anything unsure says a click may have gone out.
+    """
+    if action == "submit" and run_id:
+        with contextlib.suppress(Exception):
+            if workflow.get(run_id)["status"] == "READY_FOR_REVIEW":
+                return SEND_CUT
+    return STEP_CUT
 
 
 def perform(browser, action: str, run_id: str | None, request: dict):

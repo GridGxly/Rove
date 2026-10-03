@@ -9,10 +9,13 @@ fields, forms that change, submits that hang, late error banners and a browser t
 after the click.
 """
 
+import contextlib
 import hashlib
 import json
 import socket
+import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -1843,6 +1846,190 @@ def test_a_browser_that_cannot_be_started_again_holds_with_plain_words(board, si
     # Once it can start again, the same request goes through.
     monkeypatch.setattr(runtime, "launch", live_browser.RecruitingBrowser.launch.__get__(runtime))
     assert "error" not in ask_daemon(runtime, action="open", url=site + "/acme/jobs/604")
+
+
+@pytest.mark.parametrize("action", ["register", "submit"])
+def test_a_step_whose_click_may_have_gone_out_is_never_run_twice(board, site, monkeypatch, action):
+    runtime, _base, _state = board
+    Site.pages["/acme/jobs/606"] = live.FORM
+    run_id = ask_daemon(runtime, action="open", url=site + "/acme/jobs/606")["result"]["run_id"]
+    workflow.set_state(run_id, "READY_FOR_REVIEW", package_hash="a" * 64)
+    logged, runs = [], []
+    monkeypatch.setattr(workflow, "system_line", lambda app, text: logged.append(text))
+
+    def dies(*_args):
+        runs.append(action)
+        runtime.context.close()  # the owner quits the browser right at the click
+        raise PlaywrightError("Locator.click: Target page, context or browser has been closed")
+
+    monkeypatch.setattr(runtime, "register", dies)
+    monkeypatch.setattr(submission, "submit", dies)
+    answer = ask_daemon(
+        runtime,
+        action=action,
+        run_id=run_id,
+        package_hash="a" * 64,
+        owner_message_id="m-send",
+    )
+    assert runs == [action]  # the browser is back, the step was not repeated
+    assert runtime.alive() and logged == [live_browser.RESTARTED]
+    words = owner_words(answer["error"])
+    no_ids(words)
+    if action == "submit":
+        # Before its claim a send has sent nothing, and says so.
+        assert words.startswith("The recruiting browser closed before the send")
+        assert "nothing was sent" in words and "reply `go`" in words
+    else:
+        assert "did not repeat it" in words and "may already have reached the site" in words
+    # Once a send is claimed, nothing says "nothing was sent".
+    workflow.set_state(run_id, "SUBMITTING")
+    assert live_browser.cut_words("submit", run_id) == live_browser.STEP_CUT
+
+
+def test_a_retry_the_browser_dies_under_again_ends_in_plain_words(board, site, monkeypatch):
+    runtime, _base, _state = board
+    Site.pages["/acme/jobs/607"] = live.FORM
+    ask_daemon(runtime, action="open", url=site + "/acme/jobs/607")
+    tries = []
+
+    def always_dies(url):
+        tries.append(url)
+        runtime.context.close()
+        raise PlaywrightError("Page.goto: Target page, context or browser has been closed")
+
+    monkeypatch.setattr(runtime, "open", always_dies)
+    answer = ask_daemon(runtime, action="open", url=site + "/acme/jobs/607")
+    assert len(tries) == 2  # the operation, and its one retry
+    assert owner_words(answer["error"]).startswith("The recruiting browser closed again")
+    assert "Nothing was sent" in answer["error"]
+
+
+def test_a_tab_the_daemon_lost_sight_of_is_adopted_back_instead_of_refused(board, site):
+    runtime, _base, _state = board
+    Site.pages["/acme/jobs/608"] = live.FORM
+    Site.pages["/acme/jobs/609"] = live.FORM
+    first = runtime.open(site + "/acme/jobs/608")["run_id"]
+    tab = runtime.page
+    second = runtime.open(site + "/acme/jobs/609")["run_id"]
+    other = runtime.page
+    # The daemon's own map loses the first tab (a discarded tab coming back, a sleep);
+    # the tab itself is still open in the browser.
+    runtime.pages.pop(first)
+    runtime.check(first)
+    assert runtime.page is tab and runtime.pages[first] is tab and runtime.run["id"] == first
+    # The other application's tab is never taken for this one.
+    assert runtime.pages[second] is other
+    # A tab that really is gone is still said to be gone.
+    tab.close()
+    with pytest.raises(ValueError, match="tab is not open"):
+        runtime.check(first)
+    assert first not in runtime.pages
+
+
+def test_a_dropped_devtools_session_reconnects_and_keeps_the_open_tabs(
+    board, site, monkeypatch, tmp_path
+):
+    """The Rove Browser stays up while the daemon's DevTools session dies (a laptop sleep):
+    the next call reconnects to the same browser, adopts the tab back, and goes on."""
+    runtime, _base, _state = board
+    Site.pages["/acme/jobs/610"] = live.FORM
+    executable = runtime_executable()
+    port = live_browser.free_port()
+    chrome = subprocess.Popen(
+        [
+            executable,
+            "--headless=new",
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={tmp_path / 'profile'}",
+            "--no-first-run",
+            "about:blank",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(100):
+            if live_browser.devtools_alive(port):
+                break
+            time.sleep(0.1)
+
+        class Running:
+            def ensure_running(self):
+                return port
+
+        runtime.launcher = Running()
+        runtime.headless = False
+        logged = []
+        monkeypatch.setattr(workflow, "system_line", lambda app, text: logged.append(text))
+        opened = ask_daemon(runtime, action="open", url=site + "/acme/jobs/610")["result"]
+        run_id = opened["run_id"]
+        assert logged == []
+        # The session dies; the browser and its tab do not.
+        runtime.playwright.stop()
+        assert not runtime.alive()
+        seen = ask_daemon(runtime, action="observe", run_id=run_id)
+        assert "error" not in seen, seen
+        assert seen["result"]["url"] == site + "/acme/jobs/610"
+        assert logged == [live_browser.RECONNECTED]
+        assert runtime.alive() and runtime.run["id"] == run_id and run_id not in runtime.lost
+        # Had the tab gone with the sleep, the owner would read that in plain words.
+        runtime.page.close()
+        runtime.pages.pop(run_id)
+        runtime.lost[run_id] = live_browser.TAB_GONE
+        gone = ask_daemon(runtime, action="prepare", run_id=run_id)
+        assert owner_words(gone["error"]).startswith("The recruiting browser stopped answering")
+    finally:
+        with contextlib.suppress(Exception):
+            runtime.playwright.stop()
+        runtime.context = runtime.playwright = runtime.browser = None
+        chrome.terminate()
+        chrome.wait(10)
+
+
+def runtime_executable() -> str:
+    from patchright.sync_api import sync_playwright
+
+    with sync_playwright() as driver:
+        return driver.chromium.executable_path
+
+
+FIXED_SHELL = b"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Northwind Labs - Apply</title>
+<style>
+  #app { position: absolute; top: 0; left: 0; right: 0; }
+  #promo { position: fixed; inset: 0; z-index: 5; background: #123; color: #fff;
+           display: flex; flex-direction: column; align-items: center; justify-content: center; }
+</style></head>
+<body>
+<div id="app"><form id="application-form">
+  <div><label for="first">First name</label><input id="first" name="first" required></div>
+  <div><label for="email">Email</label><input id="email" name="email" type="email" required></div>
+  <button type="submit">Submit application</button>
+</form></div>
+<div id="promo">
+  <h1>Get the Northwind app</h1>
+  <p>Track your application from your phone.</p>
+  <button type="button" id="download">Download the app</button>
+  <a href="#" id="continue">Continue to site</a>
+</div>
+<script>
+  document.getElementById('continue').addEventListener('click', e => {
+    e.preventDefault(); document.getElementById('promo').remove(); });
+</script>
+</body></html>"""
+
+
+def test_a_page_with_no_in_flow_content_is_settled_and_its_interstitial_passed(board, site):
+    runtime, _base, _state = board
+    Site.pages["/acme/jobs/611"] = FIXED_SHELL
+    result = runtime.open(site + "/acme/jobs/611")
+    # The body has no height of its own, so Playwright never calls it visible...
+    assert not runtime.page.locator("body").is_visible()
+    # ...and the page was still settled: the pop-up step took the interstitial away.
+    assert runtime.page.locator("#promo").count() == 0
+    assert "navigation_error" not in runtime.run
+    assert {"First name", "Email"} <= {f["label"] for f in result["fields"]}
+    assert runtime.page.evaluate("document.body.dataset.download") is None
 
 
 def test_the_route_guard_is_one_handler_per_page_however_operations_nest(
