@@ -424,7 +424,9 @@ def test_unattended_sending_keeps_the_daily_cap_and_the_gap_except_for_pasted_li
     assert worker.next_queued(1) == feed
 
 
-def test_an_unknown_submission_holds_the_queue_until_the_owner_reconciles(state, monkeypatch):
+def test_an_unknown_submission_waits_for_the_owner_while_the_rest_of_the_queue_goes_on(
+    state, monkeypatch
+):
     enabled_worker(monkeypatch, max_waiting_applications=2)
     processed = []
     monkeypatch.setattr(
@@ -432,14 +434,17 @@ def test_an_unknown_submission_holds_the_queue_until_the_owner_reconciles(state,
         "process",
         lambda app: (
             processed.append(app)
+            or workflow.set_state(app, "DEFERRED")
             or {"application_id": app, "status": "DEFERRED", "submitted": False}
         ),
     )
     unknown, queued = feed_job("unknown"), feed_job("next")
     workflow.set_state(unknown, "UNKNOWN_SUBMISSION", package_hash="c" * 64)
-    assert worker.tick() == {"waiting_on": {"id": unknown, "status": "UNKNOWN_SUBMISSION"}}
-    assert worker.tick()["waiting_on"]["id"] == unknown
-    assert processed == []
+    # The unclear one stays with the owner; the next job is worked meanwhile.
+    assert worker.tick()["status"] == "DEFERRED"
+    assert processed == [queued]
+    assert worker.tick() == {"idle": True}
+    assert workflow.get(unknown)["status"] == "UNKNOWN_SUBMISSION"
     # Nothing reopens or resends an unclear attempt; only the owner's verdict moves it.
     with pytest.raises(ValueError, match="already in flight"):
         thread_command("send it", unknown)
@@ -447,8 +452,87 @@ def test_an_unknown_submission_holds_the_queue_until_the_owner_reconciles(state,
         apply_command(thread_command("go", unknown), "m-go")
     apply_command(thread_command("not sent", unknown), "m-not-sent")
     assert workflow.get(unknown)["status"] == "NEEDS_USER"
+    assert processed == [queued]
+
+
+def stale_claim(app: str, package_hash: str, minutes_ago: float):
+    """A claimed send the browser service never finished: the row it leaves behind."""
+    workflow.set_state(app, "SUBMITTING", package_hash=package_hash)
+    claimed = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
+    with workflow.db() as conn:
+        conn.execute(
+            "INSERT INTO live_submission_attempts"
+            "(application_id,package_hash,owner_message_id,status,created_at) VALUES(?,?,?,?,?)",
+            (app, package_hash, f"auto-submit:{app}:{package_hash[:12]}", "SUBMITTING", claimed),
+        )
+    return claimed
+
+
+def test_a_send_that_never_reported_back_becomes_unclear_and_stops_holding_the_queue(
+    state, monkeypatch
+):
+    calls, _posted = enabled_worker(monkeypatch, max_waiting_applications=2)
+    processed = []
+    monkeypatch.setattr(
+        worker,
+        "process",
+        lambda app: (
+            processed.append(app)
+            or workflow.set_state(app, "DEFERRED")
+            or {"application_id": app, "status": "DEFERRED", "submitted": False}
+        ),
+    )
+    stuck, queued = feed_job("stuck"), feed_job("after")
+    # A claim inside the bound is a send still in flight: everything waits on it.
+    stale_claim(stuck, "e" * 64, minutes_ago=1)
+    assert worker.tick() == {"waiting_on": {"id": stuck, "status": "SUBMITTING"}}
+    assert processed == [] and posts(calls) == []
+    # The same claim, past any send's duration, with no receipt: unknown, with its card.
+    with workflow.db() as conn:
+        old = (datetime.now(UTC) - submission.STALE_SEND_AFTER - timedelta(minutes=1)).isoformat()
+        conn.execute("UPDATE live_submission_attempts SET created_at=?", (old,))
     assert worker.tick()["status"] == "DEFERRED"
     assert processed == [queued]
+    assert workflow.get(stuck)["status"] == "UNKNOWN_SUBMISSION"
+    assert attempts() == [(stuck, "UNKNOWN_SUBMISSION")]
+    card = the_card(calls)
+    no_ids(card)
+    assert card["description"].startswith("**Submission unclear**")
+    assert "Do not click Submit again" in card["description"]
+    assert reply_block(card) == workflow.command_block(["applied", "not sent"])
+    receipt = json.loads((state / f"applications/{stuck}/receipt.json").read_text())
+    assert receipt["status"] == "UNKNOWN_SUBMISSION"
+    assert "stopped before it recorded" in receipt["reason"]
+    # Nothing is retried: the next tick neither sends nor touches it.
+    assert worker.tick() == {"idle": True}
+    assert attempts() == [(stuck, "UNKNOWN_SUBMISSION")]
+
+
+def test_a_stale_send_whose_receipt_was_written_takes_the_receipts_outcome(state, monkeypatch):
+    enabled_worker(monkeypatch)
+    monkeypatch.setattr(submission, "erga_confirm", lambda app: {"synced": False})
+    app = feed_job("receipt")
+    claimed = stale_claim(app, "f" * 64, minutes_ago=30)
+    receipt = {
+        "application_id": app,
+        "package_hash": "f" * 64,
+        "status": "APPLIED",
+        "attempted_at": claimed,
+        "confirmed_at": claimed,
+        "reason": "verified employer confirmation after one submit",
+    }
+    (state / f"applications/{app}").mkdir(parents=True, exist_ok=True)
+    (state / f"applications/{app}/receipt.json").write_text(json.dumps(receipt))
+    # An older receipt of an earlier attempt is not this attempt's.
+    other = feed_job("earlier")
+    stale_claim(other, "1" * 64, minutes_ago=30)
+    (state / f"applications/{other}").mkdir(parents=True, exist_ok=True)
+    (state / f"applications/{other}/receipt.json").write_text(
+        json.dumps({**receipt, "application_id": other, "package_hash": "0" * 64})
+    )
+    assert sorted(submission.settle_stale_sends()) == sorted([app, other])
+    assert workflow.get(app)["status"] == "APPLIED"
+    assert workflow.get(other)["status"] == "UNKNOWN_SUBMISSION"
 
 
 def test_the_same_posting_is_one_application_however_it_arrives(state, monkeypatch):

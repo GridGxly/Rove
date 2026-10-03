@@ -1619,14 +1619,18 @@ def work(settings: dict, reachable: bool = True) -> dict:
     because its thread cannot be opened; that is not the application's problem."""
     prune_excluded()
     recover_interrupted()
+    from .submission import settle_stale_sends
+
+    settle_stale_sends()  # a send whose record never came becomes unknown, not stuck
     submitted = run_approved_submissions()
     if submitted:
         write_private(state_root() / "workflow-status.json", {"submissions": submitted})
         return {"submissions": submitted}
     with workflow.db() as conn:
-        # A live or uncertain submission, or an in-flight preparation, holds everything.
+        # A send in flight or an in-flight preparation holds everything. An unclear send
+        # waits for the owner on its own card; the rest of the queue goes on.
         active = conn.execute(
-            "SELECT id,status FROM application_queue WHERE status IN ('PREPARING','SUBMITTING','UNKNOWN_SUBMISSION') ORDER BY created_at LIMIT 1"
+            "SELECT id,status FROM application_queue WHERE status IN ('PREPARING','SUBMITTING') ORDER BY created_at LIMIT 1"
         ).fetchone()
     if active:
         return {"waiting_on": dict(active)}

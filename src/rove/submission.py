@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from urllib.parse import unquote_plus, urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
@@ -24,6 +25,11 @@ from .onboarding import digest, read_approved
 from .runtime import state_root, write_private
 
 CONFIRMATION_TIMEOUT_MS = 45000
+# How long one send can take in the browser service, from its claim to its recorded
+# outcome: the confirmation wait, the page load after it, and slack for a service that
+# was busy with another request. A claim older than this with no outcome is a send whose
+# service died between the click and its record.
+STALE_SEND_AFTER = timedelta(milliseconds=CONFIRMATION_TIMEOUT_MS) + timedelta(minutes=5)
 
 # How long a generic success signal has to stand without an error appearing after it.
 GENERIC_QUIET_MS = 2500
@@ -961,6 +967,68 @@ def finish_attempt(application_id: str, status: str, evidence: dict):
             ],
             headline="Submission unclear",
         )
+
+
+def own_receipt(application_id: str, package_hash: str, claimed_at: str) -> dict | None:
+    """The receipt the browser service wrote for this attempt, if it got that far."""
+    path = state_root() / f"applications/{application_id}/receipt.json"
+    try:
+        receipt = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if (
+        isinstance(receipt, dict)
+        and receipt.get("package_hash") == package_hash
+        and str(receipt.get("attempted_at") or "") >= str(claimed_at)
+        and receipt.get("status") in {"APPLIED", "UNKNOWN_SUBMISSION", "NOT_SUBMITTED"}
+    ):
+        return receipt
+    return None
+
+
+def settle_stale_sends(now: datetime | None = None) -> list[str]:
+    """Sends whose record never came, made unknown so they stop holding the queue.
+
+    The claim commits before the click and the outcome is written after it; a browser
+    service that died in between leaves the application SUBMITTING for good. Once the
+    claim is older than any send can take, the attempt becomes an unknown submission
+    with its usual card: the owner checks the site and his mail, nothing is retried. An
+    attempt whose service did write its receipt gets the outcome the receipt holds.
+    """
+    cutoff = ((now or datetime.now(UTC)) - STALE_SEND_AFTER).isoformat()
+    with workflow.db() as conn:
+        rows = conn.execute(
+            "SELECT q.id,a.package_hash,a.owner_message_id,a.created_at "
+            "FROM application_queue q JOIN live_submission_attempts a ON a.application_id=q.id "
+            "WHERE q.status='SUBMITTING' AND a.created_at<?",
+            (cutoff,),
+        ).fetchall()
+    settled = []
+    for row in rows:
+        receipt = own_receipt(row["id"], row["package_hash"], row["created_at"])
+        if receipt is not None:
+            workflow.system_line(row["id"], f"send settled from its receipt · {receipt['status']}")
+            finish_attempt(row["id"], receipt["status"], receipt)
+        else:
+            workflow.system_line(
+                row["id"], f"send never reported back · claimed {row['created_at']} · now unknown"
+            )
+            finish_attempt(
+                row["id"],
+                "UNKNOWN_SUBMISSION",
+                {
+                    "application_id": row["id"],
+                    "package_hash": row["package_hash"],
+                    "owner_message_id": row["owner_message_id"],
+                    "status": "UNKNOWN_SUBMISSION",
+                    "attempted_at": row["created_at"],
+                    "reason": "The send was started, but the browser service stopped before "
+                    "it recorded what the site answered. Check the recruiting browser and "
+                    "your email before reconciling; do not click Submit again.",
+                },
+            )
+        settled.append(row["id"])
+    return settled
 
 
 def reconcile(application_id: str, outcome: str, owner_message_id: str):
