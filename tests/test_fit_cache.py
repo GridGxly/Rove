@@ -389,6 +389,7 @@ def test_filled_fields_are_counted_by_who_supplied_the_value(state, monkeypatch)
     }
     counted = {"fields_code": 2, "fields_model": 2, "fields_owner": 1, "fields_pending": 1}
     assert fastpath.fill_counts(app, page) == counted
+
     # A count is measurement: a database it cannot read leaves it out and raises nothing.
     # (In WAL mode a writer no longer blocks this read, so the failure is simulated.)
     def unreadable():

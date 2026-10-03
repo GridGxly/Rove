@@ -1284,6 +1284,10 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         fields = [("From", sender, True)]
         if data.get("deadline"):
             fields.append(("Deadline, as the mail states it", clip(data["deadline"], 120), True))
+        if data.get("interview_time"):
+            fields.append(
+                ("Interview time, from the invite", clip(data["interview_time"], 80), True)
+            )
         if data.get("reconciled"):
             fields.append(("Submission", "The unclear submission went through.", False))
         advice = {

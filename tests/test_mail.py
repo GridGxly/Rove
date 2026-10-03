@@ -1,6 +1,7 @@
 """Recruiting mail: a fake Zoho behind httpx, synthetic mail, no credentials anywhere."""
 
 import json
+import re
 from datetime import UTC, datetime
 from email.utils import parseaddr
 from urllib.parse import parse_qsl
@@ -13,6 +14,7 @@ from rove.onboarding import approve, digest, draft, propose
 
 ACCOUNT = "123456"
 FOLDER = "9001"
+SPAM = "9002"
 TAGS = {
     "Preparing": "t0",
     "Applied": "t1",
@@ -26,10 +28,8 @@ TAGS = {
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
-    # The private env also falls back to ~/.hermes/.env; a test never reads the real one.
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
+    # The private env also falls back to ~/.hermes/.env; conftest gives Python a throwaway
+    # home, so a test never reads the real one.
     monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path / "state"))
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -114,15 +114,17 @@ def zoho_headers(sender, checks=PASSING, server="mx.zohomail.com", from_sender="
     )
 
 
-def fake_zoho(monkeypatch, messages, contents, headers=None):
+def fake_zoho(monkeypatch, messages, contents, headers=None, spam=(), attachments=None):
     """Zoho's read endpoints and its token refresh, on a MockTransport.
 
     `headers` maps a message id to its raw header block. When it is not given, every
     message carries Zoho's own passing verdict for its sender, which is what mail that
-    really comes from the address it names looks like.
+    really comes from the address it names looks like. `spam` lists the messages in the
+    Spam folder; `attachments` maps a message id to (file name, bytes) pairs.
     """
     if headers is None:
-        headers = {m["messageId"]: zoho_headers(m["fromAddress"]) for m in messages}
+        headers = {m["messageId"]: zoho_headers(m["fromAddress"]) for m in [*messages, *spam]}
+    attachments = attachments or {}
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -155,21 +157,30 @@ def fake_zoho(monkeypatch, messages, contents, headers=None):
                     "folderType": "Inbox",
                     "path": "/Inbox",
                 },
+                {"folderId": SPAM, "folderName": "Spam", "folderType": "Spam", "path": "/Spam"},
             ]
             return httpx.Response(200, json={**ok, "data": folders})
         if request.url.path == f"/api/accounts/{ACCOUNT}/messages/view":
             params = request.url.params
-            assert params["folderId"] == FOLDER and params["sortorder"] == "false"
+            assert params["folderId"] in (FOLDER, SPAM) and params["sortorder"] == "false"
             start, limit = int(params["start"]), int(params["limit"])
-            newest_first = sorted(messages, key=lambda m: -int(m["receivedTime"]))
+            listed = messages if params["folderId"] == FOLDER else list(spam)
+            newest_first = sorted(listed, key=lambda m: -int(m["receivedTime"]))
             return httpx.Response(
                 200, json={**ok, "data": newest_first[start - 1 : start - 1 + limit]}
             )
-        prefix = f"/api/accounts/{ACCOUNT}/folders/{FOLDER}/messages/"
-        if request.url.path.startswith(prefix) and request.url.path.endswith("/header"):
-            message_id = request.url.path[len(prefix) : -len("/header")]
+        found = re.fullmatch(
+            rf"/api/accounts/{ACCOUNT}/folders/({FOLDER}|{SPAM})/messages/([\w-]+)/"
+            r"(header|content|attachmentinfo|attachments/[\w-]+)",
+            request.url.path,
+        )
+        missing = httpx.Response(404, json={"status": {"code": 404, "description": "no"}})
+        if not found:
+            return missing
+        _, message_id, part = found.groups()
+        if part == "header":
             if message_id not in headers:
-                return httpx.Response(404, json={"status": {"code": 404, "description": "no"}})
+                return missing
             return httpx.Response(
                 200,
                 json={
@@ -177,12 +188,21 @@ def fake_zoho(monkeypatch, messages, contents, headers=None):
                     "data": {"messageId": message_id, "headerContent": headers[message_id]},
                 },
             )
-        if request.url.path.startswith(prefix) and request.url.path.endswith("/content"):
-            message_id = request.url.path[len(prefix) : -len("/content")]
+        if part == "content":
+            if message_id not in contents:
+                return missing  # deleted or moved since it was listed
             return httpx.Response(
                 200, json={**ok, "data": {"messageId": message_id, "content": contents[message_id]}}
             )
-        return httpx.Response(404, json={"status": {"code": 404, "description": "no"}})
+        files = attachments.get(message_id, [])
+        if part == "attachmentinfo":
+            listed = [
+                {"attachmentId": str(n), "attachmentName": name, "attachmentSize": len(data)}
+                for n, (name, data) in enumerate(files)
+            ]
+            return httpx.Response(200, json={**ok, "data": {"attachments": listed}})
+        index = int(part.rpartition("/")[2])
+        return httpx.Response(200, content=files[index][1])
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
@@ -953,3 +973,396 @@ def test_a_rejection_can_be_taken_back_by_the_owner(state, monkeypatch):
     assert workflow.get(app)["status"] == "OA"
     # Other words in the thread are left to the command parser.
     assert inbound.owner_message(owner_reply("3003", "go"), "thread-1", settings, threads) is None
+
+
+# --- when Zoho cannot be used ---------------------------------------------------
+
+
+def failing_zoho(monkeypatch, answers: list):
+    """A Zoho whose run answers with the next word in `answers`: `auth` refuses the token,
+    `network` cannot be reached, `quota` refuses the folder list with HTTP 429, `ok`
+    works and has no new mail."""
+    current = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/v2/token":
+            current["kind"] = answers.pop(0) if answers else "ok"
+            if current["kind"] == "auth":
+                return httpx.Response(200, json={"error": "invalid_code"})
+            if current["kind"] == "network":
+                raise httpx.ConnectError("no route to host")
+            return httpx.Response(200, json={"access_token": "synthetic-access"})
+        ok = {"status": {"code": 200, "description": "success"}}
+        if request.url.path.endswith("/folders"):
+            if current["kind"] == "quota":
+                return httpx.Response(
+                    429, json={"status": {"code": 429, "description": "Too many requests"}}
+                )
+            folders = [{"folderId": FOLDER, "folderType": "Inbox", "path": "/Inbox"}]
+            return httpx.Response(200, json={**ok, "data": folders})
+        return httpx.Response(200, json={**ok, "data": []})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        mail,
+        "http",
+        lambda base_url, headers=None: httpx.Client(
+            base_url=base_url, headers=headers or {}, transport=transport
+        ),
+    )
+
+
+def system_lines(posted) -> list[str]:
+    return [p["content"] for m, path, p in posted if path == "/channels/sys/messages"]
+
+
+def test_a_refused_token_is_one_line_then_one_card_and_recovery_withdraws_it(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    failing_zoho(monkeypatch, ["auth", "auth", "auth", "auth", "ok", "quota", "ok"])
+    first = mail.tick()  # no traceback: the run ends quietly with the kind of failure
+    assert (first["error"], first["failures_in_a_row"]) == ("auth", 1)
+    refused = (
+        "`mail` · zoho refused the sign-in · auth: no access token (invalid_code) · "
+        "trying again next run"
+    )
+    assert system_lines(posted) == [refused]
+    assert mail.tick()["failures_in_a_row"] == 2
+    assert [p for p in cards(posted) if p.get("embeds")] == []
+    assert mail.tick()["failures_in_a_row"] == 3
+    (index,) = [
+        n
+        for n, (m, path, p) in enumerate(posted)
+        if m == "POST" and path == "/channels/rec/messages" and p.get("embeds")
+    ]
+    card = posted[index][2]["embeds"][0]
+    assert card["title"] == "Mail tracking stopped"
+    assert "new refresh token" in card["description"] and "private env file" in card["description"]
+    assert "synthetic" not in json.dumps(card) and "ZOHO" not in json.dumps(card)
+    assert system_lines(posted)[-1] == "`mail` · 3 failures in a row · owner card posted"
+    assert mail.status()["failures_in_a_row"] == 3
+    mail.tick()  # a fourth failure: still one card and no new line
+    assert len(system_lines(posted)) == 2
+    recovered = mail.tick()
+    assert "error" not in recovered and recovered["enabled"] is True
+    assert ("DELETE", f"/channels/rec/messages/m{index + 1}", None) in posted
+    assert system_lines(posted)[-1] == "`mail` · reading mail works again"
+    # A limit is told apart from a refused sign-in, and a short streak still ends aloud.
+    assert mail.tick()["error"] == "quota"
+    assert system_lines(posted)[-1] == (
+        "`mail` · zoho's request limit was reached · quota: HTTP 429 · trying again next run"
+    )
+    mail.tick()
+    assert system_lines(posted)[-1] == "`mail` · reading mail works again"
+    assert len([p for p in cards(posted) if p.get("embeds")]) == 1
+
+
+# --- the Spam folder ------------------------------------------------------------
+
+
+def test_mail_in_spam_can_only_ask_the_owner(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application("https://jobs.example.com/intern", "Example Labs — Software Intern")
+    spam = [
+        message(
+            "1501",
+            "Example Labs <recruiting@example.com>",
+            "Update on your application to Example Labs",
+            NOW_MS + 1,
+        )
+    ]
+    fake_zoho(monkeypatch, [], {"1501": REJECTION}, spam=spam)
+    result = mail.tick()
+    # Verified by Zoho, and still only a card: Spam is read with less trust.
+    assert (result["held"], result["applied"]) == (1, 0)
+    assert workflow.get(app)["status"] == "APPLIED" and events(app, "recruiting_mail") == []
+    (held,) = [p["content"] for p in cards(posted) if "Looks like" in p.get("content", "")]
+    assert held.startswith("→ **Looks like a rejection** · Example Labs — Software Intern")
+    assert "it landed in your spam folder" in held
+    with mail.mail_db() as conn:
+        checkpoints = dict(conn.execute("SELECT account_id,received_time FROM mail_checkpoints"))
+    assert checkpoints == {f"{ACCOUNT}:spam": NOW_MS + 1}
+    card = confirmations()["1501"]["card_message_id"]
+    said = inbound.owner_message(owner_reply("2101", "confirm", card), "rec", workflow.config(), {})
+    assert said == "Recorded." and workflow.get(app)["status"] == "REJECTED"
+
+
+# --- several applications at one company -----------------------------------------
+
+
+def test_a_mail_that_does_not_say_which_application_names_the_candidates(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    software = sent_application("https://jobs.example.com/a", "Example Labs — Software Intern")
+    platform = sent_application(
+        "https://jobs.example.com/b", "Example Labs — Data Platform Intern", thread="thread-2"
+    )
+    employer = "Example Labs <talent@example.com>"
+    messages = [
+        message("1601", employer, "Update on your application", NOW_MS + 1),
+        message("1602", employer, "Your Data Platform application", NOW_MS + 2),
+    ]
+    contents = {
+        "1601": REJECTION,
+        "1602": "<p>We would like to schedule an interview for the Data Platform role.</p>",
+    }
+    fake_zoho(monkeypatch, messages, contents)
+    result = mail.tick()
+    assert (result["held"], result["applied"]) == (1, 1)
+    # The role's own words settle the second mail; the first names no role: nothing moves.
+    assert workflow.get(platform)["status"] == "INTERVIEW"
+    assert workflow.get(software)["status"] == "APPLIED"
+    assert events(software, "recruiting_mail") == []
+    (held,) = [p["content"] for p in cards(posted) if "Looks like" in p.get("content", "")]
+    assert held.startswith("→ **Looks like a rejection** · from example.com")
+    assert "1. Example Labs — Data Platform Intern\n2. Example Labs — Software Intern" in held
+    assert "the number of the right one" in held
+    assert software not in held and platform not in held
+    card = confirmations()["1601"]["card_message_id"]
+    settings = workflow.config()
+
+    def say(message_id, content):
+        return inbound.owner_message(owner_reply(message_id, content, card), "rec", settings, {})
+
+    assert say("2201", "confirm") == "Reply with the number of the right one (1 to 2), or `ignore`."
+    assert say("2202", "3") == "Reply with the number of the right one (1 to 2), or `ignore`."
+    assert say("2203", "2") == "Recorded."
+    assert workflow.get(software)["status"] == "REJECTED"
+    assert "you confirmed it" in events(software, "lifecycle")[-1]["detail"]
+    assert confirmations()["1601"]["application_id"] == software
+    assert say("2204", "1") == "That one is already settled."
+    assert workflow.get(platform)["status"] == "INTERVIEW"
+
+
+# --- automatic replies ----------------------------------------------------------------
+
+
+def test_automatic_replies_are_dropped_before_anything_else(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    monkeypatch.setattr(
+        reasoning, "generate", lambda *a, **k: pytest.fail("no Qwen for an automatic reply")
+    )
+    app = sent_application("https://jobs.example.com/intern", "Example Labs — Software Intern")
+    person = "Sam Recruiter <sam@example.com>"
+    messages = [
+        message("1701", person, "Automatic reply: Example Labs application", NOW_MS + 1),
+        message("1702", person, "Re: Example Labs interview", NOW_MS + 2),
+        message("1703", person, "Re: Example Labs", NOW_MS + 3),
+        message(
+            "1704", "no-reply@example.com", "Update on your Example Labs application", NOW_MS + 4
+        ),
+    ]
+    contents = {
+        "1701": "<p>I am out of the office until Monday. Interview questions go to my team.</p>",
+        "1702": "<p>I am away from my desk. Interview scheduling resumes next week.</p>",
+        "1703": "<p>I am out of the office this week; we will review your application on my return.</p>",
+        "1704": REJECTION,
+    }
+    headers = {m["messageId"]: zoho_headers(m["fromAddress"]) for m in messages}
+    headers["1702"] = zoho_headers(person, from_sender="Auto-Submitted: auto-replied\r\n")
+    headers["1703"] = zoho_headers(person, from_sender="Precedence: bulk\r\n")
+    # Applicant systems send real rejections as bulk, automatically generated mail.
+    headers["1704"] = zoho_headers(
+        "no-reply@example.com",
+        from_sender="Precedence: bulk\r\nAuto-Submitted: auto-generated\r\n",
+    )
+    fake_zoho(monkeypatch, messages, contents, headers)
+    result = mail.tick()
+    assert (result["seen"], result["ignored"], result["applied"], result["held"]) == (4, 3, 1, 0)
+    assert workflow.get(app)["status"] == "REJECTED"
+    assert [e["message_id"] for e in events(app, "recruiting_mail")] == ["1704"]
+    assert not [p for p in cards(posted) if "Looks like" in p.get("content", "")]
+    assert mail.auto_reply("Out of Office: back Monday", "")
+    assert not mail.auto_reply("Your application", "Precedence: bulk\r\n\r\n", REJECTION)
+
+
+# --- a brand the posting does not use --------------------------------------------------
+
+
+def test_an_ats_mail_under_another_brand_matches_by_job_link_and_teaches_the_brand(
+    state, monkeypatch
+):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    monkeypatch.setattr(reasoning, "generate", lambda *a, **k: pytest.fail("no Qwen"))
+    assert mail.brand_name("Acme AI Recruiting") == "acme ai"
+    assert mail.brand_name("Greenhouse", "Thank you for applying to Acme AI!") == "acme ai"
+    assert mail.brand_name("no-reply") == "" and mail.brand_name("Talent Team") == ""
+    assert mail.job_ids(
+        "https://boards.greenhouse.io/acme/jobs/4000123?gh_src=x",
+        "https://acme.wd5.myworkdayjobs.com/en-US/careers/job/Austin-TX/Software-Intern_R12345",
+        "https://jobs.lever.co/acme/0b1e2c3d-1111-2222-3333-444455556666/apply",
+    ) == {"4000123", "r12345", "0b1e2c3d-1111-2222-3333-444455556666"}
+    app = sent_application(
+        "https://boards.greenhouse.io/acmerobotics/jobs/4000123", "Acme Robotics — Software Intern"
+    )
+    sender = "Acme AI <no-reply@us.greenhouse-mail.io>"
+    messages = [
+        message("1801", sender, "Thank you for applying to Acme AI", NOW_MS + 1),
+        message("1802", sender, "Your application to Acme AI", NOW_MS + 2),
+    ]
+    link = "https://boards.greenhouse.io/acmerobotics/jobs/4000123?gh_src=mail"
+    contents = {
+        "1801": f'<p>We received your application.</p><p><a href="{link}">View the job</a></p>',
+        "1802": REJECTION,
+    }
+    fake_zoho(monkeypatch, messages, contents)
+    result = mail.tick()
+    assert result["applied"] == 2
+    # The first names the posting's own link; the second only the brand learned from it.
+    assert [e["label"] for e in events(app, "recruiting_mail")] == ["acknowledgement", "rejection"]
+    assert workflow.get(app)["status"] == "REJECTED"
+    assert "`" + app + "` · mail brand learned · acme ai · job link" in system_lines(posted)
+    # The brand names the company: with a second application there, it picks neither.
+    other = sent_application(
+        "https://boards.greenhouse.io/acmerobotics/jobs/4000456",
+        "Acme Robotics — Firmware Intern",
+        thread="thread-2",
+    )
+    fake_zoho(
+        monkeypatch,
+        [message("1803", sender, "Interview with Acme AI", NOW_MS + 3)],
+        {"1803": "<p>We would like to schedule an interview.</p>"},
+    )
+    assert mail.tick()["held"] == 1
+    assert workflow.get(other)["status"] == "APPLIED"
+    (held,) = [p["content"] for p in cards(posted) if "Looks like an interview" in p["content"]]
+    assert "Acme Robotics — Firmware Intern" in held and "Acme Robotics — Software Intern" in held
+
+
+# --- calendar invites -----------------------------------------------------------------
+
+INVITE = (
+    "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VTIMEZONE\r\nTZID:America/New_York\r\n"
+    "END:VTIMEZONE\r\nBEGIN:VEVENT\r\nDTSTART;TZID=America/New_York:20261105T140000\r\n"
+    "DTEND;TZID=America/New_York:20261105T143000\r\nSUMMARY:Interview with Example Labs\r\n"
+    "END:VEVENT\r\nEND:VCALENDAR\r\n"
+)
+
+
+def test_an_interview_invite_shows_its_time_in_the_owners_zone(state, monkeypatch):
+    from zoneinfo import ZoneInfo
+
+    configure(state)
+    stored = json.loads((state / "config/mail.json").read_text())
+    (state / "config/mail.json").write_text(
+        json.dumps({**stored, "time_zone": "America/Los_Angeles"})
+    )
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application("https://jobs.example.com/intern", "Example Labs — Software Intern")
+    fake_zoho(
+        monkeypatch,
+        [message("1901", "Example Labs <recruiting@example.com>", "Interview invite", NOW_MS + 1)],
+        {"1901": "<p>Your interview invite is attached.</p>"},
+        attachments={"1901": [("logo.png", b"\x89PNG"), ("invite.ics", INVITE.encode())]},
+    )
+    assert mail.tick()["events"][0]["to_state"] == "INTERVIEW"
+    (card,) = events(app, "recruiting_mail")
+    assert card["interview_time"] == "Thu 5 Nov, 11:00 AM PST"
+    (embed,) = workflow.event_embeds(app, "recruiting_mail", card)
+    assert ("Interview time, from the invite", "Thu 5 Nov, 11:00 AM PST") in [
+        (f["name"], f["value"]) for f in embed["fields"]
+    ]
+    (line,) = [
+        p["content"] for p in cards(posted) if p.get("content", "").startswith("→ **Interview")
+    ]
+    assert "invite for Thu 5 Nov, 11:00 AM PST" in line
+    # The parser on its own: a block in the body, Outlook's zone names, all-day, cancelled.
+    eastern = ZoneInfo("America/New_York")
+    block = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20261020T170000Z\nEND:VEVENT\nEND:VCALENDAR"
+    assert mail.when_words(mail.ics_start(block), eastern) == "Tue 20 Oct, 1:00 PM EDT"
+    outlook = "BEGIN:VEVENT\nDTSTART;TZID=Eastern Standard Time:20261020T090000\nEND:VEVENT"
+    assert mail.when_words(mail.ics_start(outlook), eastern) == "Tue 20 Oct, 9:00 AM EDT"
+    folded = "BEGIN:VEVENT\nDTSTART;TZID=America/New_\n York:20261020T090000\nEND:VEVENT"
+    assert mail.ics_start(folded) == mail.ics_start(outlook)
+    floating = "BEGIN:VEVENT\nDTSTART:20261020T090000\nEND:VEVENT"
+    assert mail.when_words(mail.ics_start(floating, eastern), eastern) == "Tue 20 Oct, 9:00 AM EDT"
+    all_day = mail.ics_start("BEGIN:VEVENT\nDTSTART;VALUE=DATE:20261020\nEND:VEVENT")
+    assert mail.when_words(all_day) == "Tue 20 Oct (all day)"
+    assert (
+        mail.ics_start("METHOD:CANCEL\nBEGIN:VEVENT\nDTSTART:20261020T170000Z\nEND:VEVENT") is None
+    )
+    assert (
+        mail.ics_start("BEGIN:VEVENT\nDTSTART;TZID=Mars/Olympus:20261020T090000\nEND:VEVENT")
+        is None
+    )
+    assert mail.ics_start("Let's talk on Tuesday at 2pm") is None
+
+
+# --- verification codes -------------------------------------------------------------
+
+
+def test_codes_are_read_only_next_to_code_words_and_never_from_links():
+    find = mail.find_code
+    assert find("Your verification code for 2026 internships is 482913") == "482913"
+    assert find("Copy this security code into your application:\nQ8rVfX2c\nIt expires soon.") == (
+        "Q8rVfX2c"
+    )
+    assert find("Use code 123 456 to sign in") == "123456"
+    assert find("Your one-time passcode: 9041") == "9041"
+    assert find("Your code expires in 10 minutes. Please apply again.") is None
+    assert find("Click https://jobs.example.com/verify/123456 to confirm your code") is None
+    assert find("We received your application 4000123.") is None
+    assert find("Your code is 123456789") is None  # longer than the digits asked for
+    assert find("Your code is 123456789", (4, 10)) == "123456789"
+    assert mail.redact_codes("Your security code is 482913.") == "Your security code is [code]."
+
+
+def test_a_verification_code_comes_only_from_a_verified_sender_after_the_moment(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    since = datetime.fromtimestamp(NOW_MS / 1000, UTC)
+    board = "Example Labs <no-reply@us.greenhouse-mail.io>"
+    messages = [
+        message("2001", board, "Your security code", NOW_MS - 60_000),  # before the moment
+        message("2002", board, "Your security code", NOW_MS + 1000),
+        message("2003", board, "Your security code", NOW_MS + 2000),  # Zoho says: not them
+        message("2004", "Codes <codes@evil.example>", "Your security code", NOW_MS + 3000),
+    ]
+    contents = {
+        "2001": "<p>Your security code is 111111</p>",
+        "2002": (
+            "<p>Copy and paste this code into the security code field on your application:</p>"
+            '<p>Q8rVfX2c</p><p><a href="https://example.com/verify?code=999999">Or use this</a></p>'
+        ),
+        "2003": "<p>Your security code is 222222</p>",
+        "2004": "<p>Your security code is 333333</p>",
+    }
+    headers = {m["messageId"]: zoho_headers(m["fromAddress"]) for m in messages}
+    headers["2003"] = zoho_headers(board, checks="dmarc=fail header.from=<{address}>")
+    calls = fake_zoho(monkeypatch, messages, contents, headers)
+    assert mail.verification_code(["greenhouse-mail.io"], since) == "Q8rVfX2c"
+    assert mail.verification_code(["greenhouse-mail.io"], NOW_MS + 1500) is None
+    assert mail.verification_code(["example.com"], since) is None  # not the sender asked for
+    with pytest.raises(ValueError, match="own mail domains"):
+        mail.verification_code(["gmail.com"], since)
+    # Nothing is posted, written or recorded, and no link is ever opened.
+    assert posted == [] and not (state / "mail/messages").exists()
+    with mail.mail_db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM mail_messages").fetchone()[0] == 0
+    assert all(host in ("accounts.zoho.com", "mail.zoho.com") for _, host, _ in calls)
+    assert not any("/folders/" + SPAM in path for _, _, path in calls)
+
+
+def test_a_message_zoho_no_longer_has_is_passed_over_not_retried_forever(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application("https://jobs.example.com/intern", "Example Labs — Software Intern")
+    employer = "Example Labs <recruiting@example.com>"
+    messages = [
+        message("2301", employer, "Your application to Example Labs", NOW_MS + 1),
+        message("2302", employer, "Your application to Example Labs", NOW_MS + 2),
+    ]
+    fake_zoho(monkeypatch, messages, {"2302": REJECTION})  # 2301 was deleted after listing
+    result = mail.tick()
+    assert "error" not in result and (result["ignored"], result["applied"]) == (1, 1)
+    assert workflow.get(app)["status"] == "REJECTED"
+    assert any("message 2301 could not be read" in line for line in system_lines(posted))

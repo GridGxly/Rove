@@ -168,19 +168,20 @@ def check(
     card_line: str = "",
     back_line: str = "",
     log_name: str = "health",
+    quiet_until_card: bool = False,
 ) -> int:
     """One run of a recurring check: count the streak, say it once in the system log,
     raise the owner's card after `after` failures in a row, withdraw it on recovery.
 
     `first_line` goes to the system log on the first failure of a streak, `card_line`
-    when the card is raised, `back_line` when a streak that was said out loud ends.
-    Callers pass the same words on every run. Returns the current streak (0 when the
+    when the card is raised, `back_line` when the streak ends: always, or with
+    `quiet_until_card` only when a card was up. Returns the current streak (0 when the
     check passed).
     """
     if ok:
         ended = recovered(key)
         had_card = clear(key)
-        if back_line and (had_card or (ended and first_line)):
+        if back_line and (had_card or (ended and not quiet_until_card)):
             workflow.system_line(log_name, back_line)
         flush()
         return 0

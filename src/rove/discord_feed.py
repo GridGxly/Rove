@@ -243,6 +243,7 @@ def checked_sync() -> tuple[dict | None, Exception | None]:
         True,
         back_line="feed · import works again · card withdrawn",
         log_name="intake",
+        quiet_until_card=True,
     )
     return result, None
 

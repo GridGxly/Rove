@@ -12,19 +12,24 @@ Anyone can write a From line, so a mail changes the record by itself only when i
 sender is the employer's or an applicant system's domain and Zoho's own
 Authentication-Results header says the domain really sent it (DMARC, or a DKIM
 signature aligned with the From domain). Anything else that looks like a step is a
-card in the recruiting channel that the owner confirms with a word or ignores.
+card in the recruiting channel that the owner confirms with a word or ignores. So is
+anything from the Spam folder, however well it is signed, and a mail that could be about
+several applications at one company: that card names them and the owner picks by number.
+Automatic replies are dropped before any of this.
 """
 
 import asyncio
 import html
 import json
 import re
-from datetime import UTC, datetime
+import time
+from datetime import UTC, date, datetime
 from email.parser import HeaderParser
 from email.utils import getaddresses
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -89,6 +94,8 @@ def mail_db():
         message_id TEXT PRIMARY KEY, application_id TEXT NOT NULL, label TEXT NOT NULL,
         classifier TEXT NOT NULL, deadline TEXT, reason TEXT NOT NULL, card_message_id TEXT,
         status TEXT NOT NULL, created_at TEXT NOT NULL, owner_message_id TEXT);
+      CREATE TABLE IF NOT EXISTS mail_candidates(
+        message_id TEXT PRIMARY KEY, candidates TEXT NOT NULL);
     """)
     return conn
 
@@ -100,9 +107,39 @@ def http(base_url: str, headers: dict | None = None) -> httpx.Client:
     return httpx.Client(base_url=base_url, headers=headers or {}, timeout=30, trust_env=False)
 
 
+class ZohoFailure(Exception):
+    """Zoho could not be used this run. `kind` is one of:
+
+    auth     the refresh token or the access token was refused (revoked, expired, wrong)
+    quota    Zoho's request or mailbox limit was reached
+    network  Zoho could not be reached
+    refused  any other refusal (a missing folder, a message Zoho no longer has)
+
+    The text never carries a token or a response body that could hold one.
+    """
+
+    def __init__(self, kind: str, detail: str = ""):
+        self.kind = kind
+        super().__init__(f"{kind}: {detail}" if detail else kind)
+
+
+LIMIT_WORDS = re.compile(r"limit|quota|exceed|throttl|too many", re.IGNORECASE)
+
+
+def refusal(status: int, code: str = "", description: str = "") -> ZohoFailure:
+    """The kind of a Zoho refusal from its HTTP status and its own error words."""
+    words = f"{code} {description}"
+    if status == 429 or LIMIT_WORDS.search(words):
+        return ZohoFailure("quota", f"HTTP {status}")
+    if status == 401 or re.search(r"oauth|token|unauthori", words, re.IGNORECASE):
+        return ZohoFailure("auth", f"HTTP {status}")
+    return ZohoFailure("refused", f"HTTP {status} {str(code)[:60]}".strip())
+
+
 class Zoho:
-    """The read-only slice of the Zoho Mail API the tracker needs: one folder, a page of
-    message headers, one message body. The access token lives in this object only."""
+    """The read-only slice of the Zoho Mail API the tracker needs: the folder list, a page
+    of message headers, one message body, its header block and its calendar attachment.
+    The access token lives in this object only."""
 
     def __init__(self, creds: dict):
         self.creds = creds
@@ -116,50 +153,117 @@ class Zoho:
             self.client.close()
 
     def connect(self):
-        with http(self.creds["accounts_base"]) as accounts:
-            response = accounts.post(
-                "/oauth/v2/token",
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": self.creds["client_id"],
-                    "client_secret": self.creds["client_secret"],
-                    "refresh_token": self.creds["refresh_token"],
-                },
-            )
-        response.raise_for_status()
-        token = response.json().get("access_token")
-        if not token:
-            # The body names the problem (an invalid client or refresh token); it is not
-            # printed because the same response can carry an issued token.
-            raise ValueError(
-                "Zoho issued no access token; check the Zoho values in the private env"
-            )
+        try:
+            with http(self.creds["accounts_base"]) as accounts:
+                response = accounts.post(
+                    "/oauth/v2/token",
+                    data={
+                        "grant_type": "refresh_token",
+                        "client_id": self.creds["client_id"],
+                        "client_secret": self.creds["client_secret"],
+                        "refresh_token": self.creds["refresh_token"],
+                    },
+                )
+        except httpx.TransportError as error:
+            raise ZohoFailure("network", type(error).__name__) from None
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        token = body.get("access_token") if isinstance(body, dict) else None
+        if response.status_code >= 400 or not token:
+            # The body names the problem (an invalid client or refresh token); only its
+            # error word is read, because the same response can carry an issued token.
+            error = str(body.get("error", "")) if isinstance(body, dict) else ""
+            described = str(body.get("error_description", "")) if isinstance(body, dict) else ""
+            if response.status_code == 429 or LIMIT_WORDS.search(described):
+                raise ZohoFailure("quota", "token refresh limited")
+            raise ZohoFailure("auth", f"no access token ({error[:40] or response.status_code})")
         self.client = http(
             self.creds["api_base"],
             {"Authorization": "Zoho-oauthtoken " + token, "Accept": "application/json"},
         )
 
-    def get(self, path: str, params: dict | None = None):
+    def fetch(self, path: str, params: dict | None = None) -> httpx.Response:
         if self.client is None:
             self.connect()
-        response = self.client.get(path, params=params)
-        response.raise_for_status()
-        payload = response.json()
+        try:
+            response = self.client.get(path, params=params)
+        except httpx.TransportError as error:
+            raise ZohoFailure("network", type(error).__name__) from None
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            data = payload.get("data") if isinstance(payload, dict) else None
+            status = payload.get("status") if isinstance(payload, dict) else None
+            raise refusal(
+                response.status_code,
+                str((data or {}).get("errorCode", "")) if isinstance(data, dict) else "",
+                str((status or {}).get("description", "")) if isinstance(status, dict) else "",
+            )
+        return response
+
+    def get(self, path: str, params: dict | None = None):
+        payload = self.fetch(path, params).json()
         status = payload.get("status") or {}
         if status.get("code") not in (None, 200):
-            raise ValueError(
-                "Zoho refused the request: " + str(status.get("description", ""))[:120]
+            data = payload.get("data")
+            try:
+                code = int(status.get("code"))
+            except (TypeError, ValueError):
+                code = 0
+            raise refusal(
+                code,
+                str(data.get("errorCode", "")) if isinstance(data, dict) else "",
+                str(status.get("description", ""))[:120],
             )
         return payload.get("data")
 
-    def inbox_folder(self) -> str:
-        folders = self.get(f"/api/accounts/{self.creds['account_id']}/folders") or []
+    def folders(self) -> list[dict]:
+        return self.get(f"/api/accounts/{self.creds['account_id']}/folders") or []
+
+    def inbox_folder(self, folders: list | None = None) -> str:
+        folders = self.folders() if folders is None else folders
+        # Custom folders also report the Inbox type, so the Inbox's own path comes first.
         inbox = next(
-            (f for f in folders if str(f.get("folderType", "")).lower() == "inbox"), None
-        ) or next((f for f in folders if str(f.get("path", "")).lower() == "/inbox"), None)
+            (f for f in folders if str(f.get("path", "")).lower() == "/inbox"), None
+        ) or next((f for f in folders if str(f.get("folderType", "")).lower() == "inbox"), None)
         if not inbox:
-            raise ValueError("The Zoho account has no Inbox folder")
+            raise ZohoFailure("refused", "the account has no Inbox folder")
         return str(inbox["folderId"])
+
+    def spam_folder(self, folders: list) -> str | None:
+        """The Spam (or Junk) folder, read with less trust than the Inbox; None if absent."""
+        spam = next(
+            (
+                f
+                for f in folders
+                if str(f.get("folderType", "")).lower() in ("spam", "junk")
+                or str(f.get("path", "")).lower() in ("/spam", "/junk")
+            ),
+            None,
+        )
+        return str(spam["folderId"]) if spam else None
+
+    def attachments(self, folder_id: str, message_id: str) -> list[dict]:
+        data = (
+            self.get(
+                f"/api/accounts/{self.creds['account_id']}/folders/{folder_id}"
+                f"/messages/{message_id}/attachmentinfo"
+            )
+            or {}
+        )
+        found = data.get("attachments") if isinstance(data, dict) else None
+        return [a for a in found or [] if isinstance(a, dict)]
+
+    def attachment(self, folder_id: str, message_id: str, attachment_id: str) -> bytes:
+        response = self.fetch(
+            f"/api/accounts/{self.creds['account_id']}/folders/{folder_id}"
+            f"/messages/{message_id}/attachments/{attachment_id}"
+        )
+        return response.content[:INVITE_LIMIT]
 
     def messages(self, folder_id: str, start: int, limit: int) -> list[dict]:
         return (
@@ -467,31 +571,320 @@ def role_hits(item: dict, body: str) -> int:
     return sum(1 for w in words if f" {w} " in f" {body} ")
 
 
-def match_application(apps: list[dict], sender: str, subject: str, text: str):
-    """The application a mail concerns and how surely: the employer's own domain, or a
-    known recruiting sender naming the company, is strong; the company named only in the
-    subject is weak and counts only when the rules recognise the mail."""
+HREF = re.compile(r"""href\s*=\s*["']([^"'<>]{1,2000})["']""", re.IGNORECASE)
+BARE_LINK = re.compile(r"https?://[^\s<>\"')\]]{1,2000}", re.IGNORECASE)
+# A job posting's own id in its link: a Lever or Ashby UUID, a long Greenhouse or
+# SmartRecruiters number, or a Workday-style requisition (R12345, JR-0012345).
+JOB_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|(?<![a-z0-9])(?:[a-z]{1,3}[-_]?\d{4,}|\d{6,})(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def mail_links(content) -> list[str]:
+    """Every web link a mail body names, read as text and never fetched."""
+    raw = html.unescape(str(content or ""))
+    found = [*HREF.findall(raw), *BARE_LINK.findall(raw)]
+    return list(dict.fromkeys(link for link in found if link.lower().startswith("http")))
+
+
+def job_ids(*urls) -> set[str]:
+    """The posting ids in an application's links (path segments and query values)."""
+    ids = set()
+    for url in urls:
+        parts = urlsplit(str(url or ""))
+        haystack = unquote(parts.path) + " " + " ".join(v for _, v in parse_qsl(parts.query))
+        ids.update(match[0].lower() for match in JOB_ID.finditer(haystack))
+    return ids
+
+
+def link_hit(item: dict, links, text: str) -> bool:
+    """Whether the mail names this application's posting: its id in a link or in the
+    text, or a link to the posting page itself. The ATS sender's own redirect links are
+    read as text; nothing is opened."""
+    haystack = (" ".join(unquote(link) for link in links) + " " + str(text or "")).lower()
+    for job_id in job_ids(item.get("url"), item.get("source_url")):
+        if re.search(rf"(?<![0-9a-z]){re.escape(job_id)}(?![0-9a-z])", haystack):
+            return True
+    targets = set()
+    for url in (item.get("url"), item.get("source_url")):
+        parts = urlsplit(str(url or ""))
+        if parts.hostname and parts.path.strip("/"):
+            targets.add((parts.hostname.lower(), parts.path.rstrip("/").lower()))
+    for link in links:
+        parts = urlsplit(link)
+        host, path = (parts.hostname or "").lower(), parts.path.rstrip("/").lower()
+        if any(host == h and (path == p or path.startswith(p + "/")) for h, p in targets):
+            return True
+    return False
+
+
+def match_application(
+    apps: list[dict], sender: str, subject: str, text: str, links=(), aliases=None
+) -> dict | None:
+    """Which application a mail concerns, and how surely.
+
+    Strong: the employer's own domain, or a known recruiting sender that names the
+    company (or a brand learned for it) or the posting's id or link. Weak: the company
+    named in the subject, or the posting's id or link, from anyone else; a weak match
+    counts only when the rules recognise the mail. The strongest kind of match wins,
+    then the posting's id or link, then the role's own words. Applications still level
+    after that are all returned as candidates: the mail does not say which one it means.
+    """
     domain = registrable(sender)
     body = normalize(subject + " " + text)
     head = normalize(subject)
-    best = None
+    # A brand learned on one application names its company: every application there
+    # answers to it, so a mail under that brand never picks one of them by itself.
+    brands: dict[str, set[str]] = {}
+    for item in apps:
+        company = company_name(item) or item["id"]
+        brands.setdefault(company, set()).update((aliases or {}).get(item["id"], ()))
+    scored = []
     for item in apps:
         employer = employer_domain(item["url"])
-        name = company_name(item)
-        in_subject = bool(name) and f" {name} " in f" {head} "
-        named = in_subject or (bool(name) and f" {name} " in f" {body} ")
+        known = sorted(brands.get(company_name(item) or item["id"], ()))
+        names = [n for n in (company_name(item), *known) if n]
+        in_subject = any(f" {n} " in f" {head} " for n in names)
+        named = in_subject or any(f" {n} " in f" {body} " for n in names)
+        hit = link_hit(item, links, text)
         if employer and domain == employer:
-            strength, score = "strong", 3
-        elif domain in ATS_DOMAINS and named:
-            strength, score = "strong", 2
-        elif in_subject:
-            strength, score = "weak", 1
+            base, strength = 3, "strong"
+        elif domain in ATS_DOMAINS and (named or hit):
+            base, strength = 2, "strong"
+        elif in_subject or hit:
+            base, strength = 1, "weak"
         else:
             continue
-        key = (score + role_hits(item, body), item["updated_at"])
-        if best is None or key > best[0]:
-            best = (key, item, strength)
-    return (best[1], best[2]) if best else None
+        scored.append(((base, hit, role_hits(item, body)), item, strength))
+    if not scored:
+        return None
+    top = max(key for key, _, _ in scored)
+    level = sorted(
+        ((item, strength) for key, item, strength in scored if key == top),
+        key=lambda pair: pair[0]["updated_at"],
+        reverse=True,
+    )
+    return {
+        "candidates": [item for item, _ in level],
+        "strength": level[0][1],
+        "id_hit": top[1],
+    }
+
+
+# --- brands an ATS mail uses for a company ------------------------------------
+
+# Words a sender adds to the company's name in its display name.
+SENDER_WORDS = re.compile(
+    r"(?:[\s,|·:-]+(?:university|campus|early careers?|emerging talent|technical|global)?\s*"
+    r"(?:recruiting|recruitment|recruiters?|talent(?: acquisition)?(?: team)?|careers?"
+    r"|hiring(?: team)?|team|hr|people(?: team| ops)?|jobs|no[- ]?reply|notifications?))+\s*$",
+    re.IGNORECASE,
+)
+VENDOR_NAMES = {
+    "greenhouse", "lever", "ashby", "workday", "smartrecruiters", "icims", "jobvite",
+    "bamboohr", "workable", "taleo", "successfactors", "breezy", "rippling", "dover", "gem",
+    "recruitee", "jazzhr", "eightfold", "phenom", "avature", "hackerrank", "codesignal",
+    "codility", "linkedin", "indeed", "calendly", "goodtime", "modernloop", "paylocity",
+    "no reply", "noreply", "recruiting", "careers", "talent", "team", "notifications", "hr",
+}  # fmt: skip
+SUBJECT_BRAND = re.compile(
+    r"\b(?:applying|application|applied|interest)\s+(?:to|at|in|with)\s+"
+    r"([A-Z][\w&.'’ -]{1,40}?)(?=\s*(?:[!.,:;|(]|-\s|$))"
+)
+MAX_ALIASES = 5
+
+
+def brand_name(display, subject: str = "") -> str:
+    """The company name an ATS mail goes by: its sender's display name without the
+    recruiting words, else the name after "applying to" in the subject; "" if neither
+    names a company."""
+    name = html.unescape(str(display or "")).strip().strip("\"'")
+    name = re.sub(r"\s+(?:via|through|on behalf of)\s+.*$", "", name, flags=re.IGNORECASE)
+    for candidate in (SENDER_WORDS.sub("", name), *(m for m in SUBJECT_BRAND.findall(subject))):
+        words = normalize(COMPANY_SUFFIXES.sub("", candidate.strip()))
+        if len(words) >= 3 and "@" not in candidate and words not in VENDOR_NAMES:
+            return words
+    return ""
+
+
+def aliases_db(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS mail_aliases(application_id TEXT NOT NULL, alias TEXT NOT "
+        "NULL, learned_from TEXT NOT NULL, created_at TEXT NOT NULL, "
+        "PRIMARY KEY(application_id,alias))"
+    )
+    return conn
+
+
+def aliases_for(apps: list[dict]) -> dict[str, list[str]]:
+    with aliases_db(workflow.db()) as conn:
+        rows = conn.execute("SELECT application_id,alias FROM mail_aliases").fetchall()
+    wanted = {item["id"] for item in apps}
+    found: dict[str, list[str]] = {}
+    for row in rows:
+        if row["application_id"] in wanted:
+            found.setdefault(row["application_id"], []).append(row["alias"])
+    return found
+
+
+def learn_alias(item: dict, mail: dict, learned_from: str) -> str:
+    """Keep the brand a confirmed mail used for this application's company, so the next
+    mail under that brand matches without a job link. Returns the brand, or ""."""
+    brand = brand_name(mail.get("sender_name"), mail.get("subject", ""))
+    if not brand or brand == company_name(item):
+        return ""
+    with aliases_db(workflow.db()) as conn:
+        known = conn.execute(
+            "SELECT COUNT(*) FROM mail_aliases WHERE application_id=?", (item["id"],)
+        ).fetchone()[0]
+        if known >= MAX_ALIASES:
+            return ""
+        conn.execute(
+            "INSERT OR IGNORE INTO mail_aliases VALUES(?,?,?,?)",
+            (item["id"], brand, learned_from, workflow.now()),
+        )
+    return brand
+
+
+# --- auto-replies --------------------------------------------------------------
+
+AUTO_SUBJECT = re.compile(
+    r"^\s*(?:automatic reply|auto[- ]?reply|autoreply|auto[- ]?response|out of (?:the )?office"
+    r"|ooo\b|away from (?:the |my )?office|on (?:vacation|leave|holiday)\b)",
+    re.IGNORECASE,
+)
+AWAY_TEXT = re.compile(
+    r"\bout of (?:the )?office\b|\bon (?:vacation|leave|holiday|pto)\b|\baway from (?:the|my) "
+    r"(?:office|desk)\b|\blimited access to (?:e-?mail|my inbox)\b",
+    re.IGNORECASE,
+)
+
+
+def auto_reply(subject: str, raw_headers, text: str = "") -> bool:
+    """An automatic reply (out of office, vacation), never a recruiting step.
+
+    `Auto-Submitted: auto-replied`, `Precedence: auto-reply` and the X-Autoreply family
+    say so outright. `Precedence: bulk` alone does not: applicant systems send real
+    rejections as bulk mail, so it counts only next to out-of-office wording.
+    """
+    if AUTO_SUBJECT.search(str(subject or "")):
+        return True
+    headers = header_block(raw_headers)
+    values = {}
+    for name, value in headers:
+        values.setdefault(name, value.lower().strip())
+    if values.get("auto-submitted", "").startswith("auto-replied"):
+        return True
+    if values.get("precedence") == "auto-reply" or {"x-autoreply", "x-autorespond"} & set(values):
+        return True
+    away = AWAY_TEXT.search(str(text or "")[:600])
+    return values.get("precedence") in ("bulk", "junk", "list") and bool(away)
+
+
+# --- calendar invites ------------------------------------------------------------
+
+INVITE_LIMIT = 256 * 1024
+# The time zones Outlook names in invites by their Windows names.
+WINDOWS_ZONES = {
+    "eastern standard time": "America/New_York",
+    "central standard time": "America/Chicago",
+    "mountain standard time": "America/Denver",
+    "us mountain standard time": "America/Phoenix",
+    "pacific standard time": "America/Los_Angeles",
+    "alaskan standard time": "America/Anchorage",
+    "hawaiian standard time": "Pacific/Honolulu",
+    "gmt standard time": "Europe/London",
+    "utc": "UTC",
+    "coordinated universal time": "UTC",
+}
+
+
+def ics_start(text, zone: ZoneInfo | None = None) -> datetime | date | None:
+    """The first event's start in a calendar block (an .ics file or a VCALENDAR block in
+    the body): an aware datetime, or a date for an all-day event. A floating time (no
+    zone named) is the owner's own: `zone`, or this Mac's zone when None. None for a
+    cancelled invite, an unreadable date, or a time zone that cannot be resolved."""
+    unfolded = re.sub(r"\r?\n[ \t]", "", str(text or ""))
+    if "BEGIN:VEVENT" not in unfolded.upper():
+        return None
+    flags = re.MULTILINE | re.IGNORECASE
+    if re.search(r"^(?:METHOD:CANCEL|STATUS:CANCELLED)\s*$", unfolded, flags):
+        return None
+    event = re.split(r"BEGIN:VEVENT", unfolded, maxsplit=1, flags=re.IGNORECASE)[1]
+    found = re.search(r"^DTSTART((?:;[^:\r\n]*)?):(\d{8})(?:T(\d{6})(Z?))?\s*$", event, flags)
+    if not found:
+        return None
+    params, day, clock, utc = found.groups()
+    parts = [int(day[:4]), int(day[4:6]), int(day[6:8])]
+    if clock:
+        parts += [int(clock[:2]), int(clock[2:4]), int(clock[4:6])]
+    try:
+        if not clock:
+            return date(*parts)
+        zone_name = re.search(r"TZID=\"?([^;\":]+)", params or "", re.IGNORECASE)
+        if utc:
+            where = UTC
+        elif zone_name:
+            name = zone_name[1].strip()
+            where = ZoneInfo(WINDOWS_ZONES.get(name.lower(), name))
+        elif zone is not None:
+            where = zone
+        else:
+            # Floating, and no zone configured: this Mac's own rules for that day.
+            stamp = time.mktime((*parts, 0, 0, -1))
+            return datetime.fromtimestamp(stamp, UTC)
+        return datetime(*parts, tzinfo=where)
+    except (ZoneInfoNotFoundError, ValueError, OverflowError):
+        return None
+
+
+def owner_zone(settings: dict) -> ZoneInfo | None:
+    """The owner's time zone from `time_zone` in config/mail.json; None means this Mac's
+    own zone, with its daylight-saving rules for the day of the interview."""
+    name = settings.get("time_zone")
+    try:
+        return ZoneInfo(str(name)) if name else None
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def when_words(start, zone: ZoneInfo | None = None) -> str:
+    """An invite's start in the owner's time zone, as a person writes it."""
+    if not isinstance(start, datetime):
+        return f"{start:%a} {start.day} {start:%b} (all day)"
+    local = start.astimezone(zone)
+    hour = local.hour % 12 or 12
+    return (
+        f"{local:%a} {local.day} {local:%b}, {hour}:{local:%M} "
+        f"{'AM' if local.hour < 12 else 'PM'} {local.tzname()}"
+    )
+
+
+def invite_time(zoho, folder_id: str, item: dict, text: str, settings: dict) -> str | None:
+    """When an interview invite says the interview starts, from a calendar block in the
+    body or an .ics attachment; None when the mail carries no readable invite."""
+    message_id = str(item.get("messageId") or "")
+    zone = owner_zone(settings)
+    start = ics_start(text, zone)
+    if start is None and str(item.get("hasAttachment", "1")).lower() not in ("0", "false"):
+        try:
+            for attachment in zoho.attachments(folder_id, message_id):
+                name = str(attachment.get("attachmentName") or "").lower()
+                size = int(attachment.get("attachmentSize") or 0)
+                if not name.endswith((".ics", ".vcs")) or size > INVITE_LIMIT:
+                    continue
+                data = zoho.attachment(folder_id, message_id, str(attachment["attachmentId"]))
+                start = ics_start(data.decode("utf-8", "replace"), zone)
+                if start is not None:
+                    break
+        except ZohoFailure as failure:
+            if failure.kind != "refused":
+                raise
+        except (KeyError, TypeError, ValueError):
+            start = None
+    return when_words(start, zone) if start is not None else None
 
 
 # --- classification ----------------------------------------------------------
@@ -689,6 +1082,114 @@ def classify_with_qwen(directory: Path, context: dict) -> tuple[str, str | None]
     return label, (workflow.clip(squash(deadline), 100) if quoted else None)
 
 
+# --- verification codes -----------------------------------------------------------
+
+CODE_WORDS = re.compile(
+    r"\b(?:verification|security|one[- ]time|confirmation|access|login|log-in|sign[- ]in"
+    r"|authentication|application)\s+(?:code|pin|passcode)\b|\bpasscode\b|\botp\b"
+    r"|\bone[- ]time password\b|\bcode\b",
+    re.IGNORECASE,
+)
+CODE_TOKEN = re.compile(r"(?<![\w-])(?:\d{3}[ -]\d{3}|[A-Za-z0-9]{4,10})(?![\w-])")
+
+
+def code_like(token: str, digits: tuple[int, int]) -> bool:
+    """A one-time code: `digits[0]`–`digits[1]` digits, or a short mix of letters and digits
+    (or of upper- and lower-case letters, which ordinary words are not)."""
+    if token.isdigit():
+        return digits[0] <= len(token) <= digits[1]
+    if not 5 <= len(token) <= 10 or not token.isalnum():
+        return False
+    has_digit = any(c.isdigit() for c in token)
+    has_letter = any(c.isalpha() for c in token)
+    upper = sum(c.isupper() for c in token)
+    mixed_case = upper >= 2 and any(c.islower() for c in token[1:])
+    return (has_digit and has_letter) or (mixed_case and not token.istitle())
+
+
+def find_code(text, digits: tuple[int, int] = (4, 8)) -> str | None:
+    """The one-time code a message states next to words such as "verification code",
+    read from the message's own text only; links and addresses are removed first and
+    never opened. A token alone on its line or right after "is" or ":" is preferred; a
+    bare year is never a code unless it stands alone."""
+    clean = re.sub(r"https?://\S+|www\.\S+", " ", str(text or ""))
+    clean = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", " ", clean)
+    lines = [line.strip() for line in clean.splitlines()]
+    for index, line in enumerate(lines):
+        hint = CODE_WORDS.search(line)
+        if not hint:
+            continue
+        window = [line[hint.end() :], *lines[index + 1 : index + 3]]
+        found = []
+        for position, part in enumerate(window):
+            for match in CODE_TOKEN.finditer(part):
+                token = re.sub(r"[ -]", "", match[0])
+                if not code_like(token, digits):
+                    continue
+                alone = part.strip() == match[0]
+                led = bool(re.search(r"(?:\bis|:)\s*$", part[: match.start()]))
+                year = bool(re.fullmatch(r"(?:19|20)\d\d", token))
+                if year and not (alone or led):
+                    continue
+                found.append((not (alone or led), position, match.start(), token))
+        if found:
+            return min(found)[3]
+    return None
+
+
+def redact_codes(text: str) -> str:
+    """The text with any one-time code masked, for the private evidence copy."""
+    code = find_code(text, (4, 8))
+    return text.replace(code, "[code]") if code else text
+
+
+def verification_code(sender_hosts, since, digits: tuple[int, int] = (4, 8)) -> str | None:
+    """The newest one-time code mailed by an expected sender after `since`, or None.
+
+    `sender_hosts` are the employer's or applicant system's domains for the account being
+    made. A message counts only when its sender's domain is one of them (or under one of
+    them) and Zoho's own authentication verdict says that domain really sent it, the same
+    rule that lets a mail change the record. Only Inbox mail received after `since` (an
+    aware datetime, or milliseconds since the epoch) is read, newest first; Spam is never
+    read for codes. The code comes from that message's text alone: no link is followed,
+    nothing is written, and the code is never logged.
+    """
+    hosts = [str(host or "").lower().strip(".") for host in sender_hosts or ()]
+    if not hosts or any(
+        "." not in host or registrable(host) in SHARED_SITE_DOMAINS for host in hosts
+    ):
+        raise ValueError("Name the employer's or the applicant system's own mail domains")
+    since_ms = int(since.timestamp() * 1000) if isinstance(since, datetime) else int(since)
+    settings, creds = config(), credentials()
+    if not settings.get("enabled") or not creds:
+        return None
+    with Zoho(creds) as zoho:
+        folder = zoho.inbox_folder()
+        for item in reversed(new_messages(zoho, folder, since_ms)):
+            address = sender_address(item.get("fromAddress"))
+            domain = address.rpartition("@")[2]
+            if not domain or not any(
+                domain == host
+                or domain.endswith("." + host)
+                or (registrable(domain) == registrable(host) and host not in ATS_DOMAINS)
+                for host in hosts
+            ):
+                continue
+            message_id = str(item.get("messageId") or "")
+            try:
+                raw = zoho.headers(folder, message_id)
+            except ZohoFailure as failure:
+                if failure.kind != "refused":
+                    raise
+                continue
+            if not authentication(raw, address, settings.get("authserv_ids") or ())["passed"]:
+                continue
+            code = find_code(plain_text(zoho.content(folder, message_id)), digits)
+            if code:
+                return code
+    return None
+
+
 # --- applying a mail to the record --------------------------------------------
 
 
@@ -738,6 +1239,8 @@ def recruiting_text(item: dict, data: dict) -> str:
     )
     if data.get("deadline"):
         line += f" · {data['deadline']}"
+    if data.get("interview_time"):
+        line += f" · invite for {data['interview_time']}"
     if data.get("reconciled"):
         line += " · the unclear submission went through"
     if data.get("unsettled"):
@@ -808,6 +1311,8 @@ def apply_mail(
         "classifier": classifier,
         "from_state": current,
     }
+    if mail.get("interview_time"):
+        data["interview_time"] = mail["interview_time"]
     if confirmed_by:
         data["confirmed_by_owner"] = True
     if current == "UNKNOWN_SUBMISSION" and settles(application_id, mail, label):
@@ -928,16 +1433,55 @@ def read_evidence(message_id) -> dict:
     return json.loads((message_directory(message_id) / "message.json").read_text())
 
 
+def candidate_ids(row: dict) -> list[str]:
+    """The applications a held mail could be about when it did not say which; [] for a
+    card about one application."""
+    with mail_db() as conn:
+        found = conn.execute(
+            "SELECT candidates FROM mail_candidates WHERE message_id=?", (row["message_id"],)
+        ).fetchone()
+    try:
+        ids = json.loads(found[0]) if found else []
+    except ValueError:
+        return []
+    return [str(value) for value in ids if value] if isinstance(ids, list) else []
+
+
+def candidate_titles(ids: list[str]) -> list[str]:
+    titles = []
+    for application_id in ids:
+        try:
+            titles.append(workflow.clip(workflow.display_title(workflow.get(application_id)), 100))
+        except ValueError:
+            titles.append("an application no longer on record")
+    return titles
+
+
 def card_text(row: dict) -> str:
-    item = workflow.get(row["application_id"])
     mail = read_evidence(row["message_id"])
+    sender = plain(mail["sender_domain"], 80) or "an unknown sender"
+    subject = plain(mail["subject"], 120)
+    extra = f" · {plain(row['deadline'], 100)}" if row["deadline"] else ""
+    if mail.get("interview_time"):
+        extra += f" · invite for {plain(mail['interview_time'], 60)}"
+    ids = candidate_ids(row)
+    if ids:
+        # The mail does not say which of several applications at one company it means.
+        listed = "\n".join(
+            f"{number}. {plain(title, 100)}"
+            for number, title in enumerate(candidate_titles(ids), start=1)
+        )
+        return (
+            f"→ **{LOOKS_LIKE[row['label']]}** · from {sender} · “{subject}”{extra}\n"
+            f"It could be about any of these:\n{listed}\n"
+            f"Nothing changed: {row['reason']}. Reply to this message with the number of the "
+            "right one, or `ignore`."
+        )
+    item = workflow.get(row["application_id"])
     line = (
         f"→ **{LOOKS_LIKE[row['label']]}** · {workflow.clip(workflow.display_title(item), 120)} · "
-        f"from {plain(mail['sender_domain'], 80) or 'an unknown sender'} · "
-        f"“{plain(mail['subject'], 120)}”"
+        f"from {sender} · “{subject}”{extra}"
     )
-    if row["deadline"]:
-        line += f" · {plain(row['deadline'], 100)}"
     line += (
         f"\nNothing changed: {row['reason']}. Reply to this message with `confirm` if the "
         "mail is real, or `ignore`."
@@ -983,15 +1527,26 @@ def post_cards():
             )
 
 
-def hold_for_owner(application: dict, mail: dict, label: str, classifier: str, deadline, why: str):
-    """A mail that would move the application but cannot be trusted by itself: nothing
-    changes; one card asks the owner."""
+def hold_card(
+    application_id: str,
+    mail: dict,
+    label: str,
+    classifier: str,
+    deadline,
+    why: str,
+    candidates: list[str] | None = None,
+):
     with mail_db() as conn:
+        if candidates:
+            conn.execute(
+                "INSERT OR IGNORE INTO mail_candidates VALUES(?,?)",
+                (mail["message_id"], json.dumps(candidates)),
+            )
         conn.execute(
             "INSERT OR IGNORE INTO mail_confirmations VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
                 mail["message_id"],
-                application["id"],
+                application_id,
                 label,
                 classifier,
                 deadline,
@@ -1002,6 +1557,12 @@ def hold_for_owner(application: dict, mail: dict, label: str, classifier: str, d
                 None,
             ),
         )
+
+
+def hold_for_owner(application: dict, mail: dict, label: str, classifier: str, deadline, why: str):
+    """A mail that would move the application but cannot be trusted by itself: nothing
+    changes; one card asks the owner."""
+    hold_card(application["id"], mail, label, classifier, deadline, why)
     workflow.system_line(
         application["id"],
         f"recruiting mail held for the owner · {label} · {mail['sender_domain']} · "
@@ -1010,10 +1571,30 @@ def hold_for_owner(application: dict, mail: dict, label: str, classifier: str, d
     post_cards()
 
 
+AMBIGUOUS = "it names no role, job number or posting link that tells them apart"
+
+
+def hold_ambiguous(candidates: list[dict], mail: dict, label: str, classifier: str, deadline):
+    """A mail about one of several applications at the same company that does not say
+    which: nothing changes; one card names the candidates and asks the owner."""
+    ids = [item["id"] for item in candidates][:6]
+    hold_card("", mail, label, classifier, deadline, AMBIGUOUS, ids)
+    workflow.system_line(
+        "mail",
+        f"recruiting mail held for the owner · {label} · {mail['sender_domain']} · message "
+        f"{mail['message_id']} · matches {len(ids)} applications: {', '.join(ids)}",
+    )
+    post_cards()
+
+
+PICK = re.compile(r"(?:#|number |no\.? )?(\d{1,2})(?: (?:confirm|confirmed|yes|it is))?")
+
+
 def owner_reply(message: dict) -> str | None:
     """The owner's Discord reply on one of the waiting cards: `confirm` records the mail,
-    `ignore` drops it. Returns the line to post, or None when the message is not a reply
-    to a card. The caller has already checked that the configured owner wrote it."""
+    `ignore` drops it, and on a card naming several applications the number picks one.
+    Returns the line to post, or None when the message is not a reply to a card. The
+    caller has already checked that the configured owner wrote it."""
     referenced = str((message.get("message_reference") or {}).get("message_id") or "")
     if not referenced:
         return None
@@ -1028,9 +1609,20 @@ def owner_reply(message: dict) -> str | None:
         return "That one is already settled."
     word = " ".join(str(message.get("content") or "").strip().strip("`").rstrip(".!?").split())
     word = word.lower()
-    if word not in CONFIRM_WORDS | DISMISS_WORDS:
+    ids = candidate_ids(row)
+    application_id = row["application_id"]
+    if ids:
+        picked = PICK.fullmatch(word)
+        if word in DISMISS_WORDS:
+            decision = "dismissed"
+        elif picked and 1 <= int(picked[1]) <= len(ids):
+            decision, application_id = "confirmed", ids[int(picked[1]) - 1]
+        else:
+            return f"Reply with the number of the right one (1 to {len(ids)}), or `ignore`."
+    elif word in CONFIRM_WORDS | DISMISS_WORDS:
+        decision = "confirmed" if word in CONFIRM_WORDS else "dismissed"
+    else:
         return "Reply `confirm` if that mail is real, or `ignore`."
-    decision = "confirmed" if word in CONFIRM_WORDS else "dismissed"
     mail = None
     if decision == "confirmed":
         try:
@@ -1039,23 +1631,23 @@ def owner_reply(message: dict) -> str | None:
             raise ValueError("I no longer have that mail on file, so nothing changed.") from None
         mail["evidence_path"] = message_directory(row["message_id"]) / "message.json"
 
-    def settle(status: str, expected: str) -> bool:
+    def settle(status: str, expected: str, chosen: str) -> bool:
         with mail_db() as conn:
             return bool(
                 conn.execute(
-                    "UPDATE mail_confirmations SET status=?,owner_message_id=? "
+                    "UPDATE mail_confirmations SET status=?,owner_message_id=?,application_id=? "
                     "WHERE message_id=? AND status=?",
-                    (status, str(message.get("id") or ""), row["message_id"], expected),
+                    (status, str(message.get("id") or ""), chosen, row["message_id"], expected),
                 ).rowcount
             )
 
-    if not settle(decision, "pending"):
+    if not settle(decision, "pending", application_id):
         return "That one is already settled."
     if mail is None:
         return "Left as it was."
     try:
         data = apply_mail(
-            row["application_id"],
+            application_id,
             mail,
             row["label"],
             row["classifier"],
@@ -1064,27 +1656,36 @@ def owner_reply(message: dict) -> str | None:
         )
     except Exception:
         # Nothing was recorded, so the card is still open for another reply.
-        settle("pending", "confirmed")
+        settle("pending", "confirmed", row["application_id"])
         raise
+    # The owner tied this mail to the application: its brand is remembered for next time.
+    brand = learn_alias(workflow.get(application_id), mail, "owner")
+    if brand:
+        workflow.system_line(application_id, f"mail brand learned · {brand} · from the owner")
     if data.get("to_state") or data.get("reconciled"):
         return "Recorded."
     return "Noted in its thread. Nothing else moved."
 
 
-def sender_trust(
-    zoho: Zoho, folder_id: str, message_id: str, address: str, strength: str, settings: dict
-) -> dict:
+def read_headers(zoho: Zoho, folder_id: str, message_id: str) -> str:
+    """The raw header block, or "" when Zoho has none for this message. A Zoho outage, a
+    refused token or a limit still stops the tick."""
+    try:
+        return zoho.headers(folder_id, message_id)
+    except ZohoFailure as failure:
+        if failure.kind != "refused":
+            raise
+        return ""  # no header to read is no proof
+
+
+def sender_trust(raw_headers: str, address: str, strength: str, settings: dict) -> dict:
     """Whether this mail may change the record by itself, and if not, why, in words."""
     if strength != "strong":
         return {
             "trusted": False,
             "why": "it did not come from the employer or their applicant system",
         }
-    try:
-        raw = zoho.headers(folder_id, message_id)
-    except (httpx.HTTPStatusError, ValueError):
-        raw = ""  # no header to read is no proof; a network failure still stops the tick
-    check = authentication(raw, address, settings.get("authserv_ids") or ())
+    check = authentication(raw_headers, address, settings.get("authserv_ids") or ())
     return {
         "trusted": check["passed"],
         "why": "the sender could not be verified",
@@ -1093,12 +1694,30 @@ def sender_trust(
     }
 
 
+SPAM_WHY = "it landed in your spam folder"
+
+
+def display_name(item: dict) -> str:
+    """The sender's display name, read only to learn the brand a confirmed mail used."""
+    pairs = getaddresses([html.unescape(str(item.get("fromAddress") or ""))])
+    named = pairs[0][0] if pairs else ""
+    return squash(named or (item.get("sender") if "@" not in str(item.get("sender")) else ""))
+
+
 def handle_message(
-    zoho: Zoho, folder_id: str, item: dict, apps: list[dict], settings: dict | None = None
+    zoho: Zoho,
+    folder_id: str,
+    item: dict,
+    apps: list[dict],
+    settings: dict | None = None,
+    *,
+    folder: str = "inbox",
 ) -> dict:
-    """Classify one inbox message. Verified mail from the employer or their applicant
-    system is applied; mail that would move an application but is not verified becomes a
-    card for the owner; everything else leaves no trace but its id."""
+    """Classify one message. Verified mail from the employer or their applicant system
+    is applied; mail that would move an application but is not verified, mail from the
+    Spam folder, and mail that could be about several applications become a card for the
+    owner; automatic replies and everything else leave no trace but their id."""
+    settings = settings or {}
     message_id = str(item.get("messageId") or "")
     # Only the address counts; the display name (`sender`) is whatever the sender typed.
     address = sender_address(item.get("fromAddress"))
@@ -1107,22 +1726,28 @@ def handle_message(
     outcome = {"message_id": message_id, "sender_domain": domain, "outcome": "ignored"}
     if not apps or not domain:
         return outcome
-    text = plain_text(zoho.content(folder_id, message_id))
-    match = match_application(apps, domain, subject, text)
+    content = zoho.content(folder_id, message_id)
+    text = plain_text(content)
+    match = match_application(apps, domain, subject, text, mail_links(content), aliases_for(apps))
     if not match:
         return outcome
-    application, strength = match
+    candidates, strength = match["candidates"], match["strength"]
+    application = candidates[0]
     label, classifier, deadline = classify(subject, text), "rule", None
     if label is None and strength != "strong":
         return outcome
+    raw = "" if AUTO_SUBJECT.search(subject) else read_headers(zoho, folder_id, message_id)
+    if auto_reply(subject, raw, text):
+        return {**outcome, "why": "auto_reply"}
     if label is None:
+        company, role = split_title(application)
         context = {
             "review_type": "recruiting_mail",
             "labels": list(LABELS),
             "sender_domain": domain,
             "subject": sanitize_for_model(subject, 200),
             "excerpt": sanitize_for_model(text),
-            "application": dict(zip(("company", "role"), split_title(application))),
+            "application": {"company": company, "role": role if len(candidates) == 1 else ""},
         }
         try:
             label, deadline = classify_with_qwen(message_directory(message_id), context)
@@ -1137,13 +1762,25 @@ def handle_message(
     mail = {
         "message_id": message_id,
         "sender_domain": domain,
+        "sender_name": display_name(item),
         "subject": subject,
         "received_at": datetime.fromtimestamp(received(item) / 1000, UTC).isoformat(),
         "incomplete": incomplete_notice(subject + "\n" + text),
+        "folder": folder,
     }
-    trust = sender_trust(zoho, folder_id, message_id, address, strength, settings or {})
-    if not trust["trusted"] and not would_change(application, mail, label):
-        # Unverified and nothing at stake: not worth the owner's attention.
+    if label == "interview":
+        when = invite_time(zoho, folder_id, item, text, settings)
+        if when:
+            mail["interview_time"] = when
+    if folder == "spam":
+        # Spam is read with less trust: at most a card, never a change by itself.
+        trust = {"trusted": False, "why": SPAM_WHY}
+    else:
+        trust = sender_trust(raw, address, strength, settings)
+    at_stake = [c for c in candidates if would_change(c, mail, label)]
+    ambiguous = len(candidates) > 1
+    if (ambiguous or not trust["trusted"]) and not at_stake:
+        # Nothing at stake, or no one application to record it on: not worth a card.
         return outcome
     mail["evidence_path"] = message_directory(message_id) / "message.json"
     write_private(
@@ -1152,33 +1789,175 @@ def handle_message(
             **mail,
             "evidence_path": str(mail["evidence_path"]),
             "from": address,
-            "text": text,
+            "text": redact_codes(text),
             "label": label,
             "classifier": classifier,
-            "application_id": application["id"],
+            "application_id": None if ambiguous else application["id"],
+            "candidates": [c["id"] for c in candidates] if ambiguous else None,
             "match": strength,
             "sender_check": {k: v for k, v in trust.items() if k != "why"},
         },
     )
     result = {
         **outcome,
-        "application_id": application["id"],
+        "application_id": None if ambiguous else application["id"],
         "label": label,
         "classifier": classifier,
     }
+    if ambiguous:
+        hold_ambiguous(candidates, mail, label, classifier, deadline)
+        return {**result, "outcome": "held", "to_state": None, "candidates": len(candidates)}
     if not trust["trusted"]:
         hold_for_owner(application, mail, label, classifier, deadline, trust["why"])
         return {**result, "outcome": "held", "to_state": None}
     data = apply_mail(application["id"], mail, label, classifier, deadline)
+    if match["id_hit"] and strength == "strong":
+        # A verified sender named this posting's own id or link: its brand is kept.
+        brand = learn_alias(application, mail, "job link")
+        if brand:
+            workflow.system_line(application["id"], f"mail brand learned · {brand} · job link")
     return {**result, "outcome": "applied", "to_state": data.get("to_state")}
 
 
+# --- mail tracking health -----------------------------------------------------------
+
+MAIL_ALERT = "mail"
+FAILURES_BEFORE_CARD = 3
+RECONNECT = {
+    "auth": (
+        "Zoho no longer accepts Rove's sign-in; the refresh token was revoked or has "
+        "expired. Make a new refresh token the way the setup guide shows (Zoho API Console, "
+        "your Self Client, the three read scopes) and put it in the private env file in "
+        "place of the old one. Mail tracking starts again on its own on the next run."
+    ),
+    "quota": (
+        "Zoho is refusing requests because a mail or API limit was reached. It usually "
+        "clears by itself within a day; if it does not, check the Zoho account's storage "
+        "and plan. Mail tracking starts again on its own once Zoho answers."
+    ),
+    "network": (
+        "I could not reach Zoho. If the internet or Zoho was down there is nothing to do; "
+        "mail tracking starts again on its own once Zoho answers."
+    ),
+    "refused": (
+        "Zoho refused the requests. Check that the Zoho mail account still exists and that "
+        "Rove's Self Client still has the three read scopes. Mail tracking starts again on "
+        "its own once Zoho answers."
+    ),
+}
+TROUBLE_WORDS = {
+    "auth": "Zoho refused the sign-in",
+    "quota": "Zoho's request limit was reached",
+    "network": "Zoho could not be reached",
+    "refused": "Zoho refused a request",
+}
+
+
+def mail_health(failure: "ZohoFailure | None") -> int:
+    """One run's verdict on mail tracking: one system-log line when it starts failing,
+    one owner card in the recruiting channel after three failures in a row, both said
+    once; the card leaves on the first run that works. Returns the streak."""
+    from . import alerts
+
+    words = TROUBLE_WORDS.get(failure.kind if failure else "", "Zoho refused a request")
+    return alerts.check(
+        MAIL_ALERT,
+        failure is None,
+        error=failure.kind if failure else "",
+        after=FAILURES_BEFORE_CARD,
+        channel="recruiting",
+        headline="Mail tracking stopped",
+        text=(
+            f"I could not read your recruiting mail the last {FAILURES_BEFORE_CARD} times: "
+            f"{words.lower()}. " + RECONNECT.get(failure.kind if failure else "", "")
+        ),
+        first_line=f"{words.lower()} · {failure} · trying again next run" if failure else "",
+        card_line=f"{FAILURES_BEFORE_CARD} failures in a row · owner card posted",
+        back_line="reading mail works again",
+        log_name="mail",
+    )
+
+
+def read_folder(
+    zoho: Zoho, db, account: str, folder_id: str, kind: str, settings: dict, result: dict
+) -> bool:
+    """Handle one folder's new messages; False when the local model is down and the
+    tick stops at that mail. Each folder keeps its own checkpoint."""
+    checkpoint = account if kind == "inbox" else f"{account}:{kind}"
+    row = db.execute(
+        "SELECT received_time FROM mail_checkpoints WHERE account_id=?", (checkpoint,)
+    ).fetchone()
+    if row:
+        since = int(row[0])
+    else:
+        days = max(0, int(settings.get("lookback_days", 3)))
+        since = int(datetime.now(UTC).timestamp() * 1000) - days * 86_400_000
+    for item in new_messages(zoho, folder_id, since):
+        message_id = str(item.get("messageId") or "")
+        if (
+            not message_id
+            or db.execute(
+                "SELECT 1 FROM mail_messages WHERE message_id=?", (message_id,)
+            ).fetchone()
+        ):
+            continue
+        try:
+            outcome = handle_message(
+                zoho, folder_id, item, tracked_applications(), settings, folder=kind
+            )
+        except RuntimeError as error:
+            from .reasoning import ModelUnavailable
+
+            if not isinstance(error, ModelUnavailable):
+                raise
+            result["waiting"] = "model"
+            return False
+        except ZohoFailure as failure:
+            if failure.kind != "refused":
+                raise  # the whole run stops and is counted; this mail is read next time
+            # Zoho no longer has this one message (moved or deleted since the listing):
+            # it is passed over, so it cannot hold up every later mail.
+            workflow.system_line("mail", f"message {message_id} could not be read · {failure}")
+            address = sender_address(item.get("fromAddress"))
+            outcome = {
+                "message_id": message_id,
+                "sender_domain": address.rpartition("@")[2],
+                "outcome": "ignored",
+            }
+        result["seen"] += 1
+        result[outcome["outcome"]] += 1
+        if outcome["outcome"] in {"applied", "held"}:
+            result["events"].append(outcome)
+        with db:
+            db.execute(
+                "INSERT OR IGNORE INTO mail_messages VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    message_id,
+                    account,
+                    received(item),
+                    outcome["sender_domain"],
+                    outcome["outcome"],
+                    outcome.get("label"),
+                    outcome.get("classifier"),
+                    outcome.get("application_id"),
+                    workflow.now(),
+                ),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO mail_checkpoints VALUES(?,?,?,?)",
+                (checkpoint, received(item), message_id, workflow.now()),
+            )
+    return True
+
+
 def tick() -> dict:
-    """Read inbox mail newer than the checkpoint and apply what concerns a sent application.
+    """Read new Inbox and Spam mail and apply what concerns a sent application.
 
     Off unless private `config/mail.json` enables it and the private env holds the four
-    Zoho values. A mail is handled once; the checkpoint advances past each handled mail,
-    so a stop (the local model down for an ambiguous mail) resumes at that mail.
+    Zoho values. A mail is handled once; each folder's checkpoint advances past each
+    handled mail, so a stop (the local model down for an ambiguous mail) resumes at that
+    mail. A Zoho failure (a refused token, a limit, an outage) ends the run quietly: one
+    system-log line, an owner card after three in a row, no traceback.
     """
     settings = config()
     creds = credentials()
@@ -1195,57 +1974,21 @@ def tick() -> dict:
     account = creds["account_id"]
     db = mail_db()
     try:
-        row = db.execute(
-            "SELECT received_time FROM mail_checkpoints WHERE account_id=?", (account,)
-        ).fetchone()
-        if row:
-            since = int(row[0])
-        else:
-            days = max(0, int(settings.get("lookback_days", 3)))
-            since = int(datetime.now(UTC).timestamp() * 1000) - days * 86_400_000
         with Zoho(creds) as zoho:
-            folder = zoho.inbox_folder()
-            for item in new_messages(zoho, folder, since):
-                message_id = str(item.get("messageId") or "")
-                if (
-                    not message_id
-                    or db.execute(
-                        "SELECT 1 FROM mail_messages WHERE message_id=?", (message_id,)
-                    ).fetchone()
+            folders = zoho.folders()
+            for kind, folder_id in (
+                ("inbox", zoho.inbox_folder(folders)),
+                ("spam", zoho.spam_folder(folders)),
+            ):
+                if folder_id and not read_folder(
+                    zoho, db, account, folder_id, kind, settings, result
                 ):
-                    continue
-                try:
-                    outcome = handle_message(zoho, folder, item, tracked_applications(), settings)
-                except RuntimeError as error:
-                    from .reasoning import ModelUnavailable
-
-                    if not isinstance(error, ModelUnavailable):
-                        raise
-                    result["waiting"] = "model"
                     break
-                result["seen"] += 1
-                result[outcome["outcome"]] += 1
-                if outcome["outcome"] in {"applied", "held"}:
-                    result["events"].append(outcome)
-                with db:
-                    db.execute(
-                        "INSERT OR IGNORE INTO mail_messages VALUES(?,?,?,?,?,?,?,?,?)",
-                        (
-                            message_id,
-                            account,
-                            received(item),
-                            outcome["sender_domain"],
-                            outcome["outcome"],
-                            outcome.get("label"),
-                            outcome.get("classifier"),
-                            outcome.get("application_id"),
-                            workflow.now(),
-                        ),
-                    )
-                    db.execute(
-                        "INSERT OR REPLACE INTO mail_checkpoints VALUES(?,?,?,?)",
-                        (account, received(item), message_id, workflow.now()),
-                    )
+    except ZohoFailure as failure:
+        result["error"] = failure.kind
+        result["failures_in_a_row"] = mail_health(failure)
+    else:
+        mail_health(None)
     finally:
         db.close()
     result["finished_at"] = workflow.now()
@@ -1255,6 +1998,8 @@ def tick() -> dict:
 
 def status() -> dict:
     """What the owner can check without seeing a secret: switches, cursor, counts."""
+    from . import alerts
+
     settings = config()
     creds = credentials()
     db = mail_db()
@@ -1285,4 +2030,5 @@ def status() -> dict:
         if checkpoint
         else None,
         "messages": counts,
+        "failures_in_a_row": alerts.streak(MAIL_ALERT),
     }
