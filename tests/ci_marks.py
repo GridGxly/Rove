@@ -12,7 +12,10 @@ installed (`-m "not e2e"`). Nobody has to remember the marker:
   names it, so a launch the reading above cannot see (one reached through `src/`) is
   caught the first time it happens. Mark such a test `@pytest.mark.e2e` by hand.
 
-`tests/conftest.py` imports the two hooks below; pytest picks them up from there.
+The `smoke` tests build and install the package, so they run only when the `-m`
+expression names them: `-m smoke` alone, `-m "smoke or not smoke"` for everything.
+
+`tests/conftest.py` imports the hooks below; pytest picks them up from there.
 """
 
 import ast
@@ -95,7 +98,13 @@ def _fixture_functions(item):
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
-    """Mark browser tests before `-m` selects among them."""
+    """Mark browser tests before `-m` selects among them, and leave out the smoke tests
+    unless the expression asks for them."""
+    if "smoke" not in (config.option.markexpr or ""):
+        skipped = [item for item in items if item.get_closest_marker("smoke")]
+        if skipped:
+            config.hook.pytest_deselected(items=skipped)
+            items[:] = [item for item in items if not item.get_closest_marker("smoke")]
     for item in items:
         if item.get_closest_marker("e2e"):
             continue

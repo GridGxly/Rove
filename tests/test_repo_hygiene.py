@@ -10,6 +10,7 @@ import ast
 import importlib.util
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -415,6 +416,24 @@ def test_a_suppressed_blind_except_must_say_why(tmp_path, monkeypatch):
         "a.py:3: `noqa: BLE001` needs `-- reason`",
         "a.py:9: `noqa: S307` needs `-- reason`",
     ]
+
+
+def test_smoke_tests_run_only_when_the_marker_expression_names_them():
+    def collected(expression: str) -> list[str]:
+        shown = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:randomly"]
+            + ["-p", "no:cacheprovider", "-m", expression, "tests/test_smoke.py"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        return [line for line in shown.splitlines() if "::" in line]
+
+    smoke = "test_rove_help_and_every_subcommand_help"
+    assert not any(smoke in line for line in collected("not e2e and not performance"))
+    assert any(smoke in line for line in collected("smoke"))
+    assert any(smoke in line for line in collected("smoke or not smoke"))
 
 
 def test_every_ci_job_calls_a_command_that_exists():

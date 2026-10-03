@@ -6,7 +6,7 @@ with the locked dependency versions, and run it from a folder outside the source
 `rove bench fixture`. They need `uv` and a Playwright Chromium, take about a minute, and
 run only when selected: `pytest -m smoke`.
 
-The import test at the bottom runs everywhere: importing a module must not touch the
+The import test near the top runs everywhere: importing a module must not touch the
 home folder, the state root, the network, a database or a subprocess.
 """
 
@@ -23,6 +23,9 @@ from pathlib import Path
 import pytest
 
 import rove
+
+# The first smoke test also builds and installs the package; give it room on a cold cache.
+pytestmark = pytest.mark.timeout(600)
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "src" / "rove"

@@ -38,9 +38,10 @@ packages = ["src/rove"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# `smoke` builds the wheel and installs it into a fresh virtualenv, so a plain run leaves it
-# out; `pytest -m smoke` runs only it and `pytest -m ""` runs everything.
-addopts = ["--strict-markers", "--strict-config", "-ra", "-m", "not smoke"]
+# `smoke` builds the wheel and installs it into a fresh virtualenv, so it runs only when
+# the -m expression names it: `pytest -m smoke`, or `pytest -m "smoke or not smoke"` for
+# everything (tests/ci_marks.py).
+addopts = ["--strict-markers", "--strict-config", "-ra"]
 xfail_strict = true
 # A hang fails the test instead of the job. The slowest browser test takes about 11 s on
 # an M5 Pro; slow CI runners get room on top of that.
