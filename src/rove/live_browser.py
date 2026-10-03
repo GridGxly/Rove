@@ -37,6 +37,7 @@ from . import (
     workflow,
 )
 from .browser_app import devtools_alive
+
 # The board table and the job and tenant rules live in destinations.py; the names stay
 # importable from here for the code and tests that already use them.
 from .destinations import approved_ats, job_scope, nested_paths

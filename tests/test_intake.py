@@ -1494,6 +1494,8 @@ def test_a_posting_page_that_is_gone_reads_as_closed(tmp_path, monkeypatch):
     assert gone("Careers", 404, [], [{"label": "Apply now"}]) is None
     monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(live_browser.workflow, "config", lambda: {"human_pacing": False})
+    # The pages are served by a route, so there is no address to look up.
+    monkeypatch.setattr(live_browser, "validate_destination", lambda url: url)
     pages = {
         "gone": (404, "<title>Careers</title><p>Sorry, we could not find that.</p>"),
         "missing": (200, "<title>Job not found | Example Labs</title><p>Try our search.</p>"),

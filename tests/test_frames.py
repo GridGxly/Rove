@@ -214,6 +214,8 @@ def sites(tmp_path, monkeypatch):
     monkeypatch.setattr(live_browser, "approved_ats", lambda url: True)
     monkeypatch.setattr(live_browser, "job_scope", lambda url: ("synthetic",))
     monkeypatch.setattr(workflow, "public_link", identity)
+    # The two loopback origins count as sites a form may be filled on.
+    monkeypatch.setattr(submission, "ineligible", lambda url: "")
     monkeypatch.setattr(
         workflow,
         "config",
