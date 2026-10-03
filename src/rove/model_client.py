@@ -1,12 +1,13 @@
 """The worker's structured prompts as one HTTP request to the local model server.
 
-Fit reviews, answer drafts, the writing cleanup, the pop-up choice and the mail label go
-straight to the server's OpenAI-compatible endpoint: one streamed POST carrying the system
-prompt and the context, temperature 0, and thinking switched off twice (the chat
-template's `enable_thinking` and `/no_think` in the user turn). A model that starts to
-reason anyway is stopped at its first words, not after a hundred seconds of it. Hermes
-stays the Discord agent harness; `model_transport: "hermes"` in the workflow config sends
-these prompts through it instead. The evidence for the split is in docs/local-runtime.md.
+This is the opt-in path (`model_transport: "direct"` in the workflow config). By default
+the worker sends its prompts through the Hermes harness, as the Discord agent does. When
+the switch is on, fit reviews, answer drafts, the writing cleanup, the pop-up choice and
+the mail label go straight to the server's OpenAI-compatible endpoint: one streamed POST
+carrying the system prompt and the context, temperature 0, and thinking switched off
+twice (the chat template's `enable_thinking` and `/no_think` in the user turn). A model
+that starts to reason anyway is stopped at its first words. The measurements are in
+docs/local-runtime.md.
 
 Every failure of the server itself (down, a 5xx, a dropped stream, a timeout) is
 `ModelUnavailable`: the work waits for the next tick instead of failing an application.

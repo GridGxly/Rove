@@ -26,7 +26,7 @@ The goal is not "apply to everything." The goal is a reliable local workflow tha
 These choices are deliberate. Do not replace them casually just because another framework is familiar.
 
 - **Qwen3.8-27B** is the local reasoning model.
-- **Hermes Agent** is the Discord agent harness and MCP/session layer. The worker's structured prompts (fit review, drafting, cleanup, pop-up choice, mail label) call the local model server directly; the evidence is in [Why the worker calls the model server directly](docs/local-runtime.md#why-the-worker-calls-the-model-server-directly).
+- **Hermes Agent** is the production agent harness and MCP/session layer.
 - **Erga** remains the career-evidence, resume, and application-state foundation.
 - **Obsidian** is the private long-term semantic memory and human-readable knowledge layer.
 - **QMD** is the reference local retrieval/indexing layer for the Obsidian vault as it grows.

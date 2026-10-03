@@ -115,7 +115,7 @@ With nothing else running on the model, a warm "hi" took 1.8 to 3 seconds inside
 
 ## How the worker calls Qwen
 
-The worker does not go through the Discord agent. Its structured prompts (the job-fit review, answer drafting, the writing cleanup, the pop-up choice and the recruiting-mail label) go to oMLX's OpenAI-compatible endpoint as one streamed `POST /v1/chat/completions` each, from `src/rove/model_client.py`:
+The worker's structured prompts (the job-fit review, answer drafting, the writing cleanup, the pop-up choice and the recruiting-mail label) run through the Hermes harness by default, each as its own one-turn request with no tools; they do not go through the Discord chat session. With `model_transport: "direct"` set, each prompt instead goes to oMLX's OpenAI-compatible endpoint as one streamed `POST /v1/chat/completions` from `src/rove/model_client.py`, and the points below describe that opt-in path:
 
 - The system prompt comes from `scripts/recruiting_reasoning.py`; the user turn is the context as JSON, then `/no_think`.
 - Temperature zero, a 2,048-token output ceiling, no tools, and `chat_template_kwargs.enable_thinking: false`. `/no_think` is the second switch.
@@ -132,11 +132,11 @@ The caller accepts only a finished answer. One that stopped at the output ceilin
 
 Each context puts what every job shares first: the system prompt, the profile, the approved evidence excerpts and, for drafting, the voice note. The job's own text and questions come after. oMLX reuses a prompt prefix in whole 2,048-token blocks, so this shared part is read from the cache from the second job on, for the life of a profile version. A `cache_padding` field of digits (one token each) marks where the shared part ends. The first request of a profile version asks oMLX's `/v1/messages/count_tokens` for the exact size of the shared part and pads it to the next block boundary when that boundary is at most half a block away. The count is kept in `prompt-prefix-tokens.json` under the state root. The fit review and the drafting read the same evidence with one query; inside a pass both reads go through the pass's one Erga process.
 
-`model_transport: "hermes"` in `config/workflow.json` sends the same prompts through the Hermes harness instead. That path runs `scripts/recruiting_reasoning.py` with the Hermes Python named by `hermes_python`: one non-streamed request with no tools, thinking off, temperature zero, a 2,048-token ceiling and `max_iterations=2`, with Hermes memory and context files skipped. A harness stop such as `max_iterations_reached` is retried once and then recorded as a failure.
+The worker sends these prompts through the Hermes harness. That is the default and the owner's decision. That path runs `scripts/recruiting_reasoning.py` with the Hermes Python named by `hermes_python`: one non-streamed request with no tools, thinking off, temperature zero, a 2,048-token ceiling and `max_iterations=2`, with Hermes memory and context files skipped. A harness stop such as `max_iterations_reached` is retried once and then recorded as a failure. Setting `model_transport: "direct"` in `config/workflow.json` sends the same prompts as one request to the model server instead; it exists for measurement and is off unless set.
 
-### Why the worker calls the model server directly
+### Hermes and the direct request, measured
 
-`AGENTS.md` names Hermes as the agent harness, and changing that needs documented evidence. These are the measurements from 2026-10-03 on the reference Mac (oMLX 0.6.4, Qwen3.8-27B 4-bit with the external MTP drafter):
+Hermes is the harness for the worker's prompts as well as the Discord agent. The direct request is an opt-in switch. These are the measurements from 2026-10-03 on the reference Mac (oMLX 0.6.4, Qwen3.8-27B 4-bit with the external MTP drafter):
 
 | Measured | Through Hermes | Direct |
 | --- | ---: | ---: |

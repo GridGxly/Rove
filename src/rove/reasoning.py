@@ -249,8 +249,12 @@ def ensure_model():
 
 
 def transport() -> str:
-    """`direct` (the default) or `hermes`, from `model_transport` in the workflow config."""
-    return "hermes" if workflow.config().get("model_transport") == "hermes" else "direct"
+    """`hermes` (the default) or `direct`, from `model_transport` in the workflow config.
+
+    The owner's decision: the worker's prompts go through the Hermes harness. The direct
+    request to the model server stays as an opt-in switch for measurement.
+    """
+    return "direct" if workflow.config().get("model_transport") == "direct" else "hermes"
 
 
 def model_facts(generated) -> dict:

@@ -90,6 +90,13 @@ class FakeServer:
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=stream())
 
 
+@pytest.fixture(autouse=True)
+def direct_unless_a_test_says_otherwise(monkeypatch):
+    """These tests exercise the opt-in direct transport; Hermes is the default."""
+    real = workflow.config
+    monkeypatch.setattr(workflow, "config", lambda: {"model_transport": "direct", **real()})
+
+
 @pytest.fixture
 def server(monkeypatch):
     fake = FakeServer()
@@ -223,7 +230,7 @@ def test_the_hermes_harness_is_a_config_switch(state, server, tmp_path, monkeypa
     assert len(ran) == 1 and generated["transport"] == "hermes"
     assert server.requests == []  # nothing went to the server directly
     monkeypatch.setattr(workflow, "config", dict)
-    assert reasoning.transport() == "direct"
+    assert reasoning.transport() == "hermes"
 
 
 @pytest.mark.parametrize(
