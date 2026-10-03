@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from . import questions
+from . import education, questions
 
 SHORT_TEXT, NUMBER, DATE, MONTH, YES_NO, CHOICE = (
     "short text",
@@ -192,14 +192,15 @@ CORPUS = (
         hint="the first line; city, state and postal code come from your profile",
     ),
     CommonQuestion("country", "Country of residence", SHORT_TEXT, profile="identity.country"),
-    # The start of a form's education block ("Start date month", "Start date year").
+    # The start at the school he attends now (education.current), which fills that
+    # school's education block when its start is not in the profile.
     CommonQuestion(
         "school_start",
         questions.SCHOOL_START_LABEL,
         MONTH,
-        profile="education.schools.0.start_month",
+        profile="education.schools.<enrolled now>.start_month",
         hint="a month and year, like Aug 2024",
-        only_when="one_school",
+        only_when="enrolled_now",
     ),
     # Answers "have you worked for us before?" at every employer not on the list.
     CommonQuestion(
@@ -214,11 +215,12 @@ BY_ID = {entry.id: entry for entry in CORPUS}
 
 def applies(entry: CommonQuestion, profile: dict | None) -> bool:
     """Whether the owner should be asked this at all, given the approved profile."""
-    schools = ((profile or {}).get("education") or {}).get("schools") or []
+    schools = education.schools(profile)
     if entry.only_when == "gpa_disclosed":
-        return len(schools) == 1 and schools[0].get("disclose_gpa") is True
-    if entry.only_when == "one_school":
-        return len(schools) == 1  # the school a form's education block asks about
+        # The one school whose GPA he discloses; a GPA belongs to where it was earned.
+        return sum(1 for school in schools if school.get("disclose_gpa") is True) == 1
+    if entry.only_when == "enrolled_now":
+        return education.current(profile) is not None  # the school he attends today
     return True
 
 

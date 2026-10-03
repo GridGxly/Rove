@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 import yaml
 
-from . import discord_feed, workflow
+from . import discord_feed, education, workflow
 from .jobs import identity_key, plain, plain_company, public_link
 from .matching import contains
 from .runtime import state_root
@@ -291,12 +291,13 @@ def outside_us(place) -> bool:
 
 
 def graduation_month(profile: dict) -> str | None:
-    schools = (profile.get("education") or {}).get("schools") or []
-    return next((s["graduation_month"] for s in schools if s.get("graduation_month")), None)
+    """The graduation applications state: the school entry they go by (education.py)."""
+    return education.graduation(profile)
 
 
 def studies_at_graduate_level(profile: dict) -> bool:
-    schools = (profile.get("education") or {}).get("schools") or []
+    stated = education.primary(profile)
+    schools = [stated] if stated else education.schools(profile)
     return any(
         school.get("currently_enrolled") is not False
         and re.search(
@@ -308,13 +309,19 @@ def studies_at_graduate_level(profile: dict) -> bool:
     )
 
 
-def class_year(profile: dict) -> str | None:
-    schools = (profile.get("education") or {}).get("schools") or []
-    stated = plain(next((s["student_year"] for s in schools if s.get("student_year")), ""))
+def class_years(profile: dict, summer: int) -> set[str]:
+    """The class words a posting for summer `summer` may use for the owner, from the
+    expected graduation applications state ("sophomores" for the year he finishes,
+    "rising juniors" for the year he rises into); his stated year when no graduation is
+    known."""
+    computed = education.class_years(profile, summer)
+    if computed or education.graduation(profile):
+        return computed
+    stated = plain((education.primary(profile) or {}).get("student_year") or "")
     for year, spellings in CLASS_YEARS.items():
         if year in stated.split() or any(word in stated for word in spellings):
-            return year
-    return None
+            return {year}
+    return set()
 
 
 def listed_hourly_pay(title) -> float | None:
@@ -480,10 +487,15 @@ def score_job(job: dict, profile: dict, *, today: date | None = None) -> dict:
         for year, spellings in CLASS_YEARS.items()
         if any(contains(title, s) for s in spellings)
     ]
-    mine = class_year(profile)
+    summer = education.internship_year(
+        f"{title} {job.get('cycle') or ''}",
+        datetime(today.year, today.month, today.day, tzinfo=UTC),
+    )
+    mine = class_years(profile, summer)
     if named_years and mine:
-        if mine in named_years:
-            add("class", "class_fits", f"meant for {mine} students")
+        if mine & set(named_years):
+            fit = next(year for year in named_years if year in mine)
+            add("class", "class_fits", f"meant for {fit} students")
         else:
             add("class", "class_differs", f"meant for {' and '.join(named_years)} students")
             cap = True

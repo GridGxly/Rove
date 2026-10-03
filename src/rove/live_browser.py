@@ -2117,12 +2117,17 @@ class RecruitingBrowser:
             # Approved profile, then the owner's earlier answer, then a standing default.
             # Twins (two questions in the same words) cannot be told apart by what is
             # remembered by their words, and a later twin takes only its own answer.
-            if field.get("occurrence"):
+            # Which education block each school question is in, for the page as it is now;
+            # a repeated education question is the next school's, not a twin.
+            questions.number_education_blocks(before["fields"])
+            if field.get("occurrence") and not questions.education_field(field):
                 return None, None
             return questions.resolve(
                 field,
                 approved["profile"],
-                recall=None if field.get("twins") else workflow.recall_answer,
+                recall=None
+                if field.get("twins") or field.get("occurrence")
+                else workflow.recall_answer,
                 employer=employer,
                 picker=picker,
             )

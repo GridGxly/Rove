@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from .jobs import database
 from .runtime import state_root
@@ -57,6 +57,9 @@ class EducationEntry(StrictModel):
     disclose_gpa: bool | None = None
     honors: list[Text] = Field(default_factory=list, max_length=30)
     relevant_courses: list[Text] = Field(default_factory=list, max_length=50)
+    # The entry applications state (education.py). Optional, and left out of the stored
+    # profile when unset, so a profile approved before it existed keeps its hash.
+    apply_as: bool | None = None
 
     @model_validator(mode="after")
     def check_dates_and_gpa(self):
@@ -66,11 +69,24 @@ class EducationEntry(StrictModel):
             raise ValueError("Graduation cannot precede enrollment")
         return self
 
+    @model_serializer(mode="wrap")
+    def leave_out_unset_apply_as(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("apply_as") is None:
+            data.pop("apply_as", None)
+        return data
+
 
 class Education(StrictModel):
     schools: list[EducationEntry] = Field(default_factory=list, max_length=10)
     returns_to_school_after_internship: bool | None = None
     internship_credit_required: bool | None = None
+
+    @model_validator(mode="after")
+    def one_school_to_apply_as(self):
+        if sum(1 for school in self.schools if school.apply_as is True) > 1:
+            raise ValueError("Only one school can be the one applications state")
+        return self
 
 
 class Eligibility(StrictModel):

@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from urllib.parse import urlsplit
 
+from . import education
 from .jobs import database
 from .onboarding import digest, draft, read_approved
 
@@ -76,14 +77,7 @@ def review_matches(limit: int = 10, *, preview_draft: bool = False) -> dict:
                 holds.append("Candidate weekly availability is not confirmed.")
             academic = job["academic_eligibility"]
             if academic.get("requirement_level") == "required":
-                graduation = next(
-                    (
-                        s["graduation_month"]
-                        for s in profile["education"]["schools"]
-                        if s["graduation_month"]
-                    ),
-                    None,
-                )
+                graduation = education.graduation(profile)  # the school applications state
                 start, end = academic.get("graduation_start"), academic.get("graduation_end")
                 if graduation and ((start and graduation < start) or (end and graduation > end)):
                     holds.append(

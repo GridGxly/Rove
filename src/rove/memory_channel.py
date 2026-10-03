@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from . import common_questions, form_reading, questions, workflow
+from . import common_questions, education, form_reading, questions, workflow
 from .discord_feed import discord
 from .live_browser import normalized, resolve_known
 from .onboarding import read_approved
@@ -237,8 +237,8 @@ def profile_name(profile: dict) -> str | None:
 
 def school_fact(key: str):
     def read(profile: dict):
-        schools = profile["education"]["schools"]
-        value = schools[0].get(key) if len(schools) == 1 else None
+        # The school applications state (education.py), not simply the first listed.
+        value = (education.primary(profile) or {}).get(key)
         if key == "graduation_month" and value:
             return datetime.strptime(value, "%Y-%m").replace(tzinfo=UTC).strftime("%B %Y")
         return value
@@ -367,7 +367,7 @@ def read_only(fact: dict) -> str:
     )
 
 
-def school_line(school: dict) -> str:
+def school_line(school: dict, name: str = "School") -> str:
     study = " in ".join(shown(x, 50) for x in (school.get("degree"), school.get("major")) if x)
     parts = [shown(school.get("school"), 60), study]
     month = school.get("graduation_month")
@@ -376,7 +376,23 @@ def school_line(school: dict) -> str:
         today = datetime.now(UTC)
         ahead = (when.year, when.month) >= (today.year, today.month)
         parts.append(f"{'graduating' if ahead else 'graduated'} {when:%B %Y}")
-    return "School: " + " · ".join(part for part in parts if part)
+    return f"{name}: " + " · ".join(part for part in parts if part)
+
+
+def school_lines(profile: dict) -> list[str]:
+    """The schools as the owner reads them: the one applications state first, then the
+    one he attends now when that is another, then any other."""
+    entries = education.schools(profile)
+    if len(entries) < 2:
+        return [school_line(school) for school in entries]
+    stated, now = education.primary_index(profile), education.current_index(profile)
+    if stated is None:
+        return [school_line(school) for school in entries[:2]]
+    lines = [school_line(entries[stated], "School on applications")]
+    if now is not None and now != stated:
+        lines.append(school_line(entries[now], "Enrolled now"))
+    lines += [school_line(s, "Also") for i, s in enumerate(entries) if i not in {stated, now}]
+    return lines[:3]
 
 
 def profile_section() -> tuple[list[str], bool]:
@@ -392,7 +408,7 @@ def profile_section() -> tuple[list[str], bool]:
     lines = ["**From your profile** (read-only here)"]
     if profile_name(profile):
         lines.append(f"Name: {shown(profile_name(profile), 80)}")
-    lines += [school_line(school) for school in profile["education"]["schools"][:2]]
+    lines += school_lines(profile)
     if location(profile):
         lines.append(f"Location: {shown(location(profile), 80)}")
     links = [link_words(identity[key]) for key in ("linkedin", "github", "portfolio")]

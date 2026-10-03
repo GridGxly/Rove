@@ -17,6 +17,7 @@ or an added condition falls through to the owner instead of being answered for h
 This module reads no state: callers pass the frozen profile and a recall function.
 """
 
+import functools
 import hashlib
 import json
 import re
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlsplit
 
-from . import form_reading
+from . import education, form_reading
 
 PLAIN, SENSITIVE = "plain", "sensitive"
 POSITIVE, NEGATED = "positive", "negated"
@@ -382,13 +383,37 @@ IDENTITY_NAMES = {
     "linkedin_url": "linkedin|linkedin profile|linkedin url|linkedin profile url",
     "github_url": "github|github url|github profile",
     "portfolio_url": "portfolio|website|personal website|portfolio url",
+    # The school applications state (education.py), in an education block or outside one.
     "school": "school|university|college university|college|school name|name of school"
     "|university name|name of university|college name|school university|university college"
     "|school or university|college or university|university or college|institution"
-    "|educational institution|name of institution|current school|current university"
-    "|what school do you attend|what school do you currently attend|which school do you attend"
-    "|what university do you attend|which university do you attend"
-    "|what university do you currently attend|which university do you currently attend",
+    "|educational institution|name of institution",
+    # Where the owner is enrolled today: the entry whose dates include today, which may
+    # not be the one applications state.
+    "current_school": "current school|current university|current college|current institution"
+    "|current school name|name of current school|what school do you attend"
+    "|what school do you currently attend|which school do you attend"
+    "|which school do you currently attend|what university do you attend"
+    "|which university do you attend|what university do you currently attend"
+    "|which university do you currently attend|what college do you attend"
+    "|which college do you attend|what college do you currently attend"
+    "|which school are you attending this semester|which school are you currently attending"
+    "|what school are you currently attending|where are you currently enrolled"
+    "|where do you currently go to school|school you currently attend"
+    "|name of the school you currently attend|currently enrolled school",
+    "enrollment_status": "enrollment status|current enrollment status|what is your enrollment status"
+    "|what is your current enrollment status|student status|current student status"
+    "|are you currently enrolled|are you currently a student|are you a current student"
+    "|are you currently enrolled in school|are you currently enrolled in college"
+    "|are you currently enrolled in a university|are you currently enrolled in a college"
+    "|are you currently enrolled in a degree program|are you currently pursuing a degree"
+    "|are you enrolled in a degree program|are you currently enrolled in a university or college",
+    "class_standing": "class standing|current class standing|what is your class standing"
+    "|what is your current class standing|year in school|current year in school"
+    "|what is your current year in school|what year are you in school|what year are you in"
+    "|academic year|current academic year|what is your current academic year"
+    "|class level|year of study|current year of study|what is your year of study"
+    "|student year|current student year",
     "major": "major|field of study|what is your field of study|discipline|area of study"
     "|major field of study|major discipline|major field|academic major|primary major|your major"
     "|what is your major|degree major|course of study|program of study|major area of study"
@@ -419,11 +444,14 @@ COMMON_NAMES = {
     "|preferred working arrangement|remote hybrid or on site|remote hybrid or onsite"
     "|do you prefer remote hybrid or on site|do you prefer remote hybrid or onsite"
     "|are you looking for remote hybrid or on site work|remote or on site|remote or onsite",
-    "school_start": "school start date|school start month|enrollment date|enrollment start date"
-    "|date of enrollment|when did you start school|when did you start at your school"
+    # When the owner started at the school he attends now (the warm-up asks it once).
+    "school_start": "enrollment date|enrollment start date|date of enrollment"
+    "|when did you start school|when did you start at your school"
     "|when did you start at your current school|when did you start college"
-    "|when did you start university|when did you begin your degree|degree start date"
-    "|start date of your degree|college start date|university start date",
+    "|when did you start university|current school start date",
+    # When the degree applications state begins, which may lie ahead.
+    "degree_start": "degree start date|start date of your degree|when did you begin your degree"
+    "|school start date|school start month|college start date|university start date",
     # Who the owner has worked for, as a list in his own words: it answers "have you
     # worked for us before" at every employer that is not on it.
     "past_employers": "past employers|previous employers|former employers"
@@ -713,6 +741,19 @@ def worked_here_employer(text: str) -> list[str] | None:
     return company or None
 
 
+ENROLLED_AT = re.compile(
+    r"are you (?:currently |presently |now )?(?:enrolled|a student|studying|attending)"
+    r" (?:at|in) (?P<school>[a-z0-9]+(?: [a-z0-9]+){0,7})"
+)
+# Words that make "enrolled in ..." about any school rather than one named school.
+ENROLLED_FILLER = _words(
+    "a an the school college university program degree undergraduate accredited course of study"
+)
+# A kind of program the answer depends on ("a bachelor's program"): not a yes for any
+# school, so such a question is left alone.
+ENROLLED_KIND = _words("graduate bachelor bachelors s master masters four 4 two 2 year full part")
+
+
 APPLIED_HERE = re.compile(
     r"have you (?:(?:ever|previously) )*applied(?: previously| before| in the past)?"
     r" (?:to|at|with|for)(?: [a-z0-9]+){1,6}"
@@ -954,6 +995,14 @@ def _loose(name: str, text: str) -> dict | None:
         return {"id": "how_did_you_hear", "default": "how_did_you_hear"}
     if worked_here_employer(text) is not None:
         return {"id": "previously_employed_here", "scope": "employer"}
+    enrolled = ENROLLED_AT.fullmatch(text)
+    if enrolled and ENROLLED_KIND & set(enrolled["school"].split()):
+        # "...enrolled in a bachelor's program?": the owner's to say, never a draft's.
+        return {"id": "enrollment_status", "detail": "kind"}
+    if enrolled:
+        # "Are you currently enrolled at <school>?" asks about that school, today.
+        named = [w for w in enrolled["school"].split() if w not in ENROLLED_FILLER]
+        return {"id": "enrollment_status", "detail": "at:" + " ".join(named) if named else ""}
     if APPLIED_HERE.fullmatch(text):
         return {"id": "previously_applied_here", "scope": "employer"}
     if not WILLINGNESS.match(text):
@@ -1258,11 +1307,15 @@ def _excluded_place(question: Question, profile: dict) -> bool:
     return any(place and f" {place} " in f" {question.name} " for place in excluded)
 
 
-def profile_fact(question: Question, profile: dict, has_options: bool = False):
+def profile_fact(
+    question: Question, profile: dict, has_options: bool = False, entry: tuple | None = None
+):
     """(candidate values, source) from the approved profile, or None.
 
     A sensitive question is answered here only on an exact positive match of its
-    canonical rule; a negated question is never answered from a profile fact.
+    canonical rule; a negated question is never answered from a profile fact. `entry`
+    is the (position, school) a form's education block states; without one, a question
+    about the school is about the entry applications state (education.py).
     """
     if question.polarity != POSITIVE or not question.known:
         return None
@@ -1292,33 +1345,9 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
         name = " ".join(parts)
         # A Latin-script legal name is the name in its own script; any other is the owner's.
         return ([name], "identity.legal_name") if parts and latin_script(name) else None
-    schools = (profile.get("education") or {}).get("schools") or []
-    school = schools[0] if len(schools) == 1 else None
-    if canonical in {"school", "major", "degree"}:
-        if school and school.get(canonical):
-            return [str(school[canonical])], "education.schools.0." + canonical
-        return None
-    if canonical == "gpa":
-        if school and school.get("disclose_gpa") is True and school.get("gpa") is not None:
-            scale = school.get("gpa_scale")
-            if question.detail and (scale is None or float(question.detail) != float(scale)):
-                return None  # the form asks on another scale than the profile's
-            return [str(school["gpa"])], "education.schools.0.gpa"
-        return None
-    if canonical in {"graduation_date", "school_start"}:
-        key = "graduation_month" if canonical == "graduation_date" else "start_month"
-        month = school.get(key) if school else None
-        if not month:
-            return None
-        when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
-        source = "education.schools.0." + key
-        if has_options:
-            return [when.strftime(f) for f in ("%B %Y", "%b %Y", "%Y")], source
-        if question.name in GRADUATION_YEAR:
-            return [when.strftime("%Y")], source
-        if canonical == "school_start" or question.name in GRADUATION_DATE:
-            return [when.strftime("%B %Y")], source
-        return None
+    fact = school_fact(question, profile, has_options, entry)
+    if fact is not False:
+        return fact
     eligible = profile.get("eligibility") or {}
     if canonical == "work_authorization_us":
         values = _yes_no(eligible.get("us_work_authorized"))
@@ -1405,6 +1434,126 @@ def profile_fact(question: Question, profile: dict, has_options: bool = False):
     if canonical in {"talent_network_opt_in", "marketing_opt_in"}:
         values = _yes_no((profile.get("application_policy") or {}).get(canonical))
         return (values, "profile.application_policy." + canonical) if values else None
+    return None
+
+
+# Questions about the owner's schools. Which school each one means is education.py's
+# call: the entry applications state, the entry a form's block states, the entry he is
+# enrolled in today, or the school where a GPA was earned.
+SCHOOL_IDS = frozenset(
+    {
+        "school",
+        "major",
+        "degree",
+        "gpa",
+        "graduation_date",
+        "degree_start",
+        "school_start",
+        "current_school",
+        "enrollment_status",
+        "class_standing",
+    }
+)
+NO_ENTRY = (None, None)  # a form's block with no entry of the owner's to state
+# Education facts no model draft answers (draft_gate): code or the owner only.
+EDUCATION_FACTS = frozenset(
+    {"degree", "major", "gpa", "current_school", "enrollment_status", "class_standing"}
+)
+ENROLLED_WORDS = (
+    "Currently enrolled",
+    "Enrolled",
+    "Current student",
+    "Currently a student",
+    "Student",
+    "Yes",
+)
+YEAR_WORDS = {
+    "freshman": ("Freshman", "First Year", "1st Year", "Year 1"),
+    "sophomore": ("Sophomore", "Second Year", "2nd Year", "Year 2"),
+    "junior": ("Junior", "Third Year", "3rd Year", "Year 3"),
+    "senior": ("Senior", "Fourth Year", "4th Year", "Year 4"),
+}
+
+
+def month_fact(question: Question, month: str, source: str, has_options: bool):
+    """A school month as a form takes it: from a list, a year question, or written out."""
+    when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
+    if has_options:
+        return [when.strftime(f) for f in ("%B %Y", "%b %Y", "%Y")], source
+    if question.name in GRADUATION_YEAR:
+        return [when.strftime("%Y")], source
+    if question.canonical_id != "graduation_date" or question.name in GRADUATION_DATE:
+        return [when.strftime("%B %Y")], source
+    return None
+
+
+def school_fact(question: Question, profile: dict, has_options: bool, entry: tuple | None):
+    """(values, source) for a question about the owner's schools, None when the profile
+    cannot say, and False when the question is about something else."""
+    canonical = question.canonical_id
+    if canonical not in SCHOOL_IDS:
+        return False
+    if canonical in {"current_school", "school_start", "enrollment_status"}:
+        # Where he is enrolled today, whichever school applications state.
+        index = education.current_index(profile)
+        current = None if index is None else education.schools(profile)[index]
+        if canonical == "enrollment_status":
+            return enrollment_fact(question, profile, current)
+        key = "school" if canonical == "current_school" else "start_month"
+        if not current or not current.get(key):
+            return None
+        source = f"education.schools.{index}.{key}"
+        if key == "school":
+            return [str(current["school"])], source
+        return month_fact(question, current[key], source, has_options)
+    if canonical == "class_standing":
+        now = education.year_in_school(profile)
+        if not now:
+            return None
+        coming = education.rising(education.graduation(profile), education.internship_year(""))
+        values = list(YEAR_WORDS[now]) + ([f"Rising {coming.title()}"] if coming else [])
+        return values, f"education.schools.{education.primary_index(profile)}.graduation_month"
+    if canonical == "gpa":
+        # A GPA belongs to the school where it was earned: a block's own entry, or the
+        # one school whose GPA the owner discloses when the form asks for his GPA.
+        found = entry if entry is not None else education.disclosed_gpa(profile)
+        index, school = found or NO_ENTRY
+        if not school or school.get("disclose_gpa") is not True or school.get("gpa") is None:
+            return None
+        scale = school.get("gpa_scale")
+        if question.detail and (scale is None or float(question.detail) != float(scale)):
+            return None  # the form asks on another scale than the profile's
+        return [str(school["gpa"])], f"education.schools.{index}.gpa"
+    stated = entry if entry is not None else (education.ordered(profile)[:1] or [NO_ENTRY])[0]
+    index, school = stated
+    if not school:
+        return None
+    if canonical in {"school", "major", "degree"}:
+        if not school.get(canonical):
+            return None
+        return [str(school[canonical])], f"education.schools.{index}.{canonical}"
+    key = "graduation_month" if canonical == "graduation_date" else "start_month"
+    if not school.get(key):
+        return None
+    return month_fact(question, school[key], f"education.schools.{index}.{key}", has_options)
+
+
+def enrollment_fact(question: Question, profile: dict, current: dict | None):
+    """Whether he is enrolled now, or enrolled at the school a question names."""
+    if question.detail == "kind":
+        return None  # which kind of program he is in is not a profile field
+    named = question.detail.removeprefix("at:") if question.detail.startswith("at:") else ""
+    if not named:
+        return (list(ENROLLED_WORDS), "education.enrollment") if current else None
+
+    def words(school) -> list[str]:
+        return [w for w in normalized(school).split() if w not in ENROLLED_FILLER]
+
+    if current and words(current.get("school")) == words(named):
+        return ["Yes"], "education.enrollment"
+    others = [s for s in education.schools(profile) if s is not current]
+    if current and any(words(s.get("school")) == words(named) for s in others):
+        return ["No"], "education.enrollment"  # a school of his, not the one he attends now
     return None
 
 
@@ -1631,16 +1780,19 @@ def education_date(
     part: tuple[str, str], field: dict, labels: list[str], profile: dict, recall
 ) -> tuple[str | None, str | None]:
     """A school entry's start or end month or year, from the approved enrollment and
-    graduation months; the start month may also be the owner's earlier answer."""
-    schools = (profile.get("education") or {}).get("schools") or []
-    if len(schools) != 1:
+    graduation months of the entry the block states (the first block states the entry
+    applications state). A start that lies ahead is given as it is. The start of the
+    school he attends now may also be the owner's earlier answer."""
+    index, school = education.entry_for_block(profile, education.block_index(field)) or NO_ENTRY
+    if school is None:
         return None, None
     edge, unit = part
     key = "start_month" if edge == "start" else "graduation_month"
-    month, source = schools[0].get(key), "education.schools.0." + key
+    month, source = school.get(key), f"education.schools.{index}.{key}"
+    attending = index == education.current_index(profile)
     if month:
         when = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
-    elif edge == "start" and recall is not None:
+    elif edge == "start" and attending and recall is not None:
         said = recall(SCHOOL_START_LABEL, [], kind="", employer="", profile=profile)
         match = MONTH_YEAR.fullmatch(str(said or "").strip())
         try:
@@ -1812,9 +1964,10 @@ def draft_gate(question: dict | None) -> dict | None:
             "code": f"sensitive:{classified.topic or classified.canonical_id}",
             "words": "This is a legal or personal question, so only your own answer is used.",
         }
-    if classified.known and classified.canonical_id in BY_OPTIONS:
+    if classified.known and classified.canonical_id in EDUCATION_FACTS:
         # The degree, major and GPA are facts: a list code could not map is the owner's
-        # pick, never a model's nearest guess.
+        # pick, never a model's nearest guess. Where he is enrolled and his year in
+        # school are facts about today that a draft could get wrong.
         return {
             "code": f"profile_fact:{classified.canonical_id}",
             "words": "This asks for a fact about your education, so only your profile or "
@@ -1849,7 +2002,9 @@ BY_OPTIONS = frozenset({"degree", "major", "gpa"})
 FIRST_PAGE = 100  # Greenhouse's pickers load their lists a hundred at a time
 
 
-def choose(question: Question, labels: list[str], values: list, profile: dict, loose: bool):
+def choose(
+    question: Question, labels: list[str], values: list, profile: dict, loose: bool, source=""
+):
     """The one offered option a profile fact names, or None."""
     canonical = question.canonical_id
     if canonical == "degree":
@@ -1857,10 +2012,84 @@ def choose(question: Question, labels: list[str], values: list, profile: dict, l
     if canonical == "major":
         return discipline_choice(labels, values[0])
     if canonical == "gpa":
-        schools = (profile.get("education") or {}).get("schools") or []
-        return gpa_choice(labels, values[0], schools[0].get("gpa_scale") if schools else None)
+        # The scale of the school the GPA was earned at, named by the fact's source.
+        parts = str(source).split(".")
+        index = int(parts[2]) if len(parts) > 3 and parts[2].isdigit() else 0
+        schools = education.schools(profile)
+        scale = schools[index].get("gpa_scale") if index < len(schools) else None
+        return gpa_choice(labels, values[0], scale)
+    if canonical in {"class_standing", "enrollment_status"}:
+        return first_listed(labels, values)  # the closest wording first
     chosen = {match_option(labels, v, loose=loose) for v in values} - {None}
     return chosen.pop() if len(chosen) == 1 else None
+
+
+# Questions a form's education block asks once per school.
+BLOCK_IDS = frozenset({"school", "degree", "major", "gpa", "graduation_date", "degree_start"})
+
+
+def education_field(field: dict) -> bool:
+    """Whether a field is one of a form's education-block questions, which a form asks
+    again for each school (so a repeated one is the next school's, not a twin)."""
+    return bool(block_question(field))
+
+
+# A GPA field that sits in an education block says nothing more than "GPA".
+BLOCK_GPA = frozenset({"gpa", "grade point average"})
+
+
+def block_question(field: dict) -> str:
+    """What a field asks within an education block ("school", "start month"), or ""."""
+    return _block_question(
+        str(field.get("label") or ""),
+        str(field.get("kind") or ""),
+        str(field.get("id") or ""),
+        str(field.get("name") or ""),
+    )
+
+
+@functools.lru_cache(maxsize=4096)
+def _block_question(label: str, kind: str, identifier: str, name: str) -> str:
+    part = education_part({"label": label, "id": identifier, "name": name})
+    if part:
+        return " ".join(part)
+    question = classify(label, kind)
+    if not question.known or question.canonical_id not in BLOCK_IDS:
+        return ""
+    if question.canonical_id == "gpa" and question.name not in BLOCK_GPA:
+        return ""  # "Cumulative GPA" asks for the GPA overall, wherever the form asks it
+    return question.canonical_id
+
+
+def number_education_blocks(fields: list[dict]) -> None:
+    """Mark which education block each block question of a page is in, in page order:
+    the second "School" on a page is the second block's, however the form names its
+    ids. Only the same words asked again start another block ("Graduation date" and
+    "Expected graduation" are one question asked twice). Only a page with a block (a
+    school, degree, major or school date) is numbered, and a plain "GPA" on it is its
+    block's, never the GPA of another school."""
+    asked = [(field, block_question(field)) for field in fields]
+    if not any(
+        what and what not in {"gpa", "graduation_date", "degree_start"} for _, what in asked
+    ):
+        return
+    seen: dict[tuple, int] = {}
+    for field, what in asked:
+        if what:
+            key = (what, plain_name(field.get("label")))
+            field["education_block"] = seen.get(key, 0)
+            seen[key] = field["education_block"] + 1
+
+
+def block_entry(field: dict, question: Question, profile: dict) -> tuple | None:
+    """The (position, school) a block question states, NO_ENTRY when the block has no
+    school of the owner's, None when the field is not in a numbered or repeated block."""
+    if not question.known or question.canonical_id not in BLOCK_IDS:
+        return None
+    index = education.block_index(field)
+    if index is None:
+        return None
+    return education.entry_for_block(profile, index) or NO_ENTRY
 
 
 def resolve(
@@ -1888,14 +2117,19 @@ def resolve(
     if not question.answerable:
         return None, None
     loose = question.sensitivity == PLAIN
-    fact = profile_fact(question, profile, bool(labels))
+    entry = block_entry(field, question, profile)
+    if (part or entry is not None) and education.block_index(field):
+        # A later education block states another school: what the owner said for the
+        # first never fills it.
+        recall = None
+    fact = profile_fact(question, profile, bool(labels), entry)
     if fact:
         values, source = fact
         if unread and question.canonical_id in BY_OPTIONS:
             return None, None  # matched to the board's own list: the picker is read first
         if not labels:
             return values[0], source
-        chosen = choose(question, labels, values, profile, loose)
+        chosen = choose(question, labels, values, profile, loose, source)
         if chosen is not None:
             return chosen, source
         if (

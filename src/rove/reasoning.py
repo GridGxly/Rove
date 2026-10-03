@@ -20,7 +20,17 @@ from typing import Annotated, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from . import draft_guard, fastpath, model_client, postings, timing, unslop, vault, workflow
+from . import (
+    draft_guard,
+    education,
+    fastpath,
+    model_client,
+    postings,
+    timing,
+    unslop,
+    vault,
+    workflow,
+)
 from .evidence import career_evidence
 from .model_client import ModelUnavailable, PromptTooLong
 from .onboarding import read_approved
@@ -487,15 +497,7 @@ CLASS_STANDING_MONTHS = {
 
 def internship_year(text: str) -> int:
     """The internship's calendar year from the posting, else the next summer."""
-    from datetime import UTC, datetime
-
-    match = re.search(
-        r"(?:summer|spring|fall|winter|intern[a-z]*)\D{0,20}(20\d\d)", text, re.IGNORECASE
-    )
-    if match:
-        return int(match.group(1))
-    today = datetime.now(UTC)
-    return today.year + 1 if today.month >= 8 else today.year
+    return education.internship_year(text)
 
 
 def class_standing(
@@ -526,9 +528,12 @@ def class_standing(
 
 
 def evaluate_requirements(requirements: list[dict], profile: dict, posting: str = "") -> list[dict]:
-    """Deterministic checks for exact facts; Qwen's judgment stands only where code cannot."""
-    education = profile["education"]["schools"]
-    graduation = next((s["graduation_month"] for s in education if s["graduation_month"]), None)
+    """Deterministic checks for exact facts; Qwen's judgment stands only where code cannot.
+
+    The graduation month, class standing and degree are those of the school entry
+    applications state (education.py), not the first one listed."""
+    stated = education.primary(profile)
+    graduation = education.graduation(profile)
     eligible = profile["eligibility"]
     checked = []
     for item in requirements:
@@ -596,7 +601,7 @@ def evaluate_requirements(requirements: list[dict], profile: dict, posting: str 
         elif item["kind"] == "degree":
             majors = " ".join(
                 (school.get("major") or "") + " " + (school.get("degree") or "")
-                for school in education
+                for school in ([stated] if stated else education.schools(profile))
             ).lower()
             computing = any(
                 term in majors

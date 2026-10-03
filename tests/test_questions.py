@@ -1145,7 +1145,7 @@ def student(**changes) -> dict:
         ("GPA (if applicable)", "gpa"),
         ("School", "school"),
         ("College/University", "school"),
-        ("Which university do you attend?", "school"),
+        ("Which university do you attend?", "current_school"),  # enrollment, today
         ("Degree", "degree"),
         ("Discipline", "major"),
         ("Field of study", "major"),
