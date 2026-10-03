@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from rove import fastpath, reasoning, submission, timing, worker, workflow
+from rove import fastpath, questions, reasoning, submission, timing, worker, workflow
 from rove.onboarding import approve, digest, draft, propose, read_approved
 
 POSTING = """Software Engineering Intern, Summer 2027
@@ -300,7 +300,9 @@ def test_questions_are_sorted_into_writing_choice_short_answer_and_owner_only():
     assert kind({"label": "Team", "key": "k6", "reason": "New field appeared after filling"}) == (
         "writing"
     )
-    # Facts the approved profile has no field for, which a draft may never answer.
+    # Legal and personal questions are the shared draft gate's call: the resolver answers
+    # them from the profile when it holds the fact, and one still pending is the owner's,
+    # since the review would refuse a draft for it anyway.
     owner_only = [
         "Do you hold an active security clearance?",
         "Have you ever been convicted of a felony?",
@@ -312,32 +314,34 @@ def test_questions_are_sorted_into_writing_choice_short_answer_and_owner_only():
         "Date of birth",
         "I certify that the information above is true",
         "Signature",
-    ]
-    for label in owner_only:
-        assert kind(question(label, "k7", ["Yes", "No"]), {"kind": "select-one"}) == "owner", label
-    assert kind(question("Transcript", "k8", reason=fastpath.UNAPPROVED_FILE)) == "owner"
-    assert kind(question("Transcript", "k9"), {"kind": "file"}) == "owner"
-    # Facts the profile can hold stay with the model until code resolves every wording of
-    # them: skipping the call would ask the owner for something he already approved.
-    for label in (
         "Are you eligible to work in the United States?",
         "Do you need visa sponsorship?",
         "Are you a U.S. citizen?",
         "Are you at least 18 years of age?",
-    ):
-        assert kind(question(label, "k10", ["Yes", "No"]), {"kind": "select-one"}) == "choice"
-    # So does a value code knew and the control refused: a draft has settled those before.
+        "Expected salary",
+    ]
+    for label in owner_only:
+        pending = question(label, "k7", ["Yes", "No"])
+        assert questions.draft_gate({**pending, "kind": "select-one"})  # the same verdict
+        assert kind(pending, {"kind": "select-one"}) == "owner", label
+    # A question the form gave no text for is never drafted; the call leaves it out.
+    unread = {"label": "", "key": "k8", "required": True, "options": [], "label_missing": True}
+    assert kind(unread, {"kind": "text"}) == "owner"
+    assert kind(question("Transcript", "k9", reason=fastpath.UNAPPROVED_FILE)) == "owner"
+    assert kind(question("Transcript", "k10"), {"kind": "file"}) == "owner"
+    # A value code knew and the control refused stays with the model: a draft has settled
+    # those before.
     refused = question("Location", "k11", reason="No unique matching dropdown option")
     assert kind(refused, {"kind": "text"}) == "short"
     # Ordinary questions that only sound close stay with the model.
     for label in (
         "Are you able to work in our office five days a week?",
-        "Which sponsored hackathons have you attended?",
         "Describe a time you embraced a change",
         "What stage of your degree are you in?",
         "List any certifications you hold",
     ):
-        assert kind(question(label, "k10"), {"kind": "textarea"}) == "writing", label
+        assert questions.draft_gate(question(label, "k12")) is None
+        assert kind(question(label, "k12"), {"kind": "textarea"}) == "writing", label
 
 
 def test_a_drafting_call_is_needed_only_for_writing_a_choice_or_a_short_answer():

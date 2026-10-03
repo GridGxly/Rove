@@ -429,6 +429,9 @@ status?</label><select id="visa" name="visa" required>{YES_NO}</select></div>
 <div><label for="heard">How did you hear about this role?</label>
 <select id="heard" name="heard" required><option value="">Select</option>
 <option>LinkedIn</option><option>Company website</option><option>Other</option></select></div>
+<div><label for="team">Which team interests you most?</label>
+<select id="team" name="team" required><option value="">Select</option>
+<option>Platform</option><option>Product</option><option>Infrastructure</option></select></div>
 <div><label for="clearance">Do you hold an active security clearance?</label>
 <select id="clearance" name="clearance" required>{YES_NO}</select></div>
 <div><label for="why">Why do you want to work here?</label>
@@ -527,7 +530,7 @@ def fixture_model(directory: Path, context: dict, basename: str, attempts: int =
         }
     elif "questions" in context:
         drafts = {
-            "how did you hear": ("Other", "intake_source"),
+            "which team": ("Platform", "stories"),
             "why do you want to work": ("I like building small, reliable tools.", "stories"),
         }
         answers = []

@@ -5,13 +5,14 @@ only the model can do: a job-fit review is stored once per job and read back on 
 later pass, and a drafting call is made only when a pending question needs writing or a
 choice. Neither loosens a check: code re-runs its own comparisons each time a stored
 review is read, and a question the model is not asked goes to the owner, never to a guess.
+Which questions those are is the shared draft gate's call (questions.py), the same one
+the review and the auto-use policy apply to whatever the model returns.
 """
 
 import hashlib
 import json
-import re
 
-from . import timing, workflow
+from . import questions, timing, workflow
 
 
 def posting_hash(text: str) -> str:
@@ -79,33 +80,23 @@ def store_review(application_id: str, key: tuple[str, str, str], result: dict):
         )
 
 
-# Questions a model draft is never the answer to, and that the approved profile has no
-# field for: clearance, criminal history, self-identification, signed statements. Only the
-# owner can answer them. Kept narrow on purpose. Work authorization, sponsorship,
-# citizenship and age are left out because the profile can hold them: until code resolves
-# every wording of those, skipping the model would ask the owner for a fact he already
-# approved. A label this misses is sent to the model as before.
-OWNER_ONLY = re.compile(
-    r"security clearance|criminal|convict|felon|misdemeanou?r|background check"
-    r"|\bgender\b|\brace\b|ethnic|hispanic|latin[oax]\b|veteran|disabilit|sexual orientation"
-    r"|self.?identif|date of birth"
-    r"|\bi (?:hereby )?(?:certify|acknowledge|attest|agree|consent)\b|signature",
-    re.IGNORECASE,
-)
 # The form wants a file nobody approved: a draft cannot be uploaded.
 UNAPPROVED_FILE = "Unapproved required file requested"
 CHOICE_KINDS = {"radio_group", "choice", "select-one", "select-multiple", "checkbox", "radio"}
 SHORT_KINDS = {"text", "search", "url", "email", "tel", "number", "date", "month", "week", "time"}
 
 
-def owner_only(question: dict) -> bool:
-    """Whether a model draft may never answer this question.
+def owner_only(question: dict, kind: str = "") -> bool:
+    """Whether a model draft could never be the answer to this pending question.
 
-    The one place the drafting gate asks what kind of question this is. When the shared
-    question classifier lands, this body becomes its call (`questions.draft_gate(question)`)
-    and OWNER_ONLY above goes away.
+    The verdict is the shared draft gate's (questions.py): a legal or personal question,
+    or one whose text the form did not give, is the owner's whatever a model would say,
+    and the review and the auto-use policy refuse such drafts for the same reason. A file
+    the form wants that nobody approved is the owner's too: no draft can be uploaded.
     """
-    return bool(OWNER_ONLY.search(str(question.get("label") or "")))
+    if question.get("reason") == UNAPPROVED_FILE or kind in {"file", "password", "hidden"}:
+        return True
+    return questions.draft_gate({**question, "kind": kind}) is not None
 
 
 def question_kind(question: dict, field: dict | None = None) -> str:
@@ -115,14 +106,8 @@ def question_kind(question: dict, field: dict | None = None) -> str:
     included, still goes to the model, so the call is skipped only when code is sure a
     draft could not be used.
     """
-    kind = str((field or {}).get("kind") or "")
-    if (
-        question.get("reason") == UNAPPROVED_FILE
-        or kind in {"file", "password", "hidden"}
-        # A question whose text could not be read is never drafted; the call leaves it out.
-        or question.get("label_missing")
-        or owner_only(question)
-    ):
+    kind = str((field or {}).get("kind") or question.get("kind") or "")
+    if owner_only(question, kind):
         return "owner"
     if question.get("options") or kind in CHOICE_KINDS:
         return "choice"
