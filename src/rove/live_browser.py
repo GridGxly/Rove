@@ -750,9 +750,14 @@ class RecruitingBrowser:
             data["manual_takeover_required"] = True
         else:
             image = state_root() / f"applications/{self.run['id']}/browser.png"
-            self.page.screenshot(path=str(image), full_page=False)
-            image.chmod(0o600)
-            data["screenshot"] = str(image)
+            try:
+                self.page.screenshot(path=str(image), full_page=False)
+                image.chmod(0o600)
+                data["screenshot"] = str(image)
+            except PlaywrightError as error:
+                # Evidence, not a precondition: an error page or a renderer that is gone
+                # cannot be captured, and the observation is still what the run needs.
+                data["screenshot_error"] = type(error).__name__
         write_private(state_root() / f"applications/{self.run['id']}/observation.json", data)
         return data
 
