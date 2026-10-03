@@ -27,7 +27,7 @@ from patchright.sync_api import sync_playwright
 
 from . import boards, browser_app, form_reading, overlays, questions, timing, workflow
 from .browser_app import devtools_alive
-from .jobs import lookup_job_link, public_link
+from .jobs import lookup_job_link, posting_gone, public_link
 from .onboarding import read_approved
 from .runtime import state_root, write_private
 
@@ -215,7 +215,7 @@ __READING__
    /^(apply( now| for this (job|position))?|apply on (the )?(employer|company) (site|website)|apply for this job|start application|continue application)$/i.test(e.innerText.trim())).map((e,i)=>{
    e.setAttribute('data-rove-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
  });
- return {title:document.title,text:document.body.innerText.slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
+ return {title:document.title,http_status:(performance.getEntriesByType('navigation')[0]||{}).responseStatus||0,text:document.body.innerText.slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
  final_controls:[...document.querySelectorAll('button,input[type=submit],a,[role=button]')].filter(visible).filter(e=>/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{e.setAttribute('data-rove-submit',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};}),
  ats_markers:{captcha_challenge:[...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"],.g-recaptcha,.h-captcha,.cf-turnstile')].some(e=>{const r=e.getBoundingClientRect();return visible(e)&&r.width>=200&&r.height>=60;}),
  already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
@@ -807,13 +807,19 @@ class RecruitingBrowser:
         head = data.get("title", "") + "\n" + data.get("text", "")[:3000]
         marker = BLOCK_MARKERS.search(head)
         closed = CLOSED_MARKERS.search(head)
+        gone = posting_gone(
+            data.get("title"),
+            data.get("http_status"),
+            data.get("fields"),
+            data.get("application_links"),
+        )
         data.update(
             url=self.page.url,
             run_id=self.run["id"],
             blocked=bool(marker) and not data.get("fields"),
             block_marker=marker.group(0) if marker else None,
-            closed=bool(closed) and not data.get("fields"),
-            closed_marker=closed.group(0) if closed else None,
+            closed=(bool(closed) and not data.get("fields")) or (bool(gone) and not marker),
+            closed_marker=closed.group(0) if closed else gone,
             visible_browser=True,
             submission_enabled=False,
             profile_hash=self.run["profile_hash"],

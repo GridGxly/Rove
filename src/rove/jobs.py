@@ -1,5 +1,6 @@
 """Read-only Keryx intake. Source metadata is evidence, never application authority."""
 
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -129,6 +130,52 @@ def material_key(job: dict) -> str:
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
 
 
+def write_ahead(db: sqlite3.Connection):
+    """Readers stop blocking writers: the recruiting database runs in WAL mode.
+
+    The mode is a property of the file, so it is switched once and every later connection
+    only reads it. A switch that finds another connection mid-transaction is retried on
+    the next connection rather than waited for.
+    """
+    if str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
+        return
+    with contextlib.suppress(sqlite3.OperationalError):
+        db.execute("PRAGMA journal_mode=WAL")
+
+
+# A posting page whose title says the job or the page is gone. Only the title counts: the
+# body of a live posting can say "page not found" in a footer link or a help text.
+GONE_TITLE = re.compile(
+    r"\b(?:job|position|posting|opening|role|page|requisition)s? (?:was |is )?(?:not found"
+    r"|no longer (?:available|exists|open))\b|\b404\b|\bnot found\b|\bpage (?:doesn['’]t|does "
+    r"not) exist\b|\bjob (?:has )?expired\b",
+    re.IGNORECASE,
+)
+SEARCH_FIELD = re.compile(r"search|keyword|subscribe|newsletter", re.IGNORECASE)
+
+
+def posting_gone(title, http_status, fields=(), apply_links=()) -> str | None:
+    """Why a posting page reads as closed, or None: the page answered 404 or 410, or its
+    title says the job or the page is not found.
+
+    A page that still has a form to fill or an Apply control is not closed, whatever its
+    status says (some single-page career sites answer 404 and draw the posting anyway); a
+    site-search or newsletter box is not such a form.
+    """
+    form = [
+        f
+        for f in fields or ()
+        if not SEARCH_FIELD.search(f"{f.get('label', '')} {f.get('name', '')}")
+        and f.get("kind") != "search"
+    ]
+    if form or apply_links:
+        return None
+    if http_status in (404, 410):
+        return "the posting page is gone"
+    match = GONE_TITLE.search(" ".join(str(title or "").split()))
+    return f"the page title says “{match[0]}”" if match else None
+
+
 def database() -> sqlite3.Connection:
     path = state_root() / "recruiting.sqlite3"
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -136,6 +183,7 @@ def database() -> sqlite3.Connection:
     path.chmod(0o600)
     db = sqlite3.connect(path, timeout=30)
     db.row_factory = sqlite3.Row
+    write_ahead(db)
     db.execute("PRAGMA foreign_keys=ON")
     db.executescript("""
         CREATE TABLE IF NOT EXISTS job_sources (
@@ -159,8 +207,17 @@ def database() -> sqlite3.Connection:
     return db
 
 
+IMPORT_CHUNK = 1000  # rows per commit: other writers wait for one chunk, never the whole feed
+
+
 def ingest(path: Path, revision: str) -> dict:
-    """Validate a complete snapshot before changing any current job records."""
+    """Validate a complete snapshot before changing any current job records.
+
+    The rows are then written in chunks of IMPORT_CHUNK, each its own transaction, so the
+    worker's writes never queue behind a 38,000-row import. The source revision is
+    recorded last: an import cut short is simply run again, and the rows it already wrote
+    read as unchanged the second time, so no event is repeated.
+    """
     if not re.fullmatch(r"[a-f0-9]{40}", revision):
         raise ValueError("Expected an immutable upstream commit SHA")
     if path.stat().st_size > MAX_BYTES:
@@ -187,65 +244,14 @@ def ingest(path: Path, revision: str) -> dict:
                 )
             }
             material = known_material(db)
-            seen = set()
-            for job in records:
-                seen.add(job.id)
-                metadata = job.model_dump()
-                metadata["url"] = public_link(job.url)
-                encoded = json.dumps(metadata, sort_keys=True)
-                content_hash = hashlib.sha256(encoded.encode()).hexdigest()
-                old = previous.get(job.id)
-                current = material_key(metadata)
-                if old is None:
-                    event = "new"
-                elif old[0] == content_hash:
-                    event = "unchanged"
-                elif material.get(job.id) == current:
-                    # The feed rewrote dates, notes or link status: the same job, no news.
-                    event = "rewritten"
-                else:
-                    event = "changed"
-                counts[event] += 1
-                if material.get(job.id) != current:
-                    db.execute(
-                        "INSERT OR REPLACE INTO job_material VALUES(?,?,?)",
-                        (REPOSITORY, job.id, current),
-                    )
-                db.execute(
-                    """
-                    INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(source,id) DO UPDATE SET
-                    company=excluded.company,title=excluded.title,location=excluded.location,
-                    program=excluded.program,cycle=excluded.cycle,source_status=excluded.source_status,
-                    active=excluded.active,url=excluded.url,posted_at=excluded.posted_at,
-                    metadata=excluded.metadata,content_hash=excluded.content_hash,
-                    revision=excluded.revision,last_seen=excluded.last_seen
-                """,
-                    (
-                        REPOSITORY,
-                        job.id,
-                        job.company,
-                        job.title,
-                        job.location,
-                        job.program,
-                        job.cycle,
-                        job.status,
-                        int(job.status == "open"),
-                        metadata["url"],
-                        job.posted_at,
-                        encoded,
-                        content_hash,
-                        revision,
-                        now,
-                        now,
-                    ),
-                )
-                if event in ("new", "changed"):
-                    db.execute(
-                        "INSERT INTO job_events(source,job_id,revision,event,created_at) "
-                        "VALUES (?,?,?,?,?)",
-                        (REPOSITORY, job.id, revision, event, now),
-                    )
+        seen = set()
+        for start in range(0, len(records), IMPORT_CHUNK):
+            with db:
+                for job in records[start : start + IMPORT_CHUNK]:
+                    seen.add(job.id)
+                    event = import_row(db, job, previous, material, revision, now)
+                    counts[event] += 1
+        with db:
             for job_id in previous.keys() - seen:
                 if previous[job_id][1]:
                     counts["missing"] += 1
@@ -271,6 +277,64 @@ def ingest(path: Path, revision: str) -> dict:
         **counts,
         **job_status(),
     }
+
+
+def import_row(db, job: Job, previous: dict, material: dict, revision: str, now: str) -> str:
+    """Write one validated listing; returns new, changed, rewritten or unchanged."""
+    metadata = job.model_dump()
+    metadata["url"] = public_link(job.url)
+    encoded = json.dumps(metadata, sort_keys=True)
+    content_hash = hashlib.sha256(encoded.encode()).hexdigest()
+    old = previous.get(job.id)
+    current = material_key(metadata)
+    if old is None:
+        event = "new"
+    elif old[0] == content_hash:
+        event = "unchanged"
+    elif material.get(job.id) == current:
+        # The feed rewrote dates, notes or link status: the same job, no news.
+        event = "rewritten"
+    else:
+        event = "changed"
+    if material.get(job.id) != current:
+        db.execute(
+            "INSERT OR REPLACE INTO job_material VALUES(?,?,?)", (REPOSITORY, job.id, current)
+        )
+    db.execute(
+        """
+        INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(source,id) DO UPDATE SET
+        company=excluded.company,title=excluded.title,location=excluded.location,
+        program=excluded.program,cycle=excluded.cycle,source_status=excluded.source_status,
+        active=excluded.active,url=excluded.url,posted_at=excluded.posted_at,
+        metadata=excluded.metadata,content_hash=excluded.content_hash,
+        revision=excluded.revision,last_seen=excluded.last_seen
+    """,
+        (
+            REPOSITORY,
+            job.id,
+            job.company,
+            job.title,
+            job.location,
+            job.program,
+            job.cycle,
+            job.status,
+            int(job.status == "open"),
+            metadata["url"],
+            job.posted_at,
+            encoded,
+            content_hash,
+            revision,
+            now,
+            now,
+        ),
+    )
+    if event in ("new", "changed"):
+        db.execute(
+            "INSERT INTO job_events(source,job_id,revision,event,created_at) VALUES (?,?,?,?,?)",
+            (REPOSITORY, job.id, revision, event, now),
+        )
+    return event
 
 
 def known_material(db) -> dict:

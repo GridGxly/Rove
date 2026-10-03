@@ -362,7 +362,7 @@ def test_a_drafting_call_is_needed_only_for_writing_a_choice_or_a_short_answer()
     assert not fastpath.needs_model(fastpath.drafting_counts([]))
 
 
-def test_filled_fields_are_counted_by_who_supplied_the_value(state):
+def test_filled_fields_are_counted_by_who_supplied_the_value(state, monkeypatch):
     app = queued(state, "9")
     answers = [
         (app, "k-draft", "Because of the mission.", "auto-draft:" + "c" * 12),
@@ -390,13 +390,12 @@ def test_filled_fields_are_counted_by_who_supplied_the_value(state):
     counted = {"fields_code": 2, "fields_model": 2, "fields_owner": 1, "fields_pending": 1}
     assert fastpath.fill_counts(app, page) == counted
     # A count is measurement: a database it cannot read leaves it out and raises nothing.
-    blocker = sqlite3.connect(state / "recruiting.sqlite3")
-    blocker.execute("BEGIN EXCLUSIVE")
-    try:
-        assert fastpath.fill_counts(app, page) == {}
-    finally:
-        blocker.rollback()
-        blocker.close()
+    # (In WAL mode a writer no longer blocks this read, so the failure is simulated.)
+    def unreadable():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(timing, "connect", unreadable)
+    assert fastpath.fill_counts(app, page) == {}
 
 
 FIELD = {"label": "First name", "name": "first", "kind": "text", "options": [], "required": True}
