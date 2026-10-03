@@ -1907,9 +1907,38 @@ def test_the_route_handler_never_touches_a_route_already_handled(board, site, mo
 
     public = Route(site + "/acme/jobs/1")
     runtime._route(public)
-    runtime._route(public)  # a second call does not raise
-    assert public.calls == ["continue", "continue"]
+    runtime._route(public)  # a second call leaves the handled route alone
+    assert public.calls == ["continue"]
     private = Route("http://127.0.0.1:1/admin")
     runtime._route(private)
     runtime._route(private)
-    assert private.calls == ["abort", "abort"]
+    assert private.calls == ["abort"]
+
+    # A route the driver already answered (its handling is over) is not touched either.
+    answered = Route(site + "/acme/jobs/2")
+    answered._impl_obj = type("Impl", (), {"_handling_future": None})()
+    runtime._route(answered)
+    assert answered.calls == []
+
+    # A driver error inside the handler, such as the page closing mid-request, ends it
+    # quietly; nothing is retried on that route.
+    class Closing(Route):
+        def continue_(self):
+            self.calls.append("continue")
+            raise PlaywrightError(
+                "Route.continue_: Target page, context or browser has been closed"
+            )
+
+    closing = Closing(site + "/acme/jobs/3")
+    runtime._route(closing)
+    runtime._route(closing)
+    assert closing.calls == ["continue"]
+
+    # And a request whose address cannot even be read is refused, not let through.
+    def unreadable(url):
+        raise RuntimeError("unreadable")
+
+    monkeypatch.setattr(runtime, "allowed", unreadable)
+    odd = Route(site + "/acme/jobs/4")
+    runtime._route(odd)
+    assert odd.calls == ["abort"]

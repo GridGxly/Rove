@@ -78,6 +78,25 @@ def same_job(approved: str, form: str) -> bool:
     return job_scope(approved) == job_scope(form) or nested_paths(approved, form)
 
 
+def route_unhandled(route) -> bool:
+    """Whether nobody has continued, aborted or fulfilled this route yet.
+
+    Rove's own mark comes first; the driver's own state (the future it keeps while a
+    handler may still answer) covers a route something else already answered.
+    """
+    if getattr(route, "_rove_handled", False):
+        return False
+    impl = getattr(route, "_impl_obj", None)
+    if impl is not None and hasattr(impl, "_handling_future"):
+        return impl._handling_future is not None
+    return True
+
+
+def mark_handled(route):
+    with contextlib.suppress(AttributeError):
+        route._rove_handled = True
+
+
 def same_value(expected: str, actual: str) -> bool:
     """A typed value counts when the site kept it, reformatted it, or prefixed its country code."""
     expected, actual = str(expected or ""), str(actual or "")
@@ -671,10 +690,22 @@ class RecruitingBrowser:
             return False
 
     def _route(self, route):
-        # A route that was already continued or aborted (the driver reports "Route is
-        # already handled") is left alone; so is one whose page went away mid-request.
+        """Continue a public HTTPS request, abort anything else; each route once.
+
+        A route this handler (or the driver) already continued or aborted is left alone:
+        calling it again is what the driver reports as "Route is already handled". A
+        driver error, such as the page closing mid-request, ends the handler quietly;
+        the request is then the driver's to finish.
+        """
+        if not route_unhandled(route):
+            return
+        mark_handled(route)
+        try:
+            allowed = self.allowed(route.request.url)
+        except Exception:  # noqa: BLE001 -- an unreadable request is never let through
+            allowed = False
         with contextlib.suppress(PlaywrightError):
-            if self.allowed(route.request.url):
+            if allowed:
                 route.continue_()
             else:
                 route.abort()
