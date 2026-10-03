@@ -350,6 +350,10 @@ def test_the_help_lists_six_to_eight_examples_in_plain_words(state):
     assert len(text) < 1900
     with_ids = chat.help_text({**SETTINGS, "memory_channel_id": "mem"})
     assert "<#mem>" in with_ids and "<#action>" in with_ids and "<#sys>" in with_ids
+    # In the chat, "help" gets the same examples without the title and the footer.
+    reply = chat.help_reply()["say"].splitlines()
+    assert reply[0] == "Things you can ask me:"
+    assert reply[1:] == [line for line in chat.help_text().splitlines() if line.startswith("• ")]
 
 
 class FakeDiscord:

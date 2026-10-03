@@ -346,24 +346,31 @@ def answer_paste() -> dict:
 HELP_TITLE = "What you can ask Rove"
 
 
-def help_text(settings: dict | None = None) -> str:
-    """The pinned message. Every example here works today; keep it that way."""
-    settings = workflow.config() if settings is None else settings
+def examples(settings: dict) -> list[str]:
+    """What he can type, one line each. Every example here works today; keep it that way."""
     memory = channel(settings, "memory_channel_id", "memory")
+    return [
+        "• Paste a job link — I queue it as yours (add `first` to jump the line)",
+        "• `status` — what I'm doing, the queue, sends today",
+        "• `what's waiting on me` — what needs you, and where",
+        "• `why did you skip Acme` — what happened with one company",
+        "• `how many did you send today` — sends and the daily cap",
+        "• `pause` / `resume` — hold or restart jobs from the feed",
+        "• `where do I go to school` — any fact from your approved profile",
+        f"• `what do you know about me` — that list lives in {memory}: type `list` there",
+    ]
+
+
+def help_text(settings: dict | None = None) -> str:
+    """The pinned message in agent-control."""
+    settings = workflow.config() if settings is None else settings
     action = channel(settings, "action_channel_id", "action-needed")
     system = channel(settings, "system_channel_id", "system-log")
     return "\n".join(
         [
             f"**{HELP_TITLE}**",
             "Type here like you would text someone. These work:",
-            "• Paste a job link — I queue it as yours (add `first` to jump the line)",
-            "• `status` — what I'm doing, the queue, sends today",
-            "• `what's waiting on me` — what needs you, and where",
-            "• `why did you skip Acme` — what happened with one company",
-            "• `how many did you send today` — sends and the daily cap",
-            "• `pause` / `resume` — hold or restart jobs from the feed",
-            "• `where do I go to school` — any fact from your approved profile",
-            f"• `what do you know about me` — that list lives in {memory}: type `list` there",
+            *examples(settings),
             (
                 f"Replies like `go` or `send it` belong on a card in {action} or in the "
                 f"application's thread. The step-by-step log is in {system}."
@@ -373,7 +380,8 @@ def help_text(settings: dict | None = None) -> str:
 
 
 def help_reply() -> dict:
-    return {"say": help_text()}
+    """The same examples as a short chat answer: fewer lines for the model to pass on."""
+    return {"say": "\n".join(["Things you can ask me:", *examples(workflow.config())])}
 
 
 def ensure_help_message() -> dict:
