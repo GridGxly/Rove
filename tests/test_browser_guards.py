@@ -21,6 +21,7 @@ from typing import ClassVar
 from urllib.parse import urlsplit
 
 import pytest
+import test_frames as frames
 import test_live_submission as live
 import test_submission
 from patchright.sync_api import Error as PlaywrightError
@@ -330,6 +331,8 @@ def test_the_all_policy_also_holds_the_first_application_to_each_employer(state,
     no_ids(card)
     went_ahead(first)
     assert submission.fill_hold(first, GREENHOUSE) is None
+    # The go covers the employer its card named, not another tenant this one reaches.
+    assert submission.fill_hold(first, "https://job-boards.greenhouse.io/other/jobs/123")
     second = workflow.enqueue("https://job-boards.greenhouse.io/example/jobs/124", source="keryx")[
         "application_id"
     ]
@@ -481,17 +484,160 @@ def test_an_apply_link_leaving_the_site_is_held_like_a_form_there(state):
     )
 
 
-def test_sites_already_applied_on_are_familiar_when_the_index_is_first_built(state):
-    done = workflow.enqueue(OFF_TABLE, source="keryx")
-    workflow.set_state(done["application_id"], "APPLIED")
+def test_only_hosts_where_rove_sent_a_form_are_familiar_when_the_index_is_first_built(state):
+    """Finding 10: a past send makes its form's host known, never its posting's host, and
+    an application the owner sent by hand makes nothing known."""
+    sent, package_hash = feed_ready(state, OFF_TABLE)
+    package_path = state / "applications" / sent / "package.json"
+    package = json.loads(package_path.read_text())
+    package["url"] = "https://apply.northwind-hr.com/jobs/4410/form"
+    package_path.write_text(json.dumps(package))
+    by_hand = workflow.enqueue("https://jobs.contoso-robotics.com/openings/7", source="keryx")
+    workflow.set_state(by_hand["application_id"], "APPLIED")
     with workflow.db() as conn:
+        conn.execute(
+            "INSERT INTO live_submission_attempts"
+            "(application_id,package_hash,owner_message_id,status,created_at) VALUES(?,?,?,?,?)",
+            (sent, package_hash, "m-send", "APPLIED", workflow.now()),
+        )
+        conn.execute("UPDATE application_queue SET status='APPLIED' WHERE id=?", (sent,))
         conn.execute("DELETE FROM familiar_hosts")
         conn.execute("DELETE FROM job_index_meta")  # as on the first start after the upgrade
-    new = workflow.enqueue(
-        "https://careers.northwind-labs.com/jobs/4411/data-intern", source="keryx"
-    )["application_id"]
-    assert submission.fill_hold(new, "https://careers.northwind-labs.com/jobs/4411/apply") is None
-    assert familiar_hosts() == {"careers.northwind-labs.com": "sent before"}
+    new = workflow.enqueue("https://apply.northwind-hr.com/jobs/4411", source="keryx")[
+        "application_id"
+    ]
+    assert submission.fill_hold(new, "https://apply.northwind-hr.com/jobs/4411/form") is None
+    assert familiar_hosts() == {"apply.northwind-hr.com": "sent before"}
+    # The posting's own host and the hand-sent application's host are not known.
+    later = workflow.enqueue(OFF_TABLE.replace("4410", "4412"), source="keryx")["application_id"]
+    assert submission.fill_hold(later, OFF_TABLE.replace("4410", "4412") + "/apply")
+    other = workflow.enqueue("https://jobs.contoso-robotics.com/openings/8", source="keryx")
+    assert submission.fill_hold(
+        other["application_id"], "https://jobs.contoso-robotics.com/openings/8"
+    )
+
+
+def test_a_go_covers_the_host_its_card_named_and_no_other(state):
+    """Finding 1: the owner's go is bound to the site on the card. Another host the
+    application reaches later (a redirect, a changed link, a re-open) asks again."""
+    app = workflow.enqueue(OFF_TABLE, source="keryx")["application_id"]
+    assert submission.fill_hold(app, OFF_TABLE_FORM)["headline"] == "First time on this site"
+    went_ahead(app)
+    assert submission.fill_hold(app, OFF_TABLE_FORM) is None
+    elsewhere = "https://forms.fabrikam-hiring.com/apply/4410"
+    card = submission.fill_hold(app, elsewhere)
+    assert card and card["headline"] == "First time on this site"
+    assert "`forms.fabrikam-hiring.com`" in card["reason"]
+    assert familiar_hosts() == {"careers.northwind-labs.com": "the owner's go"}
+    # A go given before a card ever named a site lets nothing in.
+    early = workflow.enqueue("https://jobs.contoso-robotics.com/openings/9", source="keryx")
+    went_ahead(early["application_id"], "m-early")
+    assert submission.fill_hold(early["application_id"], "https://jobs.contoso-robotics.com/a")
+    # The go on the second card lets that second host in, and only it.
+    went_ahead(app, "m-go-2")
+    assert submission.fill_hold(app, elsewhere) is None
+    assert set(familiar_hosts()) == {"careers.northwind-labs.com", "forms.fabrikam-hiring.com"}
+
+
+def test_an_owner_link_trusts_its_own_host_and_its_apply_link_not_a_redirect(state):
+    """Finding 1: a link the owner pasted or picked vouches for its own host and for the
+    host its posting's Apply control leads to; a host a redirect reached still asks once."""
+    pasted = workflow.enqueue(OFF_TABLE, source="owner_link")["application_id"]
+    assert submission.fill_hold(pasted, OFF_TABLE_FORM) is None
+    # The posting's own Apply control leads to another host: his choice covers it.
+    apply_link = "https://apply.northwind-hr.com/jobs/4410"
+    assert submission.link_hold(pasted, OFF_TABLE, apply_link) is None
+    assert submission.fill_hold(pasted, apply_link + "/form") is None
+    # A host nothing on his posting named, reached by a redirect, asks once.
+    card = submission.fill_hold(pasted, "https://cdn-forms.example-hosting.net/f/4410")
+    assert card and card["headline"] == "First time on this site"
+    assert "cdn-forms.example-hosting.net" not in familiar_hosts()
+    assert set(familiar_hosts()) == {"careers.northwind-labs.com", "apply.northwind-hr.com"}
+    went_ahead(pasted)
+    assert submission.fill_hold(pasted, "https://cdn-forms.example-hosting.net/f/4410") is None
+
+
+def test_one_job_is_one_send_through_its_posting_link_and_through_its_form(state):
+    """Finding 2: the employer's page and the board link are two postings of one job; the
+    form both lead to has one key, so the second can never send."""
+    employer = "https://careers.northwind-labs.com/jobs?gh_jid=4471"
+    board_link = "https://job-boards.greenhouse.io/northwind/jobs/4471"
+    form = "https://job-boards.greenhouse.io/embed/job_app?for=northwind&token=4471"
+    assert job_key(form) == job_key(board_link) != job_key(employer)
+    first, _hash = feed_ready(state, employer, source="owner_link")
+    package_path = state / "applications" / first / "package.json"
+    package = json.loads(package_path.read_text())
+    package["url"] = form
+    package_path.write_text(json.dumps(package))
+    with workflow.db() as conn:  # the package now names the embedded form
+        conn.execute("UPDATE application_queue SET package_hash=? WHERE id=?", ("p" * 64, first))
+    workflow.set_state(first, "READY_FOR_REVIEW", package_hash="p" * 64)
+    worker.apply_command(
+        {"kind": "submit", "application_id": first, "package_hash": "p" * 64}, "m-first"
+    )
+    submission.claim_attempt(first, "p" * 64, "m-first")
+    second, second_hash = feed_ready(state, board_link, source="owner_link")
+    assert second != first
+    worker.apply_command(
+        {"kind": "submit", "application_id": second, "package_hash": second_hash}, "m-second"
+    )
+    with pytest.raises(PermissionError) as refused:
+        submission.claim_attempt(second, second_hash, "m-second")
+    assert owner_words(str(refused.value)).startswith("This job already has an application")
+    assert attempts() == [(first, "SUBMITTING")]
+    # Preparation stops there too, before anything is typed.
+    assert submission.duplicate_words(second, board_link)
+    # And once the first one is settled as not sent, the job is free for one send again.
+    submission.finish_attempt(first, "NOT_SUBMITTED", {"reason": "x"})
+    submission.claim_attempt(second, second_hash, "m-second")
+    assert dict(attempts()) == {first: "NOT_SUBMITTED", second: "SUBMITTING"}
+
+
+def test_embedded_board_forms_are_read_as_the_boards_own_job():
+    """A board's form inside an employer page: Greenhouse's embed reads as (greenhouse,
+    board, job); Lever's and Ashby's embeds already sit on their posting's path."""
+    embed = "https://job-boards.greenhouse.io/embed/job_app?for=northwind&token=4471"
+    assert job_scope(embed) == ("greenhouse", "northwind", "4471")
+    assert job_scope(embed.replace("job-boards.", "boards.")) == job_scope(embed)
+    assert tenant_key(embed) == tenant_key("https://job-boards.greenhouse.io/northwind/jobs/1")
+    lever = "https://jobs.lever.co/northwind/" + live.LEVER_POSTING
+    assert job_key(lever + "/apply?embed=true") == job_key(lever)
+    ashby = "https://jobs.ashbyhq.com/northwind/1f0c2d9e-7a4b-4c55-9d1e-3b2a1c0d9e8f"
+    assert job_key(ashby + "/application?embed=js") == job_key(ashby)
+
+    def nobody(_url):
+        return False
+
+    page = "https://careers.northwind-labs.com/jobs/4471"
+    # The embed is the queued job: same host as the queued link, same job id.
+    assert destinations.embedded_job(page, page, embed, nobody)
+    assert destinations.embedded_job(
+        "https://careers.northwind-labs.com/jobs?gh_jid=4471",
+        "https://careers.northwind-labs.com/jobs?gh_jid=4471",
+        embed,
+        nobody,
+    )
+    # Another job's form, a page on another host, or no employer page: not this job.
+    assert not destinations.embedded_job(page, page, embed.replace("4471", "4472"), nobody)
+    assert not destinations.embedded_job(page, "https://evil.example.net/4471", embed, nobody)
+    assert not destinations.embedded_job(page, None, embed, nobody)
+    assert destinations.embedded_job(page, "https://jobs.northwind.com/4471", embed, bool)
+    # Lever and Ashby embeds name their posting id, which the employer page carries.
+    uuid = live.LEVER_POSTING
+    assert destinations.embedded_job(
+        f"https://careers.northwind-labs.com/jobs/{uuid}",
+        f"https://careers.northwind-labs.com/jobs/{uuid}",
+        lever + "/apply",
+        nobody,
+    )
+    assert destinations.embedded_job(
+        "https://careers.northwind-labs.com/open?ashby_jid=1f0c2d9e-7a4b-4c55-9d1e-3b2a1c0d9e8f",
+        "https://careers.northwind-labs.com/open?ashby_jid=1f0c2d9e-7a4b-4c55-9d1e-3b2a1c0d9e8f",
+        ashby + "/application",
+        nobody,
+    )
+    # A form off the board table is never "embedded": host-and-path rules decide there.
+    assert not destinations.embedded_job(page, page, "https://forms.example.net/4471", nobody)
 
 
 def test_coverage_counts_links_by_board_and_names_what_is_off_the_table():
@@ -2163,3 +2309,50 @@ def test_the_route_handler_never_touches_a_route_already_handled(board, site, mo
     odd = Route(site + "/acme/jobs/4")
     runtime._route(odd)
     assert odd.calls == ["abort"]
+
+
+# ---------------------------------------------------------------------------
+# A board's form embedded in the employer's page (frames fixture: two loopback origins)
+# ---------------------------------------------------------------------------
+
+sites = frames.sites
+
+
+def test_a_greenhouse_embed_on_the_employer_page_is_the_queued_job_end_to_end(sites, monkeypatch):
+    """The tab shows the employer's page; the form is Greenhouse's embed in a frame. It
+    is the queued job when the page is on the queued link's host and the embed's job id
+    is the queued job's, and its key is the board's, so the board link is the same send."""
+    runtime, employer, board, state = sites
+    greenhouse = next(b for b in destinations.BOARDS if b.name == "greenhouse")
+    real = destinations.board_for
+
+    def board_for(url):  # the board's loopback origin stands in for Greenhouse's host
+        return greenhouse if urlsplit(str(url)).hostname == "localhost" else real(url)
+
+    monkeypatch.setattr(destinations, "board_for", board_for)
+    monkeypatch.setattr(live_browser, "job_scope", destinations.job_scope)
+    embed = f"{board}/embed/job_app?for=northwind&token=4471"
+    assert job_scope(embed) == ("greenhouse", "northwind", "4471")
+    # Another job's page that embeds this form is not the queued job: nothing is typed.
+    frames.Employer.pages["/careers/jobs/4479"] = frames.Employer.pages["/careers/jobs/4471"]
+    other = runtime.open(f"{employer}/careers/jobs/4479")
+    frames.freeze_resume(state, other["run_id"])
+    assert runtime.prepare(other["run_id"])["status"] == "NEEDS_EMPLOYER_LINK"
+    assert runtime.form.locator("#f").input_value() == ""
+    # The queued job's own page: prepared and sent through the frame.
+    opened = runtime.open(f"{employer}/careers/jobs/4471")
+    assert opened["url"] == embed and opened["page_url"] == f"{employer}/careers/jobs/4471"
+    frames.freeze_resume(state, opened["run_id"])
+    result = runtime.prepare(opened["run_id"])
+    assert result["status"] == "READY_FOR_REVIEW" and not result["pending"], result
+    frames.approve_send(opened["run_id"], result["package_hash"])
+    sent = submission.submit(runtime, opened["run_id"], result["package_hash"], "msg-1")
+    assert sent["status"] == "APPLIED", sent
+    # The board's own link to the job is another posting of the same job: one send.
+    board_link = f"{board}/northwind/jobs/4471"
+    assert job_key(board_link) == job_key(embed)
+    second = workflow.enqueue(board_link, source="owner_link")["application_id"]
+    assert second != opened["run_id"]
+    assert owner_words(submission.duplicate_words(second, board_link)).startswith(
+        "This job already has an application"
+    )

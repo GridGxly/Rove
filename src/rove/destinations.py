@@ -28,7 +28,7 @@ from . import boards as board_modules
 from .jobs import strip_tracking
 
 # Raise when a board or a scope rule changes: `job_index` rebuilds its derived tables.
-KEY_VERSION = 2
+KEY_VERSION = 3
 
 Parts = list[str]
 Query = dict[str, str]
@@ -362,6 +362,38 @@ def nested_paths(approved: str, form: str) -> bool:
     if not host_a or host_a != host_b or not path_a.strip("/") or not path_b.strip("/"):
         return False
     return path_b.startswith(path_a + "/") or path_a.startswith(path_b + "/")
+
+
+def job_names(url: str) -> set[str]:
+    """Every word a link could name its job by: its query values, its path segments and
+    the numbers in its path ("?gh_jid=4471", "/jobs/4471-intern", "?ashby_jid=<id>")."""
+    _host, path, parts, query, _raw = _split(url)
+    names = {v.lower() for v in query.values()} | {p.lower() for p in parts if p}
+    names |= set(re.findall(r"\d{4,}", path))
+    return {name for name in names if len(name) >= 4}
+
+
+def embedded_job(
+    queued: str, page_url: str | None, form: str, host_ok: Callable[[str], bool]
+) -> bool:
+    """A board's form inside the employer's own page is the queued job.
+
+    The tab shows the employer's page (`page_url`); the form is a frame a board in the
+    table serves. It is the job that was opened when the page is on the queued link's
+    host (or on a host the owner let a form be filled on, `host_ok`), and the board's job
+    id inside the frame is the job the queued link names. The frame's own key is the
+    board's key, so the employer page and the board link reach one send.
+    """
+    if not page_url:
+        return False
+    board = board_for(form)
+    scope = board.job(form) if board and board.job else None
+    if not scope:
+        return False
+    page_host, queued_host = _split(page_url)[0], _split(queued)[0]
+    if not page_host or (page_host != queued_host and not host_ok(page_url)):
+        return False
+    return str(scope[-1]).lower() in job_names(queued)
 
 
 def job_key(url: str) -> str:

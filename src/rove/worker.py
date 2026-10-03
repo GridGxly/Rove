@@ -460,6 +460,29 @@ def process(application_id: str) -> dict:
                     page.get("closed_marker") or "",
                 )
                 return {"application_id": application_id, "status": "DEFERRED", "submitted": False}
+            if page.get("auth_page") in {"login", "register"}:
+                # A sign-in or a new account types applicant data into the site too: the
+                # site must be one a form may be filled on first. A new site's question
+                # rides on the account card, whose `create account` lets that site in.
+                from . import credentials
+                from .submission import fill_hold
+
+                types = page["auth_page"] == "register" or credentials.lookup(
+                    credentials.account_host(page.get("url") or item["url"])
+                )
+                site = fill_hold(application_id, page.get("url") or item["url"]) if types else None
+                if site and (
+                    page["auth_page"] == "login"
+                    or site["status"] != "NEEDS_USER"
+                    or workflow.owner_override(application_id, "account")
+                ):
+                    return held(
+                        application_id,
+                        site["status"],
+                        site["reason"],
+                        site["headline"],
+                        commands=site["commands"],
+                    )
             if page.get("auth_page") == "login":
                 from . import credentials
 
@@ -482,7 +505,7 @@ def process(application_id: str) -> dict:
                 headline = "Sign-in needs you"
                 break
             if page.get("auth_page") == "register":
-                if workflow.owner_override(application_id, "account"):
+                if not site and workflow.owner_override(application_id, "account"):
                     phase = "account_creation"
                     timing.lap("sign_in")
                     page = browser_call("register", run_id=application_id)
@@ -499,10 +522,18 @@ def process(application_id: str) -> dict:
                         headline = "Verify the account email"
                         break
                     continue
+                from .job_index import host_of
+
+                where = f"`{host_of(page.get('url') or item['url'])}`"
                 reason = (
-                    "This board needs an account before the application. I can create one "
-                    "with your application email and a generated password stored encrypted "
-                    "on this Mac. Your policy asks first."
+                    (
+                        f"{where} needs an account before the application, and I have not "
+                        "applied on that site before. "
+                        if site
+                        else "This board needs an account before the application. "
+                    )
+                    + "I can create one with your application email and a generated "
+                    "password stored encrypted on this Mac. Your policy asks first."
                 )
                 commands = ["create account", "park it"]
                 headline = "Account needed"

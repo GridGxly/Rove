@@ -1661,7 +1661,7 @@ class RecruitingBrowser:
                 # Another site: only one the owner has let a form be filled on.
                 from .submission import fill_hold_words
 
-                hold = fill_hold_words(run_id, item["url"])
+                hold = fill_hold_words(run_id, item["url"], link=True)
                 if hold:
                     raise PermissionError(hold)
         old_pages = list(self.context.pages)
@@ -2847,14 +2847,17 @@ class RecruitingBrowser:
         return filled, pending
 
     def _prepare(self, run_id: str) -> dict:
-        from .submission import fill_hold_words
+        from .submission import duplicate_words, embedded_form, fill_hold_words
 
         before = self.observe()
+        target = self.run.get("target_url", workflow.get(run_id)["url"])
         # The host must be a board or one the owner let a form be filled on, and the page
-        # must be the job that was opened; a shared ATS hostname is neither.
+        # must be the job that was opened; a shared ATS hostname is neither. A board's form
+        # inside the employer's page counts when the board's job id is the queued job's.
         hold = fill_hold_words(run_id, before["url"])
-        if hold or not same_job(
-            self.run.get("target_url", workflow.get(run_id)["url"]), before["url"]
+        if hold or not (
+            same_job(target, before["url"])
+            or embedded_form(run_id, target, before.get("page_url"), before["url"])
         ):
             return {
                 **before,
@@ -2863,6 +2866,10 @@ class RecruitingBrowser:
                 or "The form must match the verified employer and job destination before "
                 "entering candidate data. A shared ATS hostname is insufficient.",
             }
+        sent = duplicate_words(run_id, before["url"])
+        if sent:
+            # The same job went out through another link (its board, or its employer page).
+            return {**before, "status": "ALREADY_SENT_ELSEWHERE", "reason": owner_words(sent)}
         directory = state_root() / f"applications/{run_id}"
         approved = json.loads((directory / "profile.json").read_text())
         from .onboarding import digest

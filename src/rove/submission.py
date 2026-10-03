@@ -19,20 +19,26 @@ from urllib.parse import unquote_plus, urlsplit
 from patchright.sync_api import Error as PlaywrightError
 
 from . import boards, job_index, live_browser, timing, workflow
-from .destinations import ineligible, tenant_words
+from .destinations import embedded_job, ineligible, tenant_key, tenant_words
 from .live_browser import ERROR_SELECTOR, MESSAGES_JS, PLAIN_STOP, STATUS_SELECTOR
 from .onboarding import digest, read_approved
 from .runtime import state_root, write_private
 
 CONFIRMATION_TIMEOUT_MS = 45000
-# How long one send can take in the browser service, from its claim to its recorded
-# outcome: the confirmation wait, the page load after it, and slack for a service that
-# was busy with another request. A claim older than this with no outcome is a send whose
-# service died between the click and its record.
-STALE_SEND_AFTER = timedelta(milliseconds=CONFIRMATION_TIMEOUT_MS) + timedelta(minutes=5)
-
+# The bounded waits of one send after its claim: the hover and the click (12 s, and 3 s of
+# hover under human pacing), the adapter's confirmation wait, the quiet moment a generic
+# success has to stand, and the page load after it.
+CLICK_TIMEOUT_MS = 15000
+LOAD_TIMEOUT_MS = 15000
 # How long a generic success signal has to stand without an error appearing after it.
 GENERIC_QUIET_MS = 2500
+SEND_WAITS_MS = CLICK_TIMEOUT_MS + CONFIRMATION_TIMEOUT_MS + GENERIC_QUIET_MS + LOAD_TIMEOUT_MS
+# A claim older than this with no outcome is a send whose browser service died between
+# the claim and the record: every bounded wait, plus slack for reading the page after
+# the click and for a service that was busy with another request first. Nothing slow
+# runs between the claim and the click, the click is not made once the claim is
+# settled, and a late outcome never replaces one already recorded.
+STALE_SEND_AFTER = timedelta(milliseconds=SEND_WAITS_MS) + timedelta(minutes=5)
 
 # The generic contract's wording. The same source patterns drive the Python checks and
 # the in-page wait, so the two never disagree about what counts as a signal.
@@ -692,33 +698,51 @@ def first_send_policy() -> str:
     return value if value in FIRST_SEND_HOLD else "unfamiliar"
 
 
-def owner_went_ahead(conn, application_id: str) -> bool:
-    """The owner typed go, proceed, send it or create account on this application."""
+def owner_went_ahead(conn, application_id: str, subject: str) -> bool:
+    """The owner typed go (or proceed, send it, create account) on this application after
+    a card named this host or employer. His word covers what the card named, nothing else:
+    a redirect or a changed link to another host asks again."""
+    since = job_index.asked_at(conn, application_id, subject)
+    if since is None:
+        return False
     kinds = ",".join("?" * len(OWN_WORD_KINDS))
     return bool(
         conn.execute(
             f"SELECT 1 FROM owner_commands WHERE application_id=? AND kind IN ({kinds}) "
-            "AND message_id NOT LIKE 'auto-submit:%' AND message_id NOT LIKE '%:resume' LIMIT 1",
-            (application_id, *OWN_WORD_KINDS),
+            "AND message_id NOT LIKE 'auto-submit:%' AND message_id NOT LIKE '%:resume' "
+            "AND created_at>=? LIMIT 1",
+            (application_id, *OWN_WORD_KINDS, since),
         ).fetchone()
     )
+
+
+def owner_chose(conn, application_id: str, item, url: str) -> bool:
+    """For a job the owner pasted or picked: the form is on the host of the link he chose,
+    or on the host the Apply control of that posting leads to. A host some redirect
+    reached on the way is not his choice."""
+    host = job_index.host_of(url)
+    chosen = {job_index.host_of(item["url"]), job_index.host_of(item["source_url"])}
+    return bool(host) and (host in chosen or job_index.vouched(conn, application_id, url))
 
 
 def _card(status: str, headline: str, reason: str, commands: list[str]) -> dict:
     return {"status": status, "headline": headline, "reason": reason, "commands": commands}
 
 
-def fill_hold(application_id: str, url: str, conn=None) -> dict | None:
+def fill_hold(application_id: str, url: str, conn=None, link: bool = False) -> dict | None:
     """Whether a form at `url` may be filled for this application now.
 
-    None means go ahead; a host the owner just vouched for is remembered on the way. A
-    dict is the card to show instead: `status`, `headline`, `reason` and `commands`, in
-    plain words. Decided before any applicant data is typed, and checked again by the
-    browser daemon and before the one click, so no path around the worker skips it.
+    None means go ahead; a host the owner vouched for is remembered on the way. A dict is
+    the card to show instead: `status`, `headline`, `reason` and `commands`, in plain
+    words; the host (or employer) it names is recorded, and only a `go` after that card
+    lets that same host in. `link` says `url` is the Apply link the posting itself shows,
+    which an owner-chosen job may follow without asking. Decided before any applicant
+    data is typed, and checked again by the browser daemon and before the one click, so
+    no path around the worker skips it.
     """
     if conn is None:
         with workflow.db() as own:
-            return fill_hold(application_id, url, own)
+            return fill_hold(application_id, url, own, link)
     host = job_index.host_of(url) or "this site"
     never = ineligible(url)
     if never:
@@ -731,14 +755,17 @@ def fill_hold(application_id: str, url: str, conn=None) -> dict | None:
             ["applied", "park it"],
         )
     item = conn.execute(
-        "SELECT source FROM application_queue WHERE id=?", (application_id,)
+        "SELECT source,url,source_url FROM application_queue WHERE id=?", (application_id,)
     ).fetchone()
-    source = item["source"] if item else "agent"
+    decided = bool(item) and workflow.source_policy(item["source"])["owner_decided"]
     policy = first_send_policy()
     on_board = live_browser.approved_ats(url)  # the daemon's own name for the host table
-    if workflow.source_policy(source)["owner_decided"]:
+    subject = tenant_key(url) if on_board else host
+    if decided and link:
+        job_index.vouch(conn, application_id, url, "the posting's apply link")
+    if decided and owner_chose(conn, application_id, item, url):
         basis = "the owner's own link"
-    elif owner_went_ahead(conn, application_id):
+    elif owner_went_ahead(conn, application_id, subject):
         basis = "the owner's go"
     else:
         basis = ""
@@ -749,7 +776,8 @@ def fill_hold(application_id: str, url: str, conn=None) -> dict | None:
                 job_index.approve_tenant(conn, url, application_id, basis)
         return None
     if on_board:
-        if policy == "all" and not job_index.tenant_seen(conn, url):
+        if not decided and policy == "all" and not job_index.tenant_seen(conn, url):
+            job_index.ask(conn, application_id, subject)
             return _card(
                 "NEEDS_USER",
                 "First application to this employer",
@@ -761,6 +789,7 @@ def fill_hold(application_id: str, url: str, conn=None) -> dict | None:
         return None
     if job_index.familiar(conn, url):
         return None
+    job_index.ask(conn, application_id, subject)
     return _card(
         "NEEDS_USER",
         "First time on this site",
@@ -771,9 +800,9 @@ def fill_hold(application_id: str, url: str, conn=None) -> dict | None:
     )
 
 
-def fill_hold_words(application_id: str, url: str, conn=None) -> str:
+def fill_hold_words(application_id: str, url: str, conn=None, link: bool = False) -> str:
     """The hold as one plain-word error, or "" when the form may be filled."""
-    hold = fill_hold(application_id, url, conn)
+    hold = fill_hold(application_id, url, conn, link)
     return f"{PLAIN_STOP}{hold['reason']}" if hold else ""
 
 
@@ -787,7 +816,39 @@ def link_hold(application_id: str, page_url: str, link_url: str | None) -> dict 
         link_url
     ):
         return None
-    return fill_hold(application_id, link_url)
+    return fill_hold(application_id, link_url, link=True)
+
+
+DUPLICATE_SEND = (
+    f"{PLAIN_STOP}This job already has an application that was sent from another link to "
+    "the same posting, so this one stays unsent. Nothing is sent twice. Reply `park it` to "
+    "drop it."
+)
+
+
+def keys_of(conn, application_id: str, posting: str, form: str | None) -> list[str]:
+    """Every key this application's one send goes by: its posting link's and its form's."""
+    return [job_index.key_of(conn, application_id, posting), *job_index.form_keys(form)]
+
+
+def duplicate_words(application_id: str, form: str | None) -> str:
+    """Plain words when another application already sent (or is sending) this job, by
+    its posting link or by the form it was sent through; "" otherwise."""
+    with workflow.db() as conn:
+        item = conn.execute(
+            "SELECT url FROM application_queue WHERE id=?", (application_id,)
+        ).fetchone()
+        if not item:
+            return ""
+        keys = keys_of(conn, application_id, item["url"], form)
+        return DUPLICATE_SEND if job_index.sent_elsewhere(conn, application_id, *keys) else ""
+
+
+def embedded_form(application_id: str, queued: str, page_url: str | None, form: str) -> bool:
+    """A board's form inside the employer's page is the job that was queued: see
+    `destinations.embedded_job`. The page's host may also be one the owner let in."""
+    with workflow.db() as conn:
+        return embedded_job(queued, page_url, form, lambda url: job_index.familiar(conn, url))
 
 
 def claim_attempt(application_id: str, package_hash: str, owner_message_id: str):
@@ -816,22 +877,21 @@ def claim_attempt(application_id: str, package_hash: str, owner_message_id: str)
         ).fetchone()
         if prior and prior["status"] != "NOT_SUBMITTED":
             raise PermissionError("A submission attempt already exists; do not retry")
-        # The same job under another spelling of its link is the same application: one send.
-        key = job_index.key_of(conn, application_id, item["url"])
-        if job_index.sent_elsewhere(conn, application_id, key):
-            raise PermissionError(
-                f"{PLAIN_STOP}This job already has an application that was sent from another "
-                "link to the same posting, so this one stays unsent. Nothing is sent twice. "
-                "Reply `park it` to drop it."
-            )
-        # The form's host must be one the owner let a form be filled on (the daemon
-        # checked before filling; this is the last check before the one click).
+        # One job is one send, by whichever link it was reached and through whichever
+        # form it goes: the posting link's key and the form's key are both checked and
+        # both taken, so an employer page and its board link cannot both send.
         package = state_root() / f"applications/{application_id}/package.json"
         form_url = json.loads(package.read_text())["url"] if package.is_file() else item["url"]
+        keys = keys_of(conn, application_id, item["url"], form_url)
+        if job_index.sent_elsewhere(conn, application_id, *keys):
+            raise PermissionError(DUPLICATE_SEND)
+        # The form's host must be one the owner let a form be filled on (the daemon
+        # checked before filling; this is the last check before the one click).
         hold = fill_hold_words(application_id, form_url, conn)
         if hold:
+            conn.execute("COMMIT")  # the card's host is remembered for the owner's go
             raise PermissionError(hold)
-        job_index.claim_send(conn, application_id, key)
+        job_index.claim_send(conn, application_id, keys)
         job_index.approve_tenant(
             conn,
             form_url,

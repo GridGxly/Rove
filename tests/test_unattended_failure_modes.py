@@ -873,7 +873,8 @@ def test_an_apply_link_to_a_new_site_is_held_before_it_is_followed(state, monkey
             {"ref": "0", "label": "Apply now", "url": "https://apply.contoso-hr.net/jobs/7"}
         ],
     )
-    calls = scripted_browser(monkeypatch, open=posting, follow=FORM, prepare=PREPARED)
+    form = page(url="https://apply.contoso-hr.net/jobs/7/form", fields=[FIELD])
+    calls = scripted_browser(monkeypatch, open=posting, follow=form, prepare=PREPARED)
     discord_calls = owner_channels(monkeypatch)
     ready_to_fill(monkeypatch)
     app = feed_job("linked")
@@ -887,6 +888,40 @@ def test_an_apply_link_to_a_new_site_is_held_before_it_is_followed(state, monkey
     nothing_sent(app, calls)
     # After the owner's go the link is followed and the form, on that site, is filled.
     apply_command(thread_command("go", app), "m-go")
+    calls.clear()
+    assert worker.process(app)["status"] == "READY_FOR_REVIEW"
+    assert calls == ["open", "follow", "prepare"]
+
+
+def test_a_go_lets_in_the_site_its_card_named_and_no_other(state, monkeypatch):
+    """Finding 1: after the owner's go for one site, a form that turns up on another host
+    (a redirect, a changed Apply link) asks again, and only the named site is remembered."""
+    posting = page(
+        url="https://jobs.example.com/posting",
+        application_links=[
+            {"ref": "0", "label": "Apply now", "url": "https://apply.contoso-hr.net/jobs/7"}
+        ],
+    )
+    elsewhere = page(url="https://forms.fabrikam-hiring.com/apply/7", fields=[FIELD])
+    calls = scripted_browser(monkeypatch, open=posting, follow=elsewhere, prepare=PREPARED)
+    discord_calls = owner_channels(monkeypatch)
+    ready_to_fill(monkeypatch)
+    app = feed_job("redirected")
+    assert worker.process(app)["status"] == "NEEDS_USER"
+    apply_command(thread_command("go", app), "m-go")
+    calls.clear()
+    # The link leads to a third host: nothing is typed there, and it gets its own card.
+    assert worker.process(app)["status"] == "NEEDS_USER"
+    assert calls == ["open", "follow"]
+    card = posts(discord_calls)[-1]["embeds"][0]
+    assert "First time on this site" in card["description"]
+    assert "`forms.fabrikam-hiring.com`" in card["description"]
+    with workflow.db() as conn:
+        known = {r[0] for r in conn.execute("SELECT host FROM familiar_hosts")}
+    assert known == {"apply.contoso-hr.net"}
+    assert "prepare" not in calls and "submit" not in calls
+    # A go on that card lets that host in too.
+    apply_command(thread_command("go", app), "m-go-2")
     calls.clear()
     assert worker.process(app)["status"] == "READY_FOR_REVIEW"
     assert calls == ["open", "follow", "prepare"]
