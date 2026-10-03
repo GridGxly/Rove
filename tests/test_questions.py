@@ -1538,10 +1538,9 @@ def test_a_nod_an_emoji_or_a_command_word_is_never_an_answer(state, monkeypatch)
         "go ahead please",
     ):
         assert thread_command(reply, app) is None, reply
-    # A short free-text reply could be anything: the explicit form says it is the answer.
-    for reply in ("Vim", "neovim mostly"):
-        with pytest.raises(ValueError, match="reply `1: your answer`"):
-            thread_command(reply, app)
+    # A short real reply is the answer: the owner never has to retype it.
+    assert thread_command("Vim", app)["value"] == "Vim"
+    assert thread_command("neovim mostly", app)["value"] == "neovim mostly"
     assert thread_command("1: Vim", app)["value"] == "Vim"
     assert thread_command("A synthetic one", app)["value"] == "A synthetic one"
     # With options, a reply that names one is the answer, however short; a nod is not.

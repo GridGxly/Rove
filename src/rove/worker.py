@@ -721,10 +721,10 @@ def single_question_answer(raw: str, application_id: str) -> dict | None:
     the reply must name one of them; a link or a long message is never taken as one.
 
     A reply with no letters or digits ("👍"), or one made only of nods and command words
-    ("ok go", "thanks"), is no answer: it is ignored, never stored or remembered. A legal
-    or personal question without options, and a free-text question answered in fewer
-    than three words, take only the explicit `1: value` form, so a stray remark in the
-    thread never becomes a remembered answer.
+    ("ok go", "thanks"), is no answer: it is ignored, never stored or remembered. Any other
+    reply to the one open question is the answer, however short ("40", "May 2027"): the
+    owner should not have to retype it. A legal or personal question without options
+    takes only the explicit `1: value` form.
     """
     from . import questions
 
@@ -751,9 +751,7 @@ def single_question_answer(raw: str, application_id: str) -> dict | None:
                 + " / ".join(o for o in options[:8] if not o.strip().startswith("-"))
             )
         value = match
-    elif len(tokens) < 3 or questions.is_sensitive(
-        question.get("label"), question.get("kind") or ""
-    ):
+    elif questions.is_sensitive(question.get("label"), question.get("kind") or ""):
         raise ValueError(EXPLICIT_FORM)
     return {
         "kind": "answer",
