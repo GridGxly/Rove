@@ -1963,13 +1963,19 @@ def test_a_dropped_devtools_session_reconnects_and_keeps_the_open_tabs(
     Site.pages["/acme/jobs/610"] = live.FORM
     executable = runtime_executable()
     port = live_browser.free_port()
+    # Started the way Playwright starts its own: headless, and with the mock keychain, so
+    # macOS is never asked for a keychain and no dialog reaches the owner's screen.
     chrome = subprocess.Popen(
         [
             executable,
             "--headless=new",
             f"--remote-debugging-port={port}",
             f"--user-data-dir={tmp_path / 'profile'}",
+            "--use-mock-keychain",
+            "--password-store=basic",
             "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-networking",
             "about:blank",
         ],
         stdout=subprocess.DEVNULL,
