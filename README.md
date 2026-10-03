@@ -142,9 +142,3 @@ Focused issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTIN
 ## Author
 
 Built by [Ralph Clavens Love Noel](https://github.com/GridGxly).
-
-## License
-
-Rove is licensed under the [MIT License](LICENSE).
-
-Parts of the project and some design decisions come from Erga and remain subject to Erga's MIT license and attribution requirements. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
