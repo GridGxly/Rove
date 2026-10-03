@@ -14,6 +14,7 @@ downloaded. The copy is re-signed ad hoc and rebuilt whenever Chrome updates.
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import urllib.request
@@ -94,7 +95,8 @@ def installed() -> dict | None:
 
 def running(app: Path) -> bool:
     """Whether any process of this bundle (the browser or one of its helpers) is alive."""
-    return tool(["/usr/bin/pgrep", "-f", str(app) + "/Contents/"], timeout=10).returncode == 0
+    pattern = re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", str(app) + "/Contents/")
+    return tool(["/usr/bin/pgrep", "-f", pattern], timeout=10).returncode == 0
 
 
 def write_icns(png: Path, target: Path) -> None:
