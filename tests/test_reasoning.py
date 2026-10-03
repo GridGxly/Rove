@@ -128,6 +128,7 @@ def test_harness_stop_is_not_a_model_answer():
 
 def test_generate_retries_once_then_reports_the_harness_reason(tmp_path, monkeypatch):
     monkeypatch.setattr(workflow, "config", lambda: {"hermes_python": __import__("sys").executable})
+    monkeypatch.setattr(reasoning, "ensure_model", lambda: None)
     calls = []
 
     def fake_run(command, **kwargs):
