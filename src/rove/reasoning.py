@@ -670,18 +670,31 @@ def length_problems(result: dict, questions: list) -> str:
     return "; ".join(problems)[:300]
 
 
+WORD_CEILING = 130  # a draft past 150 words is cut to whole sentences under this
+
+
 def shorten_to_fit(result: dict, questions: list):
+    """Cut each over-length draft to whole leading sentences that fit its field, and its
+    card says so. Code does this instead of asking the model to write it again."""
     limits = {q["key"]: q.get("max_chars") for q in questions}
     for answer in result.get("answers", []):
         if answer.get("kind") != "proposal":
             continue
+        value = str(answer.get("value", ""))
         limit = int(limits.get(answer["key"]) or 0) or 900
-        if len(answer.get("value", "")) > limit:
-            answer["value"] = workflow.brief(answer["value"], limit)
-            answer["explanation"] = (
-                str(answer.get("explanation", ""))[:200]
-                + f" Shortened to fit the field's {limit}-character limit."
-            ).strip()
+        if len(value.split()) > 150:
+            words = value.split()
+            # The character budget of the first WORD_CEILING words, cut at a sentence.
+            budget = len(" ".join(words[:WORD_CEILING]))
+            shortened = workflow.brief(value, min(limit, budget))
+            why = f"Shortened to {len(shortened.split())} words to fit."
+        elif len(value) > limit:
+            shortened = workflow.brief(value, limit)
+            why = f"Shortened to fit the field's {limit}-character limit."
+        else:
+            continue
+        answer["value"] = shortened
+        answer["explanation"] = (str(answer.get("explanation", ""))[:200] + " " + why).strip()
 
 
 def posting_text_for(directory: Path, page: dict) -> str:
@@ -766,17 +779,16 @@ def review_application(application_id: str, page: dict) -> dict:
                     questions,
                 )
                 leaks = draft_guard.problems(result, private, voice)
-                problems = length_problems(result, questions)
-                if (leaks or problems) and not attempt:
-                    note = "; ".join(
-                        filter(None, [leaks and draft_guard.retry_note(leaks), problems])
-                    )
+                if leaks and not attempt:
+                    # Only a leak is worth a second full call. A draft that is too long
+                    # is cut by code below, sentence by sentence, never re-drafted.
+                    problems = length_problems(result, questions)
+                    note = "; ".join(filter(None, [draft_guard.retry_note(leaks), problems]))
                     context = {**context, "previous_output_problem": note[:600]}
                     continue
                 # A second draft that still carries a private fact is dropped, not sent.
                 draft_guard.withhold(result, leaks)
-                if problems:
-                    shorten_to_fit(result, questions)
+                shorten_to_fit(result, questions)
                 break
             except (ValueError, ValidationError) as error:
                 if attempt:
