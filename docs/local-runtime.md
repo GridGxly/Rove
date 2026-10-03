@@ -60,7 +60,7 @@ Enable `HERMES_AUTOPILOT_16K=1` only for this certified local configuration. The
 The MCP server command is the absolute path to this checkout's `.venv/bin/rove`, with the argument `mcp` and the checkout as its working directory. Register it under the name `rove`, which makes its Hermes toolset `mcp-rove`.
 
 - Disable every built-in Hermes toolset for this profile and set each platform's toolsets to `mcp-rove`.
-- Use the include list of thirteen tools in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection). The server also defines four synthetic certification tools and three direct browser tools, and none of those belong on the production list.
+- Use the include list of thirteen tools in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection), plus the eight chat tools `rove_status`, `whats_waiting`, `sends_today`, `pause_feed`, `resume_feed`, `company_history`, `answer_paste` and `what_you_can_ask`. The server also defines four synthetic certification tools and three direct browser tools, and none of those belong on the production list.
 - Set `tools.tool_search.enabled: off` so the small schemas are present directly.
 - Inside the MCP server's `tools` config, set `resources: false` and `prompts: false`. Excluding names alone does not suppress Hermes' generated wrappers.
 
@@ -71,6 +71,47 @@ The tools Hermes discovers globally are not necessarily the tools one agent rece
 The Hermes Discord integration authorizes one numeric owner ID and the configured `agent-control` channel. It does not accept other bots and does not backfill channel history. It needs Discord's Message Content Intent. Rove's own services read the same bot token and owner ID, as described in [Requirements](requirements.md#create-your-own-discord-bot).
 
 The lightweight Hermes launchd gateway starts at login and can restart after a crash. This does not load the 27B model at login, because oMLX starts on demand. The upstream macOS service generator currently always writes `RunAtLoad`, and editing the generated plist by hand is not a durable way to change startup behavior.
+
+The chat in `agent-control` shows answers only and runs with thinking off. These are the settings in the Hermes config:
+
+```yaml
+display:
+  busy_ack_enabled: false
+  platforms:
+    discord:
+      tool_progress: 'off'
+      interim_assistant_messages: false
+      long_running_notifications: false
+      busy_ack_detail: false
+      show_reasoning: false
+      thinking_progress: false
+      suppress_warning_notifications: true
+agent:
+  system_prompt: ''
+  task_completion_guidance: false
+  parallel_tool_call_guidance: false
+  tool_use_enforcement: false
+  execution_guidance: false
+custom_providers:
+  - name: rove-chat-no-thinking
+    base_url: http://127.0.0.1:8000/v1
+    model: Qwen3.8-27B-Uncensored-4bit
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+```
+
+- `tool_progress` must be written as `off` for Discord, because Hermes treats an unset value as "show every tool call". The other display keys stop interim commentary, "still working" heartbeats, busy acknowledgements, reasoning and engine warnings. The typing indicator and the 👀 and ✅ reactions remain.
+- Hermes merges the custom provider's `extra_body` into every request to that address and model, so chat turns skip Qwen's thinking. `agent.reasoning_effort` cannot do this: oMLX hands it to the chat template, which rejects `none` and falls back to `low`. The worker sends the same flag itself, so it is unaffected.
+- The four agent switches remove Hermes' coding-agent prompt blocks, which push for tools this profile does not have.
+- The persona is `SOUL.md` in the Hermes home: answer first in plain words, pass on the chat tools' words as they are, read the approved profile before stating any fact, and name the closest thing Rove can do when it cannot do something. `agent.system_prompt` stays empty.
+- There is no output cap for chat turns. This Hermes build sends no `max_tokens` for a custom provider, whatever `model.max_tokens` says, and an `extra_body` cap would also cap the worker. The server's per-model ceiling of 2,048 tokens applies, and the persona keeps answers short.
+- Hermes replaces a bare silence marker on a person's Discord message with a warning, so the agent always answers. That is why a pasted link is answered through the agent; see [Discord](discord.md#pasted-links).
+- The model's generation config samples at temperature 1.0 when a request names none, and Hermes names none for the chat. At that temperature Qwen now and then drops the first lines of a long answer it was asked to pass on; at temperature 0 the same request was copied exactly every time. The worker sends temperature 0 and is unaffected. A lower default for the chat would be an oMLX model setting.
+
+Restart the gateway after changing these: `launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway`. The display keys are also read again on every turn.
+
+With nothing else running on the model, a warm "hi" took 1.8 to 3 seconds inside the agent after these changes, against 5 to 7.5 seconds before; a profile question took 6 to 8 seconds, against 15.6 to 16; "status" took 6 to 7 seconds, against 106 seconds and a 2,180-character answer. A first turn after oMLX unloaded the model (600 seconds idle) also pays for loading the weights.
 
 ## How the worker calls Qwen
 

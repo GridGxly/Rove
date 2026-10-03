@@ -131,7 +131,40 @@ A hash may be shortened to its first 8 or more hex characters. It is rejected wh
 
 ## Agent control
 
-The Hermes gateway listens in `agent-control` and runs Qwen with the narrow tool list in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection). A job link pasted there is queued through `start_job_application`. Nothing the agent can call fills a form, approves a fact or submits.
+`agent-control` is where the owner talks to Rove in plain words, usually from his phone. The Hermes gateway answers there with Qwen and the narrow tool list in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection). Nothing the agent can call fills a form, approves a fact or submits.
+
+The chat shows answers only. Tool calls, progress lines, reasoning and "still working" notes are switched off for Discord in the [gateway settings](local-runtime.md#discord-gateway). The 👀 and ✅ reactions on his message and the typing indicator are the only signs of work. Each tool call is one line in `system-log` instead: what was done in plain words, how long it took, and ok or failed. The line never carries the arguments or the result. A tool that fails gives the agent one plain sentence, not an exception.
+
+A message in the channel, "What you can ask Rove", lists what works:
+
+```text
+paste a job link               queued as his own; add first to jump the line
+status                         what Rove is doing, the queue, sends today
+what's waiting on me           what needs him, and which channel has each card
+why did you skip Acme          what happened with one company, and why
+how many did you send today    sends today and the daily cap
+pause · resume                 hold or restart jobs from the feed
+where do I go to school        any fact from the approved profile
+what do you know about me      points to memory, where list shows the remembered answers
+```
+
+Code writes the answers to these: the agent calls one tool and passes its words on. A fact about the owner is read from the approved profile every time, and the agent says "I don't know that yet" rather than guess. A request Rove cannot carry out, such as sending an application, changing the profile or a remembered answer, signing in, solving a CAPTCHA or sending mail, gets one sentence naming the closest thing it can do. A message it does not understand gets a few examples to try.
+
+Rove posts that message once and keeps its message ID in the private workflow config as `control_help_message_id`, with a hash of its text. When the text changes, the next start of the MCP server edits the same message. The bot pins it when it has Discord's Pin Messages permission; without it, the owner pins it once by hand.
+
+### Pasted links
+
+A message that is only job links, or links with a few words such as "apply" or "please", is the owner's own link. It skips the job-fit hold and goes ahead of every feed job; several of his links go oldest first.
+
+- `first`, `now`, `next`, `priority`, `asap` or "do this one first" next to the link puts it ahead of his other pasted links that have not started.
+- `first` or `move it up` on its own moves his latest paste to the front, when it comes within half an hour of the paste or as a Discord reply to Rove's line about it.
+- The latest `first` wins.
+
+The answer says where the link stands: "Queued. It goes next." or "Queued. 2 of your links are ahead of it; say `first` to move it up." A link that is already tracked gets its state, for example "Already tracked: applied."
+
+Exactly one answer is posted. Hermes cannot stay silent on a message, so the agent gives the answer: it calls `answer_paste`, which reads the owner's own recent messages back from Discord, checks the author ID, applies them through the same code the worker uses and returns that code's line. The agent's words carry no authority here. Each message is applied once, by whichever side reaches it first, and recorded in the `control_replies` table. A line no agent picked up within 45 seconds, because the gateway or the model is down, is posted by the worker.
+
+The worker answers nothing else in `agent-control`. The explicit forms above still work there.
 
 ## Memory channel
 
