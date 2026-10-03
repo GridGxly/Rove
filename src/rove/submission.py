@@ -43,7 +43,8 @@ GENERIC_SETTLED_JS = r"""({start, text_hits, status_region, form_error, success,
  try {
   if (location.href !== start) return true;
   const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden' && e.getAttribute('aria-hidden')!=='true';
-  if (![...document.querySelectorAll('input,textarea,select')].some(e=>e.type!=='hidden' && visible(e))) return true;
+  const deep=(r,s)=>[...r.querySelectorAll(s),...[...r.querySelectorAll('*')].filter(e=>e.shadowRoot).flatMap(e=>deep(e.shadowRoot,s))];
+  if (!deep(document,'input,textarea,select').some(e=>e.type!=='hidden' && visible(e))) return true;
   if ((document.body.innerText.slice(0,15000).match(new RegExp(success,'gi'))||[]).length > text_hits) return true;
   const messages=__MESSAGES__;
   const status=messages(status_selector), errors=messages(error_selector);

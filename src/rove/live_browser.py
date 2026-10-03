@@ -530,6 +530,10 @@ FIELDS_JS = """() => {
     return false; };
   return deep(document);
 }"""
+# How many controls a person can fill in the document shows.
+COUNT_JS = """() => [...document.querySelectorAll(
+  'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]),select,textarea,[contenteditable][role=textbox]')]
+  .filter(e => e.getClientRects().length).length"""
 # A page that moved to its next step: a form control or a final control is showing.
 STEP_JS = (
     """() => ("""
@@ -954,18 +958,22 @@ class RecruitingBrowser:
                 continue
         return found
 
-    def mark_frame(self, frame):
+    def mark_frame(self, frame, alone: bool = True):
         """The iframe that holds the form stands for it in the tab's own document, so a
-        pop-up around it is known to be the application and one on top of it is not."""
+        pop-up around it is known to be the application and one on top of it is not.
+
+        `alone` drops the references the tab's own document had: the form is the frame's.
+        """
         outer = frame
         while outer.parent_frame is not None and outer.parent_frame is not self.page.main_frame:
             outer = outer.parent_frame
         with contextlib.suppress(PlaywrightError):
             element = outer.frame_element()
             element.evaluate(
-                "e=>{e.ownerDocument.querySelectorAll('[data-rove-field]')"
+                "(e,alone)=>{if(alone)e.ownerDocument.querySelectorAll('[data-rove-field]')"
                 ".forEach(x=>x.removeAttribute('data-rove-field'));"
-                "e.setAttribute('data-rove-field','frame');}"
+                "e.setAttribute('data-rove-field','frame');}",
+                alone,
             )
             element.dispose()
 
@@ -1769,27 +1777,22 @@ class RecruitingBrowser:
         return found
 
     def mark_form_frame(self):
-        """Before pop-ups are judged: the frame holding the form, when the tab's own
-        document has no form, stands for it there (see `mark_frame`)."""
+        """Before pop-ups are judged: the frame holding the form stands for it in the tab's
+        own document (see `mark_frame`). Before any frame is chosen, a frame with two
+        controls or more, and more than the tab's own document has, is marked beside it."""
         main = self.page.main_frame
-        form = self.form
+        if self.form is not main:
+            self.mark_frame(self.form)
+            return
         with contextlib.suppress(PlaywrightError):
-            if form is main:
-                if main.evaluate(FIELDS_JS):
-                    return
-                form = next(
-                    (
-                        f
-                        for f in self.page.frames
-                        if f is not main
-                        and not f.is_detached()
-                        and form_frames.candidate(f.url)
-                        and f.evaluate(FIELDS_JS)
-                    ),
-                    None,
-                )
-            if form is not None:
-                self.mark_frame(form)
+            own = main.evaluate(COUNT_JS)
+            for frame in self.page.frames:
+                if frame is main or frame.is_detached() or not form_frames.candidate(frame.url):
+                    continue
+                with contextlib.suppress(PlaywrightError):
+                    count = frame.evaluate(COUNT_JS)
+                    if count >= 2 and count > own:
+                        self.mark_frame(frame, alone=False)
 
     def overlay_frame(self, overlay: dict):
         return overlay.get("_frame") or self.page.main_frame
