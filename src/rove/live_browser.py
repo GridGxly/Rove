@@ -158,7 +158,7 @@ def accepts_pdf(accept: str | None) -> bool:
 
 
 def accepted_words(accept: str) -> str:
-    """The file types an upload takes, in plain words: ".doc, .docx", "Word documents"."""
+    """The file types an upload takes, as extensions where a type has a common one."""
     names = {
         "application/msword": ".doc",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
@@ -250,7 +250,7 @@ __READING__
  // The control that moves a multi-page form on: Next, Continue, Proceed, Review, "Next:
  // Experience", "Save & Continue", "Continue to step 3". A "continue to" that leaves the
  // form for another site or a sign-in never counts.
- const NAV=/^(?:next|continue|proceed|review|next step|go to (?:the )?next step|save (?:and|&) (?:continue|next)|review (?:and|&) submit|review (?:my |your |the )?application|(?:continue|proceed|next|go) to (?:step \d+|the next step|(?!.*\b(?:linkedin|indeed|google|facebook|apple|site|website|home ?page|careers?|jobs?|search|sign ?in|log ?in)\b).{1,40})|next ?[:\-–—] ?.{1,40}|next \(?\d+ ?(?:of|\/) ?\d+\)?)$/i;
+ const NAV=/^(?:next|continue|proceed|review|next step|go to (?:the )?next step|save (?:and|&) (?:continue|next)|review (?:and|&) submit|review (?:my |your |the )?application|(?:continue|proceed|next|go) to (?:step \d+|the next step)|(?:continue|proceed) to (?!.*\b(?:linkedin|indeed|google|facebook|apple|site|website|home|home ?page|careers?|jobs?|search|sign ?in|log ?in|dashboard|profile|account)\b).{1,40}|next ?[:\-–—] ?.{1,40}|next \(?\d+ ?(?:of|\/) ?\d+\)?)$/i;
  const navText=t=>squash(t).replace(/^[›»→>\s]+|[\s›»→>]+$/g,'');
  const nav=deepAll('button,input[type=submit],[role="button"]').filter(visible).filter(e=>
    NAV.test(navText(e.innerText||e.value||''))).map((e,i)=>{
@@ -921,6 +921,21 @@ class RecruitingBrowser:
                 return False
             self.page.wait_for_timeout(200)
 
+    def wait_for_child_form(self, timeout_ms: int) -> bool:
+        """Bounded wait for a child frame that may hold a form to show a control."""
+        main = self.page.main_frame
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            for frame in self.page.frames:
+                if frame is main or frame.is_detached() or not form_frames.candidate(frame.url):
+                    continue
+                with contextlib.suppress(PlaywrightError):
+                    if frame.evaluate(FIELDS_JS):
+                        return True
+            if time.monotonic() >= deadline:
+                return False
+            self.page.wait_for_timeout(200)
+
     # --- the frame that holds the form ------------------------------------------------
 
     @property
@@ -1036,7 +1051,7 @@ class RecruitingBrowser:
         ):
             # An employer page whose embedded form is still loading: one bounded wait.
             self.frames_waited = (self.run["id"], self.page.url)
-            if self.wait_for_fields(5000):
+            if self.wait_for_child_form(5000):
                 frame, data = self.read_form()
         if frame is not main:
             # The tab shows the employer's page; the form, its address and everything the

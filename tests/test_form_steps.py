@@ -276,6 +276,44 @@ def test_a_video_interview_step_is_handed_to_the_owner_by_name_with_its_link(ste
     assert "Final step" not in result["reason"]
 
 
+NAV_PAGE = """<!doctype html><title>Nav</title><form><label for="a">First name</label>
+<input id="a"><div id="buttons"></div></form>"""
+
+
+@pytest.mark.parametrize(
+    "label,moves",
+    [
+        ("Next", True),
+        ("Proceed", True),
+        ("Review", True),
+        ("Save & Continue", True),
+        ("Save and Next", True),
+        ("Next: Experience", True),
+        ("Next – Education", True),
+        ("Continue to Experience", True),
+        ("Continue to step 3", True),
+        ("Go to the next step", True),
+        ("Next (2 of 5)", True),
+        ("Continue ›", True),
+        ("Review and submit", True),
+        ("Continue to LinkedIn", False),
+        ("Continue to site", False),
+        ("Go to dashboard", False),
+        ("Proceed to my profile", False),
+        ("Continue with Google", False),
+        ("Back", False),
+        ("Save and exit", False),
+    ],
+)
+def test_the_words_that_move_a_wizard_on(steps, label, moves):
+    runtime, employer, _state = steps
+    Employer.pages["/nav/jobs/16"] = NAV_PAGE.replace(
+        '<div id="buttons"></div>', f'<button type="button">{label}</button>'
+    )
+    opened = runtime.open(f"{employer}/nav/jobs/16")
+    assert [c["label"] for c in opened["nav_controls"]] == ([label] if moves else [])
+
+
 def test_owner_steps_are_named_from_the_page_markers():
     assessment = {
         "url": "https://example.test/apply",

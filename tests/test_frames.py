@@ -10,6 +10,7 @@ served offline from local HTTP servers.
 import hashlib
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -122,6 +123,9 @@ class Pages(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path.endswith("/slow"):
+            time.sleep(1.5)  # an embed that arrives after the employer's page
+            path = "/embed/job_app"
         body = THANKS if path.endswith(("/done", "/confirmation")) else self.pages.get(path)
         if body is None:
             self.send_response(404)
@@ -235,6 +239,9 @@ def sites(tmp_path, monkeypatch):
         "__BOARD__", board
     )
     Employer.pages["/careers/jobs/4473"] = OWN_FORM_WITH_CHAT.replace("__BOARD__", board)
+    Employer.pages["/careers/jobs/4475"] = EMPLOYER.replace(
+        "__FRAME__", FRAME.replace("/embed/job_app?for=northwind&amp;token=4471", "/embed/slow")
+    ).replace("__BOARD__", board)
     Employer.pages["/careers/jobs/4474"] = EMPLOYER.replace(
         "__FRAME__", FRAME.replace("/embed/job_app?for=northwind&amp;token=4471", "/embed/apply")
     ).replace("__BOARD__", board)
@@ -337,6 +344,13 @@ def test_a_chat_frame_and_a_chat_window_are_not_the_application(sites):
     result = runtime.prepare(opened["run_id"])
     assert {f["label"] for f in result["filled"]} == {"First name", "Email"}
     assert runtime.page.locator("#ask").input_value() == ""
+
+
+def test_an_embed_that_loads_after_the_page_is_waited_for_once(sites):
+    runtime, employer, board, _state = sites
+    opened = runtime.open(f"{employer}/careers/jobs/4475")
+    assert opened["url"] == f"{board}/embed/slow"
+    assert [f["label"] for f in opened["fields"]] == ["First name", "Last name", "Email", "Resume"]
 
 
 def test_an_apply_link_inside_the_frame_is_followed_there(sites):
