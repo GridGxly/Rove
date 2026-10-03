@@ -24,9 +24,15 @@ from .research import company_context
 from .research import quoted as quoted_research
 from .runtime import state_root, write_private
 
-# Bump when the prompts in scripts/recruiting_reasoning.py change so cached
-# reviews produced by an older prompt are never reused silently.
-PROMPT_VERSION = "2026-10-01.1"
+# The prompts in scripts/recruiting_reasoning.py are versioned apart, so work done under
+# an older prompt is never reused silently and work done under an unchanged one is kept.
+# Bump FIT_PROMPT_VERSION when JOB_FIT_PROMPT changes: stored job-fit reviews are keyed by
+# it and every job is reviewed again. Bump ANSWERS_PROMPT_VERSION when ANSWER_PROMPT or
+# the writing rules change: cached drafts are keyed by it, stored fit reviews are not.
+FIT_PROMPT_VERSION = "2026-10-01.1"
+ANSWERS_PROMPT_VERSION = "2026-10-01.1"
+# The drafting version under its earlier name, for existing callers.
+PROMPT_VERSION = ANSWERS_PROMPT_VERSION
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 
 
@@ -167,7 +173,7 @@ def ensure_model():
     raise ModelUnavailable("Local model server is not running")
 
 
-@timing.call("model")
+@timing.call("model", result=timing.tokens)
 def generate(directory: Path, context: dict, basename: str, attempts: int = 2) -> dict:
     ensure_model()
     write_private(directory / f"{basename}-input.json", context)
@@ -481,16 +487,17 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     """Qwen extracts requirements before any applicant data enters the form.
 
     One model call per job. The review is stored under the posting's content, the approved
-    profile snapshot and the prompt version; a later tick, a resume after a hold or a
-    reopen reads it back, and only a change to one of the three asks Qwen again. Code's
-    own comparisons run on every read, so an improved rule applies without a model call.
+    profile snapshot and the fit prompt's version; a later tick, a resume after a hold or a
+    reopen reads it back, and only a change to one of the three asks Qwen again. A change
+    to the drafting prompt does not. Code's own comparisons run on every read, so an
+    improved rule applies without a model call.
     """
     approved = read_approved()
     item = workflow.get(application_id)
     if approved["profile_hash"] != item["profile_hash"]:
         raise PermissionError("Queued profile version changed; rebuild before preparation")
     job_text = (posting_text or page.get("text", "").split("Apply for this job")[0])[:12000]
-    cache_key = fastpath.review_key(job_text, approved["profile_hash"], PROMPT_VERSION)
+    cache_key = fastpath.review_key(job_text, approved["profile_hash"], FIT_PROMPT_VERSION)
     directory = state_root() / "applications" / application_id
     path = directory / "job-review.json"
     prior = fastpath.stored_review(application_id, cache_key)
@@ -510,7 +517,7 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     timing.note(changed=fastpath.review_change(application_id, cache_key))
     context = {
         "review_type": "job_fit",
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": FIT_PROMPT_VERSION,
         "profile": {
             key: approved["profile"][key]
             for key in ("identity", "education", "eligibility", "availability", "preferences")
@@ -553,7 +560,7 @@ def review_job(application_id: str, page: dict, posting_text: str = "") -> dict:
     result.update(
         context_hash=context_hash,
         posting_hash=cache_key[0],
-        prompt_version=PROMPT_VERSION,
+        prompt_version=FIT_PROMPT_VERSION,
         profile_hash=approved["profile_hash"],
         model=generated["model"],
         harness="Hermes",

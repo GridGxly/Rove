@@ -217,7 +217,7 @@ def test_job_review_ignores_stale_prompt_cache_and_overrides_qwen_arithmetic(sta
     assert result["qwen_decision"] == "not_fit"
     assert result["decision"] == "fit"
     assert result["requirements"][0]["checked_by"] == "code"
-    assert result["prompt_version"] == reasoning.PROMPT_VERSION
+    assert result["prompt_version"] == reasoning.FIT_PROMPT_VERSION
     monkeypatch.setattr(reasoning, "generate", lambda *a, **k: pytest.fail("cache must be reused"))
     assert (
         reasoning.review_job(
@@ -254,7 +254,9 @@ def test_cached_review_is_re_evaluated_by_current_code_rules(state, monkeypatch)
             "unknowns": [],
         },
     }
-    key = fastpath.review_key("posting", read_approved()["profile_hash"], reasoning.PROMPT_VERSION)
+    key = fastpath.review_key(
+        "posting", read_approved()["profile_hash"], reasoning.FIT_PROMPT_VERSION
+    )
     fastpath.store_review(application_id, key, stale)
     result = reasoning.review_job(application_id, page)
     assert result["decision"] == "fit" and "Re-evaluated" in result["note"]

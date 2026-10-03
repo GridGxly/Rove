@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
@@ -561,12 +562,15 @@ def erga_confirm(application_id: str) -> dict:
         erga_id = json.loads(manifest_path.read_text()).get("application_id")
     if not erga_id:
         return {"synced": False, "warning": "No Erga application is linked to this package"}
-    result = asyncio.run(
-        erga_call(
-            "confirm_application_submission",
-            {"application_id": erga_id, "status": "applied", "used_generated_resume": False},
-        )
-    )
+    arguments = {"application_id": erga_id, "status": "applied", "used_generated_resume": False}
+
+    def confirm() -> dict:
+        return asyncio.run(erga_call("confirm_application_submission", arguments))
+
+    # The browser service calls this on a thread that already runs the browser library's
+    # event loop, where a second loop cannot start: the Erga call gets a thread of its own.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(confirm).result()
     data = result.get("result", result)
     return {"synced": True, "application_id": erga_id, "status": data.get("status")}
 

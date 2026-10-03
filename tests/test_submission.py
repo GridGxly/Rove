@@ -472,3 +472,40 @@ def test_queue_holds_for_waiting_applications_unless_owner_resumes(state):
     workflow.set_state(pasted, "DEFERRED")
     worker.apply_command({"kind": "resume", "application_id": first}, "msg-1")
     assert worker.next_queued(1) == first
+
+
+def test_erga_confirmation_works_on_a_thread_that_already_runs_an_event_loop(state, monkeypatch):
+    """A verified submission is mirrored into Erga from the browser service, whose thread
+    already runs the browser library's event loop. The confirmation must go through
+    there rather than fail because a second loop cannot start on that thread."""
+    import asyncio
+
+    from rove import resumes
+
+    application_id = workflow.enqueue(URL)["application_id"]
+    directory = state / "applications" / application_id
+    directory.mkdir(parents=True)
+    (directory / "resume-manifest.json").write_text(json.dumps({"application_id": "erga-123"}))
+    calls = []
+
+    async def erga_call(name, arguments):
+        calls.append((name, arguments))
+        return {"result": {"status": "applied"}}
+
+    monkeypatch.setattr(resumes, "erga_call", erga_call)
+    confirmed = {"synced": True, "application_id": "erga-123", "status": "applied"}
+
+    async def as_the_browser_service_calls_it():
+        return submission.erga_confirm(application_id)
+
+    assert asyncio.run(as_the_browser_service_calls_it()) == confirmed
+    assert submission.erga_confirm(application_id) == confirmed  # and with no loop running
+    sent = {"application_id": "erga-123", "status": "applied", "used_generated_resume": False}
+    assert calls == [("confirm_application_submission", sent)] * 2
+
+    async def erga_down(name, arguments):
+        raise RuntimeError("Erga could not complete this operation")
+
+    monkeypatch.setattr(resumes, "erga_call", erga_down)
+    with pytest.raises(RuntimeError, match="Erga could not complete"):
+        asyncio.run(as_the_browser_service_calls_it())

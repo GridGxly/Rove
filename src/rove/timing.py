@@ -181,6 +181,7 @@ class stage:
     """
 
     tally = False
+    result = None  # for `call`: reads facts out of what the function returned
 
     def __init__(self, application_id, name: str, **facts):
         self.application_id = application_id
@@ -248,7 +249,11 @@ class stage:
             )
             timer.tally = self.tally
             with timer:
-                return function(*args, **kwargs)
+                value = function(*args, **kwargs)
+                if self.result is not None and timer.frame is not None:
+                    with contextlib.suppress(Exception):
+                        timer.frame.facts.update(self.result(value))
+                return value
 
         return timed
 
@@ -258,15 +263,48 @@ def _add(facts: dict, name: str, seconds: float):
     facts[name + "_seconds"] = round(float(facts.get(name + "_seconds", 0.0)) + seconds, 3)
 
 
-def call(name: str, application=None) -> stage:
+def call(name: str, application=None, result=None) -> stage:
     """Decorator for a leaf call the stages spend their time in; see the module docstring.
 
     `application` is a callable given the call's arguments when the application is not one
-    of them (a method that keeps it on `self`).
+    of them (a method that keeps it on `self`). `result` is a callable given what the
+    call returned; the facts it gives go on the call's own row.
     """
     timer = stage(application, name)
     timer.tally = True
+    timer.result = result
     return timer
+
+
+def tokens(generated) -> dict:
+    """Token counts from a model result, when the local server reported usage.
+
+    Reads the server's own names (`prompt_tokens`, `completion_tokens`,
+    `prompt_tokens_details.cached_tokens`) or the harness's totals (`input_tokens`,
+    `output_tokens`, `cache_read_tokens`), under `usage` or on the result itself. A
+    count that is absent is left out; nothing is estimated.
+    """
+    result = generated.get("result") if isinstance(generated, dict) else None
+    places = []
+    for holder in (result, generated):
+        if isinstance(holder, dict):
+            places += [p for p in (holder.get("usage"), holder) if isinstance(p, dict)]
+    details = [p.get("prompt_tokens_details") for p in places]
+
+    def first(names: tuple, among: list):
+        for place in among:
+            for name in names:
+                value = place.get(name) if isinstance(place, dict) else None
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    return value
+        return None
+
+    counts = {
+        "tokens_in": first(("prompt_tokens", "input_tokens"), places),
+        "tokens_out": first(("completion_tokens", "output_tokens"), places),
+        "tokens_cached": first(("cache_read_tokens", "cached_tokens"), [*places, *details]),
+    }
+    return {name: value for name, value in counts.items() if value is not None}
 
 
 def lap(name: str | None, **facts):

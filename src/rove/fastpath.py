@@ -98,6 +98,16 @@ CHOICE_KINDS = {"radio_group", "choice", "select-one", "select-multiple", "check
 SHORT_KINDS = {"text", "search", "url", "email", "tel", "number", "date", "month", "week", "time"}
 
 
+def owner_only(question: dict) -> bool:
+    """Whether a model draft may never answer this question.
+
+    The one place the drafting gate asks what kind of question this is. When the shared
+    question classifier lands, this body becomes its call (`questions.draft_gate(question)`)
+    and OWNER_ONLY above goes away.
+    """
+    return bool(OWNER_ONLY.search(str(question.get("label") or "")))
+
+
 def question_kind(question: dict, field: dict | None = None) -> str:
     """What a pending question needs: `writing`, `choice`, `short` or `owner`.
 
@@ -109,7 +119,9 @@ def question_kind(question: dict, field: dict | None = None) -> str:
     if (
         question.get("reason") == UNAPPROVED_FILE
         or kind in {"file", "password", "hidden"}
-        or OWNER_ONLY.search(str(question.get("label") or ""))
+        # A question whose text could not be read is never drafted; the call leaves it out.
+        or question.get("label_missing")
+        or owner_only(question)
     ):
         return "owner"
     if question.get("options") or kind in CHOICE_KINDS:

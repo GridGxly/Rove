@@ -253,7 +253,26 @@ def summarize(rows: list[dict]) -> dict:
         if not facts["cached"]:
             why = str(facts.get("changed") or "unknown")
             asked_why[why] = asked_why.get(why, 0) + 1
+    # Token counts exist only on model calls whose server reported usage, grouped by the
+    # stage that made the call.
+    usage: dict[str, list[dict]] = {}
+    for row in rows:
+        if row["stage"] == "model" and any(k.startswith("tokens_") for k in row["facts"]):
+            usage.setdefault(row["parent"] or "other", []).append(row["facts"])
+
+    def reported(found: list[dict], key: str):
+        """The median of a count over the calls that reported it; None when none did."""
+        values = [int(f["tokens_" + key]) for f in found if "tokens_" + key in f]
+        return statistics.median(values) if values else None
+
     return {
+        "tokens": {
+            STAGE_WORDS.get(parent, parent.replace("_", " ")): {
+                "calls": len(found),
+                **{key: reported(found, key) for key in ("in", "out", "cached")},
+            }
+            for parent, found in usage.items()
+        },
         "fit": {"stored": sum(1 for f in reviews if f["cached"]), "asked": asked_why}
         if reviews
         else {},
@@ -358,6 +377,16 @@ def render(summary: dict) -> str:
             f"{drafting['owner_only']} owner-only) and got "
             f"{counted(drafting['proposals'], 'draft')} · "
             f"{counted(drafting['skipped'], 'call')} skipped"
+        )
+    for stage, tokens in summary["tokens"].items():
+        parts = [
+            f"{tokens[key]:g} {word}"
+            for key, word in (("in", "in"), ("out", "out"), ("cached", "cached"))
+            if tokens[key] is not None
+        ]
+        lines.append(
+            f"model tokens per {stage} call, median: {' · '.join(parts)} "
+            f"({counted(tokens['calls'], 'call')} with usage)"
         )
     return "\n".join(lines)
 
@@ -649,7 +678,7 @@ def run_fixture(root: Path) -> str:
         (worker, "discord", refuse),
         (worker, "browser_call", timing.call("browser")(local_call)),
         (worker, "prepare_resume", base_resume),
-        (reasoning, "generate", timing.call("model")(fixture_model)),
+        (reasoning, "generate", timing.call("model", result=timing.tokens)(fixture_model)),
         (reasoning, "career_evidence", no_evidence),
         (reasoning, "company_context", lambda *_args: ""),
         (submission, "erga_confirm", lambda _id: {"synced": False, "warning": "bench fixture"}),

@@ -169,18 +169,33 @@ def test_a_changed_posting_is_reviewed_again_and_the_old_review_is_kept(state, m
     assert fit_rows() == [(False, "first"), (False, "posting"), *[(True, None)] * 3]
 
 
-def test_a_new_prompt_version_is_reviewed_again(state, monkeypatch):
+def test_a_new_fit_prompt_is_reviewed_again_and_a_new_drafting_prompt_is_not(state, monkeypatch):
     model_calls, _ = counting_model(monkeypatch)
     app = queued(state, "3")
     page = form("https://jobs.example.com/3", "Name")
-    reasoning.review_job(app, page, POSTING)
-    monkeypatch.setattr(reasoning, "PROMPT_VERSION", reasoning.PROMPT_VERSION + ".next")
+    first = reasoning.review_job(app, page, POSTING)
+    # The drafting prompt changed, under both of its names: the fit review stands.
+    monkeypatch.setattr(reasoning, "ANSWERS_PROMPT_VERSION", "2027-01-01.1")
+    monkeypatch.setattr(reasoning, "PROMPT_VERSION", "2027-01-01.1")
+    kept = reasoning.review_job(app, page, POSTING)
+    assert len(model_calls) == 1 and kept["cached"] is True
+    assert kept["prompt_version"] == first["prompt_version"] == reasoning.FIT_PROMPT_VERSION
+    # The fit prompt changed: Qwen is asked again, under the new version.
+    monkeypatch.setattr(reasoning, "FIT_PROMPT_VERSION", reasoning.FIT_PROMPT_VERSION + ".next")
     newer = reasoning.review_job(app, page, POSTING)
     assert len(model_calls) == 2 and "cached" not in newer
-    assert newer["prompt_version"] == reasoning.PROMPT_VERSION
+    assert newer["prompt_version"] == reasoning.FIT_PROMPT_VERSION
+    assert model_calls[1]["prompt_version"] == reasoning.FIT_PROMPT_VERSION
     assert reasoning.review_job(app, page, POSTING)["cached"] is True
     assert len(model_calls) == 2
-    assert fit_rows() == [(False, "first"), (False, "prompt"), (True, None)]
+    assert fit_rows() == [(False, "first"), (True, None), (False, "prompt"), (True, None)]
+
+
+def test_the_earlier_name_still_means_the_drafting_prompt():
+    assert reasoning.PROMPT_VERSION == reasoning.ANSWERS_PROMPT_VERSION
+    from rove.reasoning import PROMPT_VERSION  # existing callers import it by this name
+
+    assert PROMPT_VERSION
 
 
 def test_a_new_approved_profile_is_reviewed_again(state, monkeypatch):
@@ -213,7 +228,8 @@ def test_each_job_keeps_its_own_review(state, monkeypatch):
     reasoning.review_job(first, form("https://jobs.example.com/5", "Name"), POSTING)
     reasoning.review_job(second, form("https://jobs.example.com/6", "Name"), POSTING)
     assert len(model_calls) == 2
-    key = fastpath.review_key(POSTING, read_approved()["profile_hash"], reasoning.PROMPT_VERSION)
+    version = reasoning.FIT_PROMPT_VERSION
+    key = fastpath.review_key(POSTING, read_approved()["profile_hash"], version)
     assert fastpath.stored_review(first, key)["decision"] == "needs_review"
     assert fastpath.stored_review("0" * 12, key) is None
     for changed in (

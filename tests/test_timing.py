@@ -181,6 +181,46 @@ def test_rows_belong_to_an_application_except_in_the_browser_service(state, monk
     assert [(r["stage"], r["application_id"]) for r in timing.rows()] == [("model", "")]
 
 
+def test_token_counts_are_read_only_from_usage_the_server_reported():
+    served = {"prompt_tokens": 2565, "completion_tokens": 1031}
+    # The server's own usage block, with its cached-token detail.
+    wire = {"result": {"usage": {**served, "prompt_tokens_details": {"cached_tokens": 512}}}}
+    assert timing.tokens(wire) == {"tokens_in": 2565, "tokens_out": 1031, "tokens_cached": 512}
+    # The harness's totals on the result itself.
+    totals = {"result": {"input_tokens": 5350, "output_tokens": 337, "cache_read_tokens": 0}}
+    assert timing.tokens(totals) == {"tokens_in": 5350, "tokens_out": 337, "tokens_cached": 0}
+    assert timing.tokens({"usage": served}) == {"tokens_in": 2565, "tokens_out": 1031}
+    # No usage, or usage that is not a count: nothing is recorded and nothing is guessed.
+    for silent in (
+        {"model": "m", "result": {"completed": True, "final_response": "{}"}},
+        {"result": {"usage": {"prompt_tokens": "many", "completion_tokens": -1}}},
+        {"result": {"usage": {"prompt_tokens": True}}},
+        {"result": None},
+        "not a result",
+        None,
+    ):
+        assert timing.tokens(silent) == {}
+
+
+def test_a_model_call_row_carries_the_token_counts_of_its_result(state):
+    @timing.call("model", result=timing.tokens)
+    def generate(directory, context, basename):
+        return {"model": "m", "result": {"usage": context}}
+
+    @timing.call("model", result=lambda value: value["missing"])
+    def unreadable():
+        return {"model": "m"}
+
+    with timing.stage(APP, "fit_review"):
+        generate(None, {"prompt_tokens": 2565, "completion_tokens": 1031}, "job-reasoning")
+        generate(None, {}, "job-reasoning")
+        assert unreadable() == {"model": "m"}  # a reader that fails costs the caller nothing
+    calls = [r["facts"] for r in timing.rows() if r["stage"] == "model"]
+    assert calls == [{"tokens_in": 2565, "tokens_out": 1031}, {}, {}]
+    review = by_stage("fit_review")[0]["facts"]
+    assert review["model_calls"] == 3 and "tokens_in" not in review
+
+
 def test_facts_keep_numbers_and_single_words_only(state):
     timing.record(
         APP,
@@ -278,8 +318,10 @@ def record_two_applications():
     sample(660, APP, "submit", "submission", 2.0)
     sample(662, APP, "verify", "submission", 4.0)
     sample(660, APP, "submission", "", 6.0)
-    for seconds in (80.0, 57.5, 1.0):
-        sample(30, APP, "model", "fit_review", seconds)
+    fit_tokens = {"tokens_in": 2565, "tokens_out": 1031, "tokens_cached": 0}
+    sample(30, APP, "model", "fit_review", 80.0, **fit_tokens)
+    sample(130, APP, "model", "drafting", 57.5, tokens_in=5350, tokens_out=337)
+    sample(190, APP, "model", "drafting", 1.0)  # a call whose result carried no usage
     sample(3600, OTHER, "open", "pass", 6.0, browser_calls=1)
     sample(
         3606,
@@ -356,6 +398,10 @@ def test_the_report_gives_count_median_p90_share_and_model_calls_per_stage(state
     assert (calls["model"]["runs"], calls["model"]["median"]) == (3, 57.5)
     assert summary["fills"] == {"code": 9, "model": 1.5, "owner": 0, "pending": 0}
     assert summary["fit"] == {"stored": 1, "asked": {"first": 1, "posting": 1}}
+    assert summary["tokens"] == {
+        "fit review": {"calls": 1, "in": 2565, "out": 1031, "cached": 0},
+        "drafting": {"calls": 1, "in": 5350, "out": 337, "cached": None},
+    }
     assert summary["drafting"] == {
         "calls": 1,
         "skipped": 1,
@@ -376,6 +422,11 @@ def test_the_report_gives_count_median_p90_share_and_model_calls_per_stage(state
         "fit review asked of the model: 1 first for the job, 1 after a new posting · "
         "read back from the stored review: 1"
     ) in text
+    assert (
+        "model tokens per fit review call, median: 2565 in · 1031 out · 0 cached "
+        "(1 call with usage)"
+    ) in text
+    assert "model tokens per drafting call, median: 5350 in · 337 out (1 call with usage)" in text
 
 
 def run_cli(monkeypatch, capsys, *arguments) -> str:
