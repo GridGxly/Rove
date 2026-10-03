@@ -94,7 +94,7 @@ Apple Silicon macOS is the only platform I test.
 - Tectonic for resume compilation
 - a private Obsidian vault
 - QMD and Node.js 22+ for local profile retrieval
-- Google Chrome or Chrome for Testing, driven with Patchright
+- Google Chrome; `rove browser install` makes a separate copy of it, the Rove Browser, driven with Patchright
 - your own Discord bot in a private server you own
 - optional: Zoho Mail API access for mail tracking
 
