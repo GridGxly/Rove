@@ -7,7 +7,19 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import fastpath, inbound, intake, matching, memory_channel, overlays, timing, workflow
+import httpx
+
+from . import (
+    delivery,
+    fastpath,
+    inbound,
+    intake,
+    matching,
+    memory_channel,
+    overlays,
+    timing,
+    workflow,
+)
 from .discord_feed import discord, private_env
 from .live_browser import browser_call
 from .reasoning import GATE_KINDS
@@ -76,8 +88,16 @@ def attach_stop_screenshot(application_id: str):
     workflow.attach_file(application_id, newest, "→ What the browser showed when it stopped")
 
 
+# Erga drafts to render for the thread once the tick's send is done: (application, tex,
+# page fill). Rendering takes seconds and is for review only, so it never delays a send.
+_deferred_drafts: list[tuple] = []
+
+
 def attach_resume(application_id: str, manifest: dict):
-    """The resume as sent, and Erga's rejected tailored draft when there is one, for review."""
+    """The resume as sent, and Erga's rejected tailored draft when there is one, for review.
+
+    Both go into the thread record: while an application is being prepared they are
+    posted after the send, and the draft is rendered then too."""
     directory = state_root() / f"applications/{application_id}"
     kind = (
         "tailored by Erga from your evidence"
@@ -88,6 +108,25 @@ def attach_resume(application_id: str, manifest: dict):
     tex = manifest.get("rejected_proposal_tex")
     if not tex or not Path(tex).is_file() or not manifest.get("warning_is_new", True):
         return  # a draft rejected for the reason the owner already saw stays in Erga's folder
+    if workflow.delivery_deferred():
+        _deferred_drafts.append((application_id, tex, manifest.get("page_fill_ratio")))
+        return
+    attach_rejected_draft(application_id, tex, manifest.get("page_fill_ratio"))
+
+
+def attach_deferred_drafts():
+    """Render and attach the drafts held back during the tick's pass."""
+    while _deferred_drafts:
+        application_id, tex, fill = _deferred_drafts.pop(0)
+        with contextlib.suppress(Exception):  # review material; the record never waits on it
+            attach_rejected_draft(application_id, tex, fill)
+
+
+def attach_rejected_draft(application_id: str, tex, fill):
+    """Erga's tailored draft that failed its layout check, rendered and marked not sent."""
+    directory = state_root() / f"applications/{application_id}"
+    if not Path(tex).is_file():
+        return
     draft = directory / "tailored-draft.pdf"
     try:
         import shutil
@@ -110,7 +149,6 @@ def attach_resume(application_id: str, manifest: dict):
             application_id, f"tailored draft render failed: {type(error).__name__}"
         )
         return
-    fill = manifest.get("page_fill_ratio")
     why = (
         f"it fills {round(float(fill) * 100)}% of the page and Erga requires 90%"
         if fill
@@ -1112,7 +1150,98 @@ def apply_command(command: dict, message_id: str):
         reconcile(application_id, command["outcome"], message_id)
 
 
-def poll_commands():
+# How often every candidate channel is read whatever Discord's channel list says, in case
+# a channel's newest-message mark lags behind.
+FULL_READ_EVERY = timedelta(minutes=10)
+
+
+def say(channel: str, text: str):
+    """One plain line in a channel the owner wrote in; a failure is logged, not raised."""
+    try:
+        discord(
+            "POST",
+            f"/channels/{channel}/messages",
+            {"content": text, "allowed_mentions": {"parse": []}},
+        )
+    except (httpx.HTTPError, OSError) as error:
+        workflow.delivery_failed("reply", channel, error, announce=False)
+
+
+def full_read_due() -> bool:
+    """True every FULL_READ_EVERY: then every candidate channel is read."""
+    stamp = datetime.now(UTC)
+    with workflow.db() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS poll_marks(name TEXT PRIMARY KEY, at TEXT NOT NULL)"
+        )
+        row = conn.execute("SELECT at FROM poll_marks WHERE name='full_read'").fetchone()
+        due = not row or stamp - datetime.fromisoformat(row[0]) >= FULL_READ_EVERY
+        if due:
+            conn.execute(
+                "INSERT OR REPLACE INTO poll_marks VALUES('full_read',?)", (stamp.isoformat(),)
+            )
+    return due
+
+
+def channel_news(settings: dict, threads: dict) -> dict | None:
+    """The newest message id Discord reports for each channel and active thread, from two
+    guild-wide reads, or None when that is unknown (no guild, or time for a full read).
+
+    A thread missing from the active list is archived and has nothing new: a message
+    posted in an archived thread unarchives it. Raises when Discord cannot be reached.
+    """
+    guild = settings.get("guild_id")
+    if not guild or full_read_due():
+        return None
+    listed = discord("GET", f"/guilds/{guild}/channels")
+    active = discord("GET", f"/guilds/{guild}/threads/active")
+    news: dict = {}
+    if isinstance(listed, list) and listed:
+        for channel in listed:
+            if isinstance(channel, dict) and channel.get("id"):
+                news[str(channel["id"])] = channel.get("last_message_id")
+    known_threads = isinstance(active, dict) and isinstance(active.get("threads"), list)
+    if known_threads:
+        for thread in active["threads"]:
+            if isinstance(thread, dict) and thread.get("id"):
+                news[str(thread["id"])] = thread.get("last_message_id")
+        for thread in threads:
+            news.setdefault(str(thread), "archived")
+    return news
+
+
+def has_news(channel: str, checkpoint, news: dict | None) -> bool:
+    """Whether a channel can hold a message after its cursor."""
+    if news is None or not checkpoint or channel not in news:
+        return True
+    newest = news[channel]
+    if newest == "archived" or not newest:
+        return False  # archived, or no message was ever posted there
+    try:
+        return int(newest) > int(checkpoint[0])
+    except (TypeError, ValueError):
+        return True
+
+
+def poll_commands() -> bool:
+    """Read the owner's new messages in the owner channels and every thread that can take
+    a reply, and act on each one once. Returns False when Discord could not be reached.
+
+    Cheap when nothing happened: two guild-wide reads say which channels and threads have
+    a message past their cursor, and only those are read (every channel is read every
+    FULL_READ_EVERY regardless). A transport error, a 5xx or a rate limit ends the
+    reading for this tick without raising; the next tick reads from the same cursors.
+
+    Cursors: the first read of a channel takes the newest message's id; a channel with no
+    message gets a cursor from Discord's own clock, never this Mac's, so a clock running
+    ahead cannot skip the owner's first reply.
+
+    Edits are not read, by design: Discord returns new messages only, and an edited
+    message keeps its id, so an edit can neither repeat nor take back a reply that was
+    already applied. The owner sends a new message instead.
+    """
+    from . import discord_feed
+
     settings = workflow.config()
     owner = (
         private_env().get("DISCORD_OWNER_USER_ID")
@@ -1137,16 +1266,32 @@ def poll_commands():
         *threads,
     } - {None}
     quiet = {settings.get("control_channel_id")}
+    try:
+        news = channel_news(settings, threads)
+    except (httpx.HTTPError, OSError) as error:
+        workflow.delivery_failed("read", "guild", error, announce=False)
+        if isinstance(error, httpx.HTTPStatusError) and not delivery.transient(error):
+            news = None  # the guild reads were refused: read the channels one by one
+        else:
+            return False  # Discord is unreachable; right after waking from sleep, routine
     for channel in channels:
         with workflow.db() as conn:
             checkpoint = conn.execute(
                 "SELECT message_id FROM workflow_checkpoints WHERE channel_id=?", (channel,)
             ).fetchone()
+        if not has_news(channel, checkpoint, news):
+            continue
         # Read-only bootstrap establishes a cursor. Do not replay old commands.
         route = f"/channels/{channel}/messages?limit=100"
         if checkpoint:
             route += "&after=" + checkpoint[0]
-        messages = discord("GET", route)
+        try:
+            messages = discord("GET", route) or []
+        except (httpx.HTTPError, OSError) as error:
+            workflow.delivery_failed("read", channel, error, announce=False)
+            if isinstance(error, httpx.HTTPStatusError) and not delivery.transient(error):
+                continue  # this channel is refused or gone; the others are still read
+            return False
         for message in sorted(messages, key=lambda m: int(m["id"])):
             if not checkpoint:
                 continue
@@ -1161,42 +1306,39 @@ def poll_commands():
                 if handled is not None:
                     # A pasted link, a reply on a mail card, or taking back a mail's step.
                     if handled:
-                        discord(
-                            "POST",
-                            f"/channels/{channel}/messages",
-                            {"content": handled, "allowed_mentions": {"parse": []}},
-                        )
+                        say(channel, handled)
                     continue
                 command = parse_command(message, owner, channel, channels, threads)
                 if not command:
                     if channel not in quiet and str(message.get("content") or "").strip():
                         # The owner typed where nothing applies: say once how replies work.
-                        discord(
-                            "POST",
-                            f"/channels/{channel}/messages",
-                            {"content": HELP_LINE, "allowed_mentions": {"parse": []}},
-                        )
+                        say(channel, HELP_LINE)
                     continue
                 if channel in threads and threads[channel] != command["application_id"]:
                     raise PermissionError("This reply belongs to another application's thread")
                 apply_command(command, message["id"])
             except (ValueError, PermissionError) as error:
                 # One plain line in the same channel says why the reply did not apply.
-                discord(
-                    "POST",
-                    f"/channels/{channel}/messages",
-                    {"content": str(error), "allowed_mentions": {"parse": []}},
-                )
-        if messages or not checkpoint:
-            # An empty channel also needs a cursor, otherwise its first command
-            # would be discarded on the next poll as bootstrap history.
-            empty_cursor = str((int(datetime.now(UTC).timestamp() * 1000) - 1420070400000) << 22)
-            maximum = max(messages, key=lambda m: int(m["id"]))["id"] if messages else empty_cursor
+                say(channel, str(error))
+        maximum = None
+        if messages:
+            maximum = max(messages, key=lambda m: int(m["id"]))["id"]
+        elif not checkpoint:
+            # An empty channel also needs a cursor, otherwise its first command would be
+            # discarded on the next poll as bootstrap history.
+            maximum = discord_feed.empty_cursor()
+        elif news and str(news.get(channel) or "").isdigit():
+            # Discord's newest id for the channel was past the cursor and nothing is
+            # there: that message was deleted (a withdrawn card). Its id is real, so
+            # moving the cursor to it skips nothing and saves the read next tick.
+            maximum = news[channel]
+        if maximum is not None:
             with workflow.db() as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO workflow_checkpoints VALUES(?,?)", (channel, maximum)
                 )
     memory_channel.poll(owner)  # `#memory` keeps its own cursor and plain-word replies
+    return True
 
 
 def recover_interrupted():
@@ -1423,79 +1565,104 @@ def tick() -> dict:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"already_running": True}
+        # This worker holds the lock: a delivery window still open was left by a crash.
+        delivery.close_windows()
         workflow.ensure_system_channel()
-        poll_commands()
-        workflow.flush_pending()
-        prune_excluded()
-        recover_interrupted()
-        submitted = run_approved_submissions()
-        if submitted:
-            write_private(state_root() / "workflow-status.json", {"submissions": submitted})
-            return {"submissions": submitted}
-        with workflow.db() as conn:
-            # A live or uncertain submission, or an in-flight preparation, holds everything.
-            active = conn.execute(
-                "SELECT id,status FROM application_queue WHERE status IN ('PREPARING','SUBMITTING','UNKNOWN_SUBMISSION') ORDER BY created_at LIMIT 1"
-            ).fetchone()
-        if active:
-            return {"waiting_on": dict(active)}
-        queued = next_queued(intake.number(settings, "max_waiting_applications", 1))
-        if not queued:
-            return {"idle": True}
+        reachable = poll_commands() is not False
+        if reachable:
+            workflow.flush_pending()
         try:
-            result = process(queued)
-            if result.get("auto_submit"):
-                submitted = run_approved_submissions()
-                if submitted:
-                    result = {**result, "submissions": submitted}
-        except PhaseError as failure:
-            from .reasoning import ModelUnavailable
+            # The pass and its send come first; the thread record, files and system-log
+            # lines are delivered when the window closes, at the end of this tick.
+            with workflow.delivery_window():
+                return work(settings, reachable)
+        finally:
+            attach_deferred_drafts()
 
-            if isinstance(failure.error, ModelUnavailable):
-                # An outage of the local model is not the application's problem: wait.
-                workflow.set_state(queued, "QUEUED", error="model_unavailable")
-                workflow.record(queued, "model_unavailable", {"phase": failure.phase})
-                result = {"application_id": queued, "status": "QUEUED", "waiting": "model"}
-                write_private(state_root() / "workflow-status.json", result)
-                return result
-            workflow.set_state(queued, "NEEDS_USER", error=str(failure))
-            write_private(
-                state_root() / f"applications/{queued}/error.json",
-                {
-                    "phase": failure.phase,
-                    "type": type(failure.error).__name__,
-                    "detail": str(failure.error)[:1500],
-                },
+
+def work(settings: dict, reachable: bool = True) -> dict:
+    """The tick's work after the owner's messages are read: sends the owner approved,
+    then the next application. A new application waits while Discord is unreachable,
+    because its thread cannot be opened; that is not the application's problem."""
+    prune_excluded()
+    recover_interrupted()
+    submitted = run_approved_submissions()
+    if submitted:
+        write_private(state_root() / "workflow-status.json", {"submissions": submitted})
+        return {"submissions": submitted}
+    with workflow.db() as conn:
+        # A live or uncertain submission, or an in-flight preparation, holds everything.
+        active = conn.execute(
+            "SELECT id,status FROM application_queue WHERE status IN ('PREPARING','SUBMITTING','UNKNOWN_SUBMISSION') ORDER BY created_at LIMIT 1"
+        ).fetchone()
+    if active:
+        return {"waiting_on": dict(active)}
+    if not reachable:
+        return {"idle": True, "discord": "unreachable"}
+    queued = next_queued(intake.number(settings, "max_waiting_applications", 1))
+    if not queued:
+        return {"idle": True}
+    try:
+        result = process(queued)
+        if result.get("auto_submit"):
+            submitted = run_approved_submissions()
+            if submitted:
+                result = {**result, "submissions": submitted}
+    except PhaseError as failure:
+        from .reasoning import ModelUnavailable
+
+        if failure.phase == "forum" and isinstance(failure.error, httpx.TransportError):
+            # Discord went away before the thread existed: try again next tick, no card.
+            workflow.set_state(queued, "QUEUED", error="discord_unreachable")
+            workflow.delivery_failed("forum", queued, failure.error, announce=False)
+            result = {"application_id": queued, "status": "QUEUED", "waiting": "discord"}
+            write_private(state_root() / "workflow-status.json", result)
+            return result
+        if isinstance(failure.error, ModelUnavailable):
+            # An outage of the local model is not the application's problem: wait.
+            workflow.set_state(queued, "QUEUED", error="model_unavailable")
+            workflow.record(queued, "model_unavailable", {"phase": failure.phase})
+            result = {"application_id": queued, "status": "QUEUED", "waiting": "model"}
+            write_private(state_root() / "workflow-status.json", result)
+            return result
+        workflow.set_state(queued, "NEEDS_USER", error=str(failure))
+        write_private(
+            state_root() / f"applications/{queued}/error.json",
+            {
+                "phase": failure.phase,
+                "type": type(failure.error).__name__,
+                "detail": str(failure.error)[:1500],
+            },
+        )
+        workflow.system_line(
+            queued, f"preparation stopped · {failure.phase} · {type(failure.error).__name__}"
+        )
+        detail = str(failure.error)
+        if detail.startswith("Field verification failed"):
+            label = detail.partition(":")[2].strip() or "a field"
+            reason = (
+                f"The site changed the value I typed for “{label}”. Check it in the "
+                "recruiting browser, then reply `go`."
             )
-            workflow.system_line(
-                queued, f"preparation stopped · {failure.phase} · {type(failure.error).__name__}"
+        elif detail.startswith(overlays.HOLD_WORDS):
+            reason = overlays.HOLD_WORDS  # a pop-up code would not guess on
+        else:
+            reason = (
+                f"Preparation stopped during {failure.phase.replace('_', ' ')}: "
+                + type(failure.error).__name__
+                + ". Details are saved locally; nothing was submitted."
             )
-            detail = str(failure.error)
-            if detail.startswith("Field verification failed"):
-                label = detail.partition(":")[2].strip() or "a field"
-                reason = (
-                    f"The site changed the value I typed for “{label}”. Check it in the "
-                    "recruiting browser, then reply `go`."
-                )
-            elif detail.startswith(overlays.HOLD_WORDS):
-                reason = overlays.HOLD_WORDS  # a pop-up code would not guess on
-            else:
-                reason = (
-                    f"Preparation stopped during {failure.phase.replace('_', ' ')}: "
-                    + type(failure.error).__name__
-                    + ". Details are saved locally; nothing was submitted."
-                )
-            workflow.action_needed(
-                queued,
-                reason,
-                commands=["go", "park it"],
-                headline="Preparation stopped",
-            )
-            attach_stop_screenshot(queued)
-            result = {
-                "application_id": queued,
-                "status": "NEEDS_USER",
-                "error": str(failure),
-            }
-        write_private(state_root() / "workflow-status.json", result)
-        return result
+        workflow.action_needed(
+            queued,
+            reason,
+            commands=["go", "park it"],
+            headline="Preparation stopped",
+        )
+        attach_stop_screenshot(queued)
+        result = {
+            "application_id": queued,
+            "status": "NEEDS_USER",
+            "error": str(failure),
+        }
+    write_private(state_root() / "workflow-status.json", result)
+    return result

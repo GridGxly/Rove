@@ -442,24 +442,38 @@ def system_note(kind: str, data: dict) -> str | None:
 def system_line(application_id: str, text: str):
     """One plain line in system-log with the identifiers the owner's cards leave out.
 
-    Best effort: it posts only when `system_channel_id` is configured and never raises.
+    Written to the system outbox first, only when `system_channel_id` is configured, and
+    delivered with the other waiting lines in as few messages as fit: at once, or at the
+    end of the tick while an application is being prepared and sent. Never raises.
     Callers pass ids, hashes, urls and reasons, never secrets or applicant values.
     """
+    from . import delivery
+
     settings = config()
     channel = settings.get("system_channel_id")
     if not settings.get("enabled") or not channel:
         return
     try:
-        discord(
-            "POST",
-            f"/channels/{channel}/messages",
-            {
-                "content": clip(f"`{application_id}` · {text}", 1900),
-                "allowed_mentions": {"parse": []},
-            },
-        )
+        delivery.queue_system(application_id, clip(f"`{application_id}` · {text}", 1900))
+        if not delivery.window_open():
+            delivery.deliver_system(channel)
     except Exception as error:  # noqa: BLE001 -- a log line must never break the workflow
         delivery_failed("system", application_id, error)
+
+
+def flush_system():
+    """Deliver the waiting system-log lines; never raises."""
+    from . import delivery
+
+    settings = config()
+    channel = settings.get("system_channel_id")
+    if not settings.get("enabled") or not channel:
+        return
+    try:
+        if delivery.system_waiting():
+            delivery.deliver_system(channel)
+    except Exception as error:  # noqa: BLE001 -- a log line must never break the workflow
+        delivery_failed("system", "outbox", error)
 
 
 def ensure_system_channel() -> str | None:
@@ -1032,9 +1046,15 @@ def draft_lines(pairs, limit: int = 10) -> str:
 
 
 def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
-    """Glanceable forum entries: one card per event, values in fields, commands in code."""
+    """Glanceable forum entries: one card per event, values in fields, commands in code.
+
+    Items are cards (dicts), quiet lines (strings) and, for a file, one
+    `{"attachment": path, "line": text}`; `delivery` packs them into messages.
+    """
     if kind == "forum_creation_attempt":
         return []
+    if kind == "attachment":
+        return [{"attachment": data.get("path", ""), "line": data.get("line", "")}]
     if kind == "fields_prepared":
         cards = []
         filled = data.get("filled", [])
@@ -1459,7 +1479,15 @@ def ensure_forum(application_id: str) -> str | None:
                     (application_id,),
                 )
         raise
-    set_state(application_id, item["status"], thread_id=thread["id"])
+    with db() as conn:
+        conn.execute(
+            "UPDATE application_queue SET thread_id=?,updated_at=? WHERE id=?",
+            (thread["id"], now(), application_id),
+        )
+    if item["status"] not in WAITING and item["status"] != "QUEUED":
+        # A queued application is about to be prepared; the post already says so, and the
+        # preparation's own state change edits the card. One edit fewer on the way in.
+        refresh_status(application_id)
     system_line(application_id, f"opened · {item['url']} · {forum_url(application_id)}")
     with db() as conn:
         conn.execute(
@@ -1508,81 +1536,95 @@ def create_forum_post(application_id: str, settings: dict, item: dict, title: st
 
 
 def flush_events(application_id: str):
+    """Deliver the application's waiting thread entries, packed into as few messages as
+    Discord's limits allow (see `delivery`).
+
+    While the worker's delivery window is open (an application being prepared and sent),
+    entries are only kept, unless one of them is a hold card: then everything waiting is
+    delivered at once, in order. The window's end delivers the rest. Never raises for a
+    Discord failure: the entries stay waiting for the next pass.
+    """
+    from . import delivery
+
+    if delivery.window_open() and not delivery.urgent_pending(application_id):
+        return
     thread = ensure_forum(application_id)
     if not thread:
         return
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM application_events WHERE application_id=? AND delivery='pending' ORDER BY id",
-            (application_id,),
-        ).fetchall()
-    for row in rows:
-        items = event_embeds(application_id, row["kind"], json.loads(row["data"]))
-        lines = [item for item in items if isinstance(item, str)]
-        cards = [item for item in items if isinstance(item, dict)]
-        if not items:
-            with db() as conn:
-                conn.execute(
-                    "UPDATE application_events SET delivery='sent' WHERE id=?", (row["id"],)
-                )
-            continue
-        # Persist before sending; each message independently has a stable nonce.
-        with db() as conn:
-            conn.execute(
-                "UPDATE application_events SET delivery='sending' WHERE id=? AND delivery='pending'",
-                (row["id"],),
-            )
+    delivery.deliver_events(application_id, thread)
+
+
+def delivery_deferred() -> bool:
+    """Whether thread entries and system lines wait for the end of the tick right now."""
+    from . import delivery
+
+    return delivery.window_open()
+
+
+@contextlib.contextmanager
+def delivery_window():
+    """Keep the record off the critical path: while open, thread entries, files and
+    system-log lines are written but not posted; the status card, owner cards and hold
+    cards still go at once. Closing delivers everything that waited, in order."""
+    from . import delivery
+
+    delivery.open_window()
+    try:
+        yield
+    finally:
+        delivery.close_windows()
         try:
-            batches = [cards[start : start + 10] for start in range(0, len(cards), 10)] or [[]]
-            for index, batch in enumerate(batches):
-                message = {
-                    "allowed_mentions": {"parse": []},
-                    "nonce": f"{row['id']}:{index}",
-                    "enforce_nonce": True,
-                }
-                if batch:
-                    message["embeds"] = batch
-                if lines and index == 0:
-                    message["content"] = clip("\n".join(lines), 1900)
-                discord("POST", f"/channels/{thread}/messages", message)
-        except (httpx.HTTPError, OSError) as error:
-            # Discord is down or rate-limiting: keep the entry pending and try again on
-            # the next tick. The application keeps working; the record stays durable.
-            delivery_failed("event", row["id"], error, application_id)
-            with db() as conn:
-                conn.execute(
-                    "UPDATE application_events SET delivery='pending' WHERE id=?", (row["id"],)
-                )
-            return
-        with db() as conn:
-            conn.execute("UPDATE application_events SET delivery='sent' WHERE id=?", (row["id"],))
+            flush_pending()
+        except Exception as error:  # noqa: BLE001 -- the record waits; the tick's result stands
+            delivery_failed("window", "flush", error, announce=False)
 
 
 ATTACHMENT_LIMIT = 8 * 1024 * 1024
 
 
 def attach_file(application_id: str, path, line: str) -> bool:
-    """A private file (screenshot, resume) in the application's thread, with one plain line."""
+    """A private file (screenshot, resume) in the application's thread, with one plain line.
+
+    The file is copied aside as it is now (a later screenshot cannot replace it) and goes
+    into the thread record like any entry: posted at once, or after the send while an
+    application is being prepared. False when there is no forum or the file is unusable.
+    """
+    import shutil
     from pathlib import Path
 
-    from .discord_feed import discord_upload
-
     file_path = Path(path)
-    thread = ensure_forum(application_id)
-    if not thread or not file_path.is_file() or file_path.stat().st_size > ATTACHMENT_LIMIT:
+    settings = config()
+    if not settings.get("enabled") or not settings.get("forum_channel_id"):
         return False
+    if not file_path.is_file() or file_path.stat().st_size > ATTACHMENT_LIMIT:
+        return False
+    outbox = state_root() / f"applications/{application_id}/outbox"
+    outbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+    copy = outbox / f"{uuid.uuid4().hex[:8]}-{file_path.name}"
     try:
-        discord_upload(
-            thread, file_path, {"content": clip(line, 1900), "allowed_mentions": {"parse": []}}
-        )
-    except (httpx.HTTPError, OSError) as error:
-        delivery_failed("attachment", application_id, error)
+        shutil.copyfile(file_path, copy)
+        copy.chmod(0o600)
+    except OSError as error:
+        delivery_failed("attachment", application_id, error, announce=False)
         return False
+    record(application_id, "attachment", {"path": str(copy), "line": clip(line, 1800)})
+    try:
+        flush_events(application_id)
+    except (RuntimeError, httpx.HTTPError, OSError) as error:
+        # The thread could not be opened; the file waits with the rest of the record.
+        delivery_failed("attachment", application_id, error, announce=False)
     return True
 
 
-def delivery_failed(kind: str, row_id, error: Exception, application_id: str = ""):
-    """One private line per failed Discord delivery, so a stuck card is diagnosable."""
+def delivery_failed(
+    kind: str, row_id, error: Exception, application_id: str = "", *, announce: bool | None = None
+):
+    """One private line per failed Discord delivery, so a stuck card is diagnosable.
+
+    `announce` adds a system-log line. By default only a definite refusal (a 4xx that is
+    not a rate limit) is announced; an outage is not, and callers that retry a refusal
+    announce only the last one.
+    """
     detail = ""
     response = getattr(error, "response", None)
     if response is not None:
@@ -1592,7 +1634,10 @@ def delivery_failed(kind: str, row_id, error: Exception, application_id: str = "
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a") as handle:
         handle.write(line + "\n")
-    if kind != "system" and response is not None:
+    if announce is None:
+        status = response.status_code if response is not None else 0
+        announce = kind != "system" and 400 <= status < 500 and status != 429
+    if announce and kind != "system":
         # Discord answered and refused: worth a system-log line. Unreachable Discord is not.
         system_line(
             application_id, f"delivery failed · {kind} {row_id} · {type(error).__name__} {detail}"
@@ -1634,46 +1679,121 @@ def withdraw_notices(application_id: str, channels=None):
             try:
                 discord("DELETE", f"/channels/{channel}/messages/{row['message_id']}")
             except (httpx.HTTPError, OSError) as error:
-                delivery_failed("withdraw", row["id"], error, application_id)
+                gone = getattr(getattr(error, "response", None), "status_code", 0) == 404
+                # A card someone already deleted is withdrawn; nothing to report.
+                delivery_failed(
+                    "withdraw", row["id"], error, application_id, announce=False if gone else None
+                )
         with db() as conn:
             conn.execute("UPDATE owner_notices SET delivery='withdrawn' WHERE id=?", (row["id"],))
 
 
-def hold_fields(payload: dict) -> list:
+NUMBERED_REPLY = re.compile(r"\d+:\s*")
+# Room under one field value for the question lines of a hold card.
+QUESTION_FIELD = 1000
+
+
+def prompt_lines(pairs) -> list[str]:
+    """Each open question with the reply that answers it: "`3:` Label  (A / B)"."""
+    return [
+        f"`{number}:` " + question_lines([(number, question)]).split(". ", 1)[1]
+        for number, question in pairs
+    ]
+
+
+def question_fields(pairs, budget: int | None = None) -> list[tuple]:
+    """The open questions as fields of whole lines, all of them, or as many as `budget`
+    characters allow with "…and N more in the thread" for the rest."""
+    from .delivery import units
+
+    lines = prompt_lines(pairs)
+    shown, used = [], 0
+    for index, line in enumerate(lines):
+        cost = units(line) + 1
+        rest = len(lines) - index
+        tail = units(f"…and {rest} more in the thread") + 1
+        if budget is not None and used + cost + (tail if rest > 1 else 0) > budget:
+            shown.append(f"…and {rest} more in the thread")
+            break
+        shown.append(line)
+        used += cost
+    fields, chunk = [], []
+    for line in shown:
+        if chunk and units("\n".join([*chunk, line])) > QUESTION_FIELD:
+            fields.append(chunk)
+            chunk = []
+        chunk.append(line)
+    if chunk:
+        fields.append(chunk)
+    return [
+        ("Only you can answer" if index == 0 else "\u200b", "\n".join(chunk), False)
+        for index, chunk in enumerate(fields)
+    ]
+
+
+def hold_fields(payload: dict, budget: int | None = None) -> list:
+    """Why, every open question with its `N:` reply, Qwen's drafts, and the word replies.
+
+    With a `budget` (a card that must stay one embed) the question list is cut to fit and
+    says how many more the thread lists; without one, every question is listed and the
+    card is split across embeds when it has to be.
+    """
+    from .delivery import units
+
     fields = []
     if payload.get("items"):
         fields.append(("Why", "\n".join("• " + clip(i, 140) for i in payload["items"][:4]), False))
     pairs = numbered(payload.get("questions"))
     open_pairs = [(n, q) for n, q in pairs if q.get("state", "open") == "open"]
     draft_pairs = [(n, q) for n, q in pairs if q.get("state") in {"drafted", "used"}]
-    if open_pairs:
-        fields.append(("Only you can answer", question_lines(open_pairs), False))
-    if draft_pairs:
-        fields.append(("Qwen drafted", draft_lines(draft_pairs), False))
     replies = reply_lines(payload)
+    if open_pairs:
+        # Each question carries its own `N:` reply, so the block keeps only the words.
+        replies = [r for r in replies if not NUMBERED_REPLY.fullmatch(r)]
+    rest = []
+    if draft_pairs:
+        rest.append(("Qwen drafted", draft_lines(draft_pairs), False))
     if replies:
-        fields.append(("Reply", command_block(replies), False))
-    return fields
+        rest.append(("Reply", command_block(replies), False))
+    if open_pairs:
+        room = None
+        if budget is not None:
+            spent = sum(units(n) + units(v) for n, v, _ in [*fields, *rest])
+            room = max(budget - spent - units("Only you can answer"), 200)
+        fields.extend(question_fields(open_pairs, room))
+    return fields + rest
 
 
 def notice_embed(application_id: str, channel: str, payload: dict) -> dict:
-    """The channel card carries the decision; its title links to the thread for the record."""
+    """The channel card carries the decision; its title links to the thread for the record.
+
+    It is one embed, so a long question list is cut to fit and points to the thread."""
+    from .delivery import EMBED_BUDGET, units
+
     item = get(application_id)
     headline = payload.get("headline") or ("Your call" if channel == "shortlist" else "Needs you")
+    title = clip(display_title(item), 120)
+    description = f"**{headline}**\n" + clip(payload.get("reason", ""), 500)
+    budget = EMBED_BUDGET - units(title) - units(description) - 100
     return embed(
-        clip(display_title(item), 120),
-        f"**{headline}**\n" + clip(payload.get("reason", ""), 500),
+        title,
+        description,
         color="needs",
         url=forum_url(application_id) or item["url"],
-        fields=hold_fields(payload),
+        fields=hold_fields(payload, budget=budget),
     )
 
 
 def flush_notices():
+    """Post waiting owner-channel cards. An outage stops the pass (the next tick resumes);
+    a card Discord refuses is tried again on later passes, at most three times, then
+    marked failed with one system-log line, and never holds up the cards behind it."""
+    from . import delivery
+
     settings = config()
     if not settings.get("enabled"):
         return
-    with db() as conn:
+    with delivery.conn() as conn:
         rows = conn.execute(
             "SELECT * FROM owner_notices WHERE delivery='pending' ORDER BY id"
         ).fetchall()
@@ -1696,8 +1816,18 @@ def flush_notices():
                 },
             )
         except (httpx.HTTPError, OSError) as error:
-            delivery_failed("notice", row["id"], error, row["application_id"])
-            return
+            if delivery.transient(error):
+                delivery_failed("notice", row["id"], error, row["application_id"])
+                return
+            attempts = row["attempts"] + 1
+            final = attempts >= delivery.REJECTIONS
+            with db() as conn:
+                conn.execute(
+                    "UPDATE owner_notices SET delivery=?,attempts=? WHERE id=?",
+                    ("failed" if final else "pending", attempts, row["id"]),
+                )
+            delivery_failed("notice", row["id"], error, row["application_id"], announce=final)
+            continue
         with db() as conn:
             conn.execute(
                 "UPDATE owner_notices SET delivery='sent', message_id=? WHERE id=?",
@@ -1709,6 +1839,7 @@ STATUS_LINES = {
     "QUEUED": "Queued · waits for its turn in the recruiting browser",
     "PREPARING": "Preparing in the recruiting browser",
     "SUBMITTING": "Submitting once",
+    "READY_FOR_REVIEW": "Ready to send",
     "APPLIED": "Applied ✅",
     "DEFERRED": "Parked",
     # Recruiting lifecycle after submission (see POST_APPLICATION).
@@ -1719,11 +1850,31 @@ STATUS_LINES = {
 }
 
 
+def status_replies(payload: dict) -> list[str]:
+    """Up to four replies for the status card; three or more numbered answers become one
+    line, so `go` and `park it` still show."""
+    replies = reply_lines(payload)
+    numbers = [r for r in replies if NUMBERED_REPLY.fullmatch(r)]
+    if len(numbers) >= 3:
+        first, last = numbers[0].rstrip(": "), numbers[-1].rstrip(": ")
+        words = [r for r in replies if r not in numbers]
+        replies = [f"N: your answer  (questions {first} to {last})", *words]
+    return replies[:4]
+
+
 def refresh_status(application_id: str):
-    """The thread's first post is the live status card; the forum list previews it."""
+    """The thread's first post is the live status card; the forum list previews it.
+
+    The card is edited only when what it says changed. An archived thread is reopened
+    once; a closed one is left alone. A failed edit is tried again at the end of a tick.
+    """
+    from . import delivery
+
     settings = config()
     item = get(application_id)
     if not settings.get("enabled") or not item["thread_id"]:
+        return
+    if delivery.thread_closed(item["thread_id"]):
         return
     status = item["status"]
     payload = None
@@ -1738,7 +1889,7 @@ def refresh_status(application_id: str):
     if payload:
         headline = payload.get("headline") or "Needs you"
         line = clip(payload.get("reason", ""), 300)
-        commands = reply_lines(payload, limit=4)
+        commands = status_replies(payload)
     else:
         headline = STATUS_LINES.get(status, status.replace("_", " ").title())
         line = "Reply `go` to pick it up again." if status == "DEFERRED" else ""
@@ -1754,33 +1905,61 @@ def refresh_status(application_id: str):
         fields=fields,
         footer="Live status · the thread below is the full record",
     )
+    digest = delivery.card_digest(card)
+    if delivery.status_unchanged(application_id, digest):
+        return
+    thread = item["thread_id"]
     try:
-        discord(
-            "PATCH",
-            f"/channels/{item['thread_id']}/messages/{item['thread_id']}",
-            {"embeds": [card], "allowed_mentions": {"parse": []}},
+        delivery.to_thread(
+            thread,
+            lambda: discord(
+                "PATCH",
+                f"/channels/{thread}/messages/{thread}",
+                {"embeds": [card], "allowed_mentions": {"parse": []}},
+            ),
         )
+    except delivery.Closed as closed:
+        delivery.mark_closed(application_id, thread, str(closed))
+        return
+    except delivery.Rejected as refused:
+        delivery_failed("status", application_id, refused.error, application_id)
+        return
     except (httpx.HTTPError, OSError) as error:
         delivery_failed("status", application_id, error, application_id)
+        delivery.remember_status(application_id, "")  # tried again at the end of the tick
+        return
+    delivery.remember_status(application_id, digest)
 
 
 def flush_pending():
-    """Retry every undelivered thread entry and owner-channel card; the worker calls this each tick."""
-    with db() as conn:
+    """Deliver every waiting thread entry, owner-channel card, status card edit and
+    system-log line; the worker calls this each tick, and the delivery window's end."""
+    from . import delivery
+
+    with delivery.conn() as conn:
         waiting = [
             r[0]
             for r in conn.execute(
-                "SELECT DISTINCT application_id FROM application_events "
-                "WHERE delivery='pending' AND kind!='forum_creation_attempt'"
+                "SELECT application_id FROM application_events "
+                "WHERE delivery IN ('pending','sending') AND kind!='forum_creation_attempt' "
+                "GROUP BY application_id ORDER BY MIN(id)"
             )
         ]
+    before = delivery.outages[0]
     for application_id in waiting:
+        if delivery.outages[0] != before:
+            return  # Discord is down: one failed call is enough for this pass
         try:
             flush_events(application_id)
         except (RuntimeError, httpx.HTTPError, OSError):
             # An uncertain forum creation waits for reconciliation; a failed one is retried later.
             continue
     flush_notices()
+    for application_id in delivery.stale_status_cards():
+        with contextlib.suppress(ValueError):  # an application that no longer exists
+            refresh_status(application_id)
+    if delivery.outages[0] == before:
+        flush_system()
 
 
 def action_needed(
@@ -1803,8 +1982,9 @@ def action_needed(
         "items": list(items or []),
     }
     record(application_id, "needs_action", payload)
-    flush_events(application_id)
+    # The owner's card first: the thread may have a pass worth of entries to post.
     notice(application_id, channel, payload)
+    flush_events(application_id)
     apply_tags(application_id, STATE_TAGS.get(item["status"], ["Preparing", "Needs Action"]))
     sync_note(application_id)
 

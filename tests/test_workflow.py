@@ -958,7 +958,8 @@ def test_hold_fields_render_reasons_questions_and_commands_for_the_owner():
     named = {name: value for name, value, _ in fields}
     assert list(named) == ["Why", "Only you can answer", "Reply"]
     assert named["Why"] == "\n".join(f"• item {n}" for n in range(4))
-    assert named["Only you can answer"] == "1. Need sponsorship?  (Yes / No)\n2. Current GPA"
+    # Each open question carries the reply that answers it.
+    assert named["Only you can answer"] == "`1:` Need sponsorship?  (Yes / No)\n`2:` Current GPA"
     assert "abcdef012345" not in named["Only you can answer"]
     assert named["Reply"] == "```\nproceed x\ndefer x\n```"
 
@@ -1413,7 +1414,7 @@ def test_question_list_numbers_open_drafted_and_used_questions_in_form_order():
     )
     assert [q["state"] for q in questions] == ["used", "open", "drafted", "open"]
     fields = {name: value for name, value, _ in workflow.hold_fields({"questions": questions})}
-    assert fields["Only you can answer"] == "2. GPA  (3 / 4)\n4. New"
+    assert fields["Only you can answer"] == "`2:` GPA  (3 / 4)\n`4:` New"
     assert fields["Qwen drafted"] == (
         "1. Why us? · Qwen's draft is the answer · reply `1: your text` to change it\n"
         "3. Excited? · reply `use draft 1` to approve"
@@ -1518,7 +1519,8 @@ def test_owner_cards_and_lines_carry_no_identifiers(state):
     confirmed = {f["name"]: f["value"] for f in rendered["submission_confirmed"][0]["fields"]}
     assert list(confirmed) == ["Confirmation page", "Confirmed by"]
     hold = {f["name"]: f["value"] for f in rendered["needs_action"][0]["fields"]}
-    assert hold["Reply"] == workflow.command_block(["applied", "not sent", "1: ", "send it"])
+    # The open question carries its own `1:`; the block keeps the word replies.
+    assert hold["Reply"] == workflow.command_block(["applied", "not sent", "send it"])
     assert rendered["resume_prepared"] == ["→ Resume ready · tailored from your evidence"]
     # Cards the owner channels and the forum's first post get say the same words.
     notice = workflow.notice_embed(app, "action", samples["needs_action"])
@@ -1583,13 +1585,10 @@ def test_system_line_posts_only_when_configured(state, monkeypatch):
         workflow, "config", lambda: {"enabled": True, "system_channel_id": "sys", "guild_id": "g"}
     )
     workflow.system_line(app, "hello")
-    assert posted == [
-        (
-            "POST",
-            "/channels/sys/messages",
-            {"content": f"`{app}` · hello", "allowed_mentions": {"parse": []}},
-        )
+    assert [(m, p, b["content"], b["allowed_mentions"]) for m, p, b in posted] == [
+        ("POST", "/channels/sys/messages", f"`{app}` · hello", {"parse": []})
     ]
+    assert posted[0][2]["enforce_nonce"] and len(posted[0][2]["nonce"]) <= 25
     # Recorded events with identifiers go to the system log, routine steps do not.
     workflow.record(app, "submit_attempt", {"package_hash": "f" * 64, "adapter": "greenhouse_v1"})
     workflow.record(app, "opened", {"url": "https://jobs.example.com/log", "title": "t"})
