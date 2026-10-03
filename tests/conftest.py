@@ -5,8 +5,6 @@ refusing HTTP client and a DNS-free destination check; the research tests replac
 client with their own synthetic employer site.
 """
 
-import os
-import sys
 from pathlib import Path
 
 import httpx
@@ -41,16 +39,15 @@ def private_home(tmp_path_factory, monkeypatch):
     synthetic Discord credential is present so delivery code reaches its (refused)
     transport instead of stopping at the missing-credential check, and the model key is
     set so the client can be built; nothing ever reaches either service.
+
+    Only Python's view of the home changes. The HOME variable is left alone, because a
+    test browser started under a fake HOME finds no keychain and macOS then puts a
+    "Keychain Not Found" dialog on the owner's screen.
     """
-    real_home = Path.home()
-    if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        # The fixture browser stays where Playwright installed it under the real home.
-        cache = (
-            "Library/Caches/ms-playwright" if sys.platform == "darwin" else ".cache/ms-playwright"
-        )
-        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(real_home / cache))
     home = tmp_path_factory.mktemp("home")
-    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    # A test that names no state root must never fall back to the real one.
+    monkeypatch.setenv("ROVE_STATE_DIR", str(tmp_path_factory.mktemp("state")))
     (home / ".hermes").mkdir()
     (home / ".hermes/.env").write_text("DISCORD_BOT_TOKEN=test-token\n")
     monkeypatch.setenv("ROVE_MODEL_API_KEY", "test-model-key")
