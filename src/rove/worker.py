@@ -1603,6 +1603,9 @@ def work(settings: dict, reachable: bool = True) -> dict:
         return {"idle": True, "discord": "unreachable"}
     queued = next_queued(intake.number(settings, "max_waiting_applications", 1))
     if not queued:
+        from .prereview import idle  # background fit reviews and the model keepalive
+
+        idle(settings)
         return {"idle": True}
     try:
         result = process(queued)
