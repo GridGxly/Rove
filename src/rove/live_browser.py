@@ -173,18 +173,28 @@ OBSERVE = (
  const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden' && e.getAttribute('aria-hidden')!=='true';
  const messages=__MESSAGES__;
 __READING__
- const controls=[...document.querySelectorAll('input,textarea,select')].filter(shown);
+ // References belong to this observation only: an element that left the form, or stopped
+ // being a control the observation names, keeps none.
+ for(const name of ['data-rove-field','data-rove-choice','data-rove-submit','data-rove-nav','data-rove-link','data-rove-auth'])
+   document.querySelectorAll('['+name+']').forEach(e=>e.removeAttribute(name));
+ const controls=[...document.querySelectorAll(CONTROLS)].filter(shown);
  const fields=controls.map((e,i)=>{
-   e.setAttribute('data-rove-field',String(i));
+   // The reference goes on what a person would click: the control, or the visible face of a hidden or covered one.
+   const native=e.matches(NATIVE);const face=faceOf(e);const styled=!!wrapperOf(e);
+   const widget=!native?'listbox':face&&!styled?(e.tagName==='SELECT'?'toggle':'shell'):null;
+   (face||e).setAttribute('data-rove-field',String(i));
    // A grouped radio or checkbox is one option of its group's question, never a question itself.
-   const g=groupFor(e,controls);const read=g?readOption(e):readLabel(e);
-   return {ref:String(i),label:read.text,group:g?g.label:'',name:e.name,id:e.id,kind:e.type,tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
-    selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||null,
+   const g=groupFor(e,controls);const read=g?readOption(e):readLabel(e);const chosen=widget?picked(e,face):null;
+   const options=e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):(native?[]:listed(e));
+   return {ref:String(i),label:read.text,group:g?g.label:'',name:e.name||e.getAttribute('name')||'',id:e.id,kind:native?e.type:'combobox',tag:(widget==='toggle'?face:e).tagName.toLowerCase(),role:widget?'combobox':e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
+    selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||chosen,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
-    required:e.required || e.getAttribute('aria-required')==='true' || requiredBy(e) || !!read.required,disabled:e.disabled,readonly:e.readOnly,checked:e.checked,
-    value:(['password','hidden','file'].includes(e.type)?null:e.value),maxlength:(e.maxLength>0?e.maxLength:null),
-    options:e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):[],
-    ...(read.missing?{label_missing:true}:{}),...(g?{_group:{key:g.key,required:g.required,missing:g.missing}}:{})};
+    required:!!e.required || e.getAttribute('aria-required')==='true' || requiredBy(e) || !!read.required || (!!face&&(face.hasAttribute('required')||face.getAttribute('aria-required')==='true')),
+    disabled:native?e.disabled:e.getAttribute('aria-disabled')==='true',readonly:native?e.readOnly:e.getAttribute('aria-readonly')==='true',
+    checked:styled?(e.checked||face.getAttribute('aria-checked')==='true'):(native?e.checked:false),
+    value:native?(['password','hidden','file'].includes(e.type)?null:e.value):(chosen||''),maxlength:(e.maxLength>0?e.maxLength:null),
+    options:widget==='toggle'?options.filter(o=>o.label.trim()):options,
+    ...(widget?{widget}:{}),...(read.missing?{label_missing:true}:{}),...(g?{_group:{key:g.key,required:g.required,missing:g.missing}}:{})};
  }).filter(e=>e.kind!=='hidden');
  const boxes=[...new Set([...document.querySelectorAll('button[aria-pressed]')].filter(visible).map(b=>b.parentElement))].filter(c=>c.querySelectorAll(':scope > button[aria-pressed]').length>=2);
  const choices=boxes.map((c,i)=>{c.setAttribute('data-rove-choice',String(i));const buttons=[...c.querySelectorAll(':scope > button[aria-pressed]')];const box=c.querySelector('input');const read=readContainer(c);
@@ -204,7 +214,7 @@ __READING__
    e.setAttribute('data-rove-link',String(i));return {ref:String(i),label:e.innerText.trim(),url:e.href||null,kind:e.tagName.toLowerCase()};
  });
  return {title:document.title,text:document.body.innerText.slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
- final_controls:[...document.querySelectorAll('button,input[type=submit]')].filter(visible).filter(e=>/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i.test((e.innerText||e.value).trim())).map((e,i)=>{e.setAttribute('data-rove-submit',String(i));return {ref:String(i),label:(e.innerText||e.value).trim()};}),
+ final_controls:[...document.querySelectorAll('button,input[type=submit],a,[role=button]')].filter(visible).filter(e=>/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i.test((e.innerText||e.value||'').trim())).map((e,i)=>{e.setAttribute('data-rove-submit',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};}),
  ats_markers:{captcha_challenge:[...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"],.g-recaptcha,.h-captcha,.cf-turnstile')].some(e=>{const r=e.getBoundingClientRect();return visible(e)&&r.width>=200&&r.height>=60;}),
  already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
  greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content'),
@@ -976,6 +986,12 @@ class RecruitingBrowser:
 
     def select_combobox(self, locator, field, value, profile) -> bool:
         """Select a unique visible exact option; text input alone is not selection."""
+        if field.get("selected") and option_matches(str(field["selected"]), value):
+            # The form already shows this choice (its default, or a parsed resume put it
+            # there): it is recorded, never reopened or toggled.
+            return True
+        if field.get("widget"):
+            return self.select_custom(locator, field, value)
         locator.click()
         place = normalized(field["label"]) in {
             "location city",
@@ -1139,15 +1155,21 @@ class RecruitingBrowser:
         """Select one observed option of a radio group or button group and verify it."""
         if field["kind"] == "radio_group":
             index = next(i for i, o in enumerate(field["options"]) if o["label"] == label)
+            # The reference is the radio, or the role wrapper that stands in for a hidden one.
             member = self.page.locator(f'[data-rove-field="{int(field["member_refs"][index])}"]')
             try:
                 member.check(timeout=3000)
             except PlaywrightError:
-                # Styled radios hide the input; its associated label is the visible target.
-                target = member.get_attribute("id")
-                if target:
-                    self.page.locator(f'label[for="{target}"]').first.click()
-            return member.is_checked()
+                if not member.evaluate(form_reading.CHECKED_JS):
+                    # Styled radios hide the input; its associated label is the visible target.
+                    target = member.get_attribute("id")
+                    label_for = self.page.locator(f'label[for="{target}"]') if target else None
+                    with contextlib.suppress(PlaywrightError):
+                        if label_for is not None and label_for.count():
+                            label_for.first.click(timeout=3000)
+                        else:
+                            member.click(timeout=3000, force=True)
+            return bool(member.evaluate(form_reading.CHECKED_JS))
         container = self.page.locator(f'[data-rove-choice="{int(field["ref"])}"]')
         button = container.get_by_role("button", name=label, exact=True)
         if button.count() != 1:
@@ -1162,6 +1184,164 @@ class RecruitingBrowser:
         except PlaywrightError:
             return False
         return True
+
+    def select_custom(self, locator, field: dict, value) -> bool:
+        """Choose in a dropdown that is not a plain search input.
+
+        The reference is the widget's visible face (a toggle button over a hidden select,
+        the box around a covered search input, or an ARIA dropdown with no input), so the
+        click that opens it lands where a person's would. Exactly one option may say the
+        value, and the choice counts only when the widget then shows it.
+        """
+        ref = int(field["ref"])
+        try:
+            self.click(locator, timeout=4000)
+        except PlaywrightError:
+            return False
+        texts, matches = [], []
+        for attempt in range(10):
+            texts = self.page.evaluate(form_reading.OPTIONS_JS, ref)
+            matches = [i for i, text in enumerate(texts) if option_matches(text, value)]
+            if matches:
+                break
+            if attempt == 2 and field["widget"] == "shell":
+                # A long list filters as you type: type the value into its search input
+                # with keys only, since another click on the box could close the list.
+                with contextlib.suppress(PlaywrightError):
+                    entry = locator.locator("input:not([type=hidden])").first
+                    entry.evaluate("e => { e.focus(); e.select(); }", timeout=2000)
+                    self.page.keyboard.type(str(value), delay=20)
+            self.page.wait_for_timeout(250)
+        evidence = state_root() / f"applications/{self.run['id']}/dropdown-{field['key']}.json"
+        if len(matches) != 1:
+            # Private evidence for the next fix: what the dropdown listed.
+            write_private(
+                evidence,
+                {"expected": str(value), "options_seen": texts[:25], "verified": False},
+            )
+            with contextlib.suppress(PlaywrightError):
+                self.page.keyboard.press("Escape")
+            return False
+        expected, shown = texts[matches[0]], None
+        with contextlib.suppress(PlaywrightError):
+            self.click(self.page.locator(f'[data-rove-option="{matches[0]}"]'), timeout=4000)
+            for _ in range(12):
+                shown = self.page.evaluate(form_reading.PICKED_JS, ref)
+                if normalized(str(shown or "")) == normalized(expected):
+                    break
+                self.page.wait_for_timeout(250)
+        verified = normalized(str(shown or "")) == normalized(expected)
+        write_private(
+            evidence,
+            {"expected": expected, "selected_evidence": {"value": shown}, "verified": verified},
+        )
+        return verified
+
+    def upload(self, locator, path):
+        """Attach a frozen file, and note what the page starts doing because of it.
+
+        An upload can close a dialog, remove another upload control, or start a résumé
+        parse that fills fields in. The requests it starts are tracked so the fill can wait
+        for them, and the form is observed again before anything else is typed.
+        """
+        pending: set = set()
+
+        def started(request):
+            if request.method != "GET" or request.resource_type in {"xhr", "fetch"}:
+                pending.add(request)
+
+        def ended(request):
+            pending.discard(request)
+
+        page = self.page
+        page.on("request", started)
+        page.on("requestfinished", ended)
+        page.on("requestfailed", ended)
+        self.upload_watch = (page, pending, started, ended)
+        locator.set_input_files(str(path))
+        self.form_changed = self.resume_attached = True
+
+    def settle_form(self, quiet_ms: int = 600, timeout_ms: int = 12000):
+        """Bounded wait until the form stops changing under the fill.
+
+        Settled means no request the upload started is still out and the controls, their
+        values and the dialogs in front of them read the same for `quiet_ms`.
+        """
+        watch = getattr(self, "upload_watch", None) or (self.page, set(), None, None)
+        page, pending, started, ended = watch
+        deadline = time.monotonic() + timeout_ms / 1000
+        try:
+            state, since = None, time.monotonic()
+            while time.monotonic() < deadline:
+                page.wait_for_timeout(150)
+                now = page.evaluate(form_reading.FORM_STATE_JS)
+                if now != state or pending:
+                    state, since = now, time.monotonic()
+                elif (time.monotonic() - since) * 1000 >= quiet_ms:
+                    break
+        except PlaywrightError:
+            pass
+        finally:
+            if started is not None:
+                page.remove_listener("request", started)
+                page.remove_listener("requestfinished", ended)
+                page.remove_listener("requestfailed", ended)
+            self.upload_watch = None
+
+    def present(self, field: dict) -> bool:
+        """The field's element is still on the page under the reference it was observed with."""
+        if field["kind"] == "choice":
+            selector = f'[data-rove-choice="{int(field["ref"])}"]'
+        else:
+            ref = field["ref"] if field["ref"] is not None else field["member_refs"][0]
+            selector = f'[data-rove-field="{int(ref)}"]'
+        return self.page.locator(selector).count() > 0
+
+    def fields_to_fill(self, before: dict):
+        """One page's fields in form order, kept true while the page changes under the fill.
+
+        A field whose element left the page after an earlier action is skipped, never
+        waited on. After that, or after an upload, the form is given time to settle and is
+        observed again; the pass goes on with the fields as they now are, and `before`
+        learns the new ones so they are not reported as having appeared unasked.
+        """
+        self.form_changed = self.resume_attached = False
+        handled: dict = {}
+
+        def remaining(fields):
+            # Fields are known by key; two that share one are told apart by their order.
+            met: dict = {}
+            for item in fields:
+                met[item["key"]] = met.get(item["key"], 0) + 1
+                if met[item["key"]] > handled.get(item["key"], 0):
+                    yield item
+
+        queue = list(before["fields"])
+        refreshes = 0
+        while queue:
+            field = queue.pop(0)
+            handled[field["key"]] = handled.get(field["key"], 0) + 1
+            if field["disabled"] or field["readonly"] or self.present(field):
+                yield field
+            else:
+                self.form_changed = True
+            if not self.form_changed or refreshes >= 6:
+                continue
+            self.form_changed = False
+            refreshes += 1
+            self.settle_form()
+            fresh = self.observe()
+            if fresh["url"] != before["url"]:
+                raise PermissionError("Page changed before fill")
+            known = {f["key"] for f in fresh["fields"]}
+            # What was required when the pass began (the site's own rejection included) stays so.
+            required = {f["key"] for f in before["fields"] if f["required"]}
+            for item in fresh["fields"]:
+                item["required"] = item["required"] or item["key"] in required
+            before["fields"] = fresh["fields"] + [
+                f for f in before["fields"] if f["key"] not in known
+            ]
+            queue = list(remaining(fresh["fields"]))
 
     def _auth_control(self, observation: dict, intent: str):
         control = next(
@@ -1331,7 +1511,7 @@ class RecruitingBrowser:
             )
 
         grouped = {f["name"] for f in before["fields"] if f["kind"] == "radio_group"}
-        for field in before["fields"]:
+        for field in self.fields_to_fill(before):
             if field["disabled"] or field["readonly"]:
                 continue
             if self.page.url != before["url"]:
@@ -1415,6 +1595,8 @@ class RecruitingBrowser:
                             }
                         )
                     continue
+                if self.resume_attached and not field["required"]:
+                    continue  # a second way to attach the resume this page already has
                 resume = directory / "resume.pdf"
                 manifest_path = directory / "resume-manifest.json"
                 if manifest_path.exists():
@@ -1434,7 +1616,7 @@ class RecruitingBrowser:
                 if hashlib.sha256(resume.read_bytes()).hexdigest() != self.run["resume_sha256"]:
                     raise PermissionError("Frozen resume changed")
                 upload_control = locator.element_handle()
-                locator.set_input_files(str(resume))
+                self.upload(locator, resume)
                 if (
                     upload_control.evaluate(
                         "e=>e.files.length===1 && e.files[0].name==='resume.pdf'"

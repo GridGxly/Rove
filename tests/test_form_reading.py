@@ -538,3 +538,263 @@ def test_an_answer_to_an_unreadable_question_is_not_remembered_for_other_forms(s
     assert workflow.recall_answer("Notes") is None
     worker.apply_command({**command, "field_key": fields[1]["key"]}, "msg-2")
     assert workflow.recall_answer("Notes") == "Evenings only"
+
+
+# --- controls that are not plain inputs ------------------------------------------------
+
+
+def by_name(seen: dict) -> dict:
+    return {f["name"] or f["id"]: f for f in seen["fields"] if not f.get("in_group")}
+
+
+def at(reader, field: dict):
+    return reader.page.locator(f'[data-rove-field="{int(field["ref"])}"]')
+
+
+def opened(reader) -> int:
+    return int(reader.page.locator("#opened").inner_text())
+
+
+def test_traps_for_bots_are_left_out_and_real_fields_that_look_odd_are_kept(reader):
+    seen = reader.read(
+        "<title>Apply</title><form>"
+        "<label for='n'>Name</label><input id='n' name='name'>"
+        # Parked off the page: a trap whatever it is called.
+        "<div style='position:absolute;left:-9999px'><label for='w'>Company website</label>"
+        "<input id='w' name='company_website'></div>"
+        # Transparent, sizeless or inside hidden markup, and named like a trap.
+        "<input name='hp_email' style='opacity:0' aria-label='Email'>"
+        "<input name='honeypot' style='width:0;height:0;border:0;padding:0' aria-label='Phone'>"
+        "<div aria-hidden='true'><label for='b'>Please leave this field blank</label>"
+        "<input id='b' name='extra'></div>"
+        "<div style='opacity:0'><input name='bot_field' aria-label='Website'></div>"
+        # Real fields: a visible nickname, and a dropdown's search input that is transparent
+        # while its chosen value is shown.
+        "<label for='k'>Nickname</label><input id='k' name='nickname'>"
+        "<label id='tl'>Team</label><div class='select__container'>"
+        "<div class='select__single-value'>Platform</div>"
+        "<input role='combobox' name='team' aria-labelledby='tl' style='opacity:0'></div>"
+        "</form>"
+    )
+    read = {f["name"]: f for f in seen["fields"]}
+    assert set(read) == {"name", "nickname", "team"}
+    assert read["nickname"]["label"] == "Nickname"
+    assert read["team"]["label"] == "Team" and read["team"]["selected"] == "Platform"
+    # A trap gets no reference, so nothing can type into it.
+    marked = reader.page.locator("[data-rove-field]").evaluate_all("els => els.map(e => e.name)")
+    assert sorted(marked) == ["name", "nickname", "team"]
+
+
+def test_required_is_read_from_the_label_words_and_a_link_can_be_the_submit_control(reader):
+    seen = reader.read(
+        "<title>Apply</title><form>"
+        "<div class='form-group form-required'><label>First Name <span><em>(required)</em></span>"
+        "</label><input id='first'></div>"
+        "<div class='form-group'><label>Preferred First Name</label><input id='preferred'></div>"
+        "<div class='form-group is-required'><div class='question-title'>Shift</div>"
+        "<input id='shift'></div>"
+        "<a href='#' class='btn'>Submit Application</a><a href='/jobs'>All jobs</a></form>"
+    )
+    fields = {f["id"]: f for f in seen["fields"]}
+    assert fields["first"]["label"] == "First Name (required)" and fields["first"]["required"]
+    assert not fields["preferred"]["required"]
+    assert fields["shift"]["label"] == "Shift" and fields["shift"]["required"]
+    assert [c["label"] for c in seen["final_controls"]] == ["Submit Application"]
+
+
+def test_an_upload_is_named_by_its_question_not_by_its_button(reader):
+    seen = reader.read(
+        "<title>Apply</title><form>"
+        # Named only through ARIA, next to a "Choose file" label.
+        "<div><span id='rl'><strong>Resume</strong></span><div>"
+        "<label for='up1' id='cap'>Choose file</label><span>or drag and drop here</span>"
+        "<input id='up1' type='file' aria-labelledby='rl cap' required></div></div>"
+        # Named by a paragraph, with a button caption and a status line beside the input.
+        "<div><p>Cover letter*</p><div><div><button type='button'>Choose File*</button>"
+        "<p>No file selected</p></div><input type='file' aria-label='file-input'></div></div>"
+        # A label element wins as before, even when it is only a caption.
+        "<div><label for='up3'>Attach</label><input id='up3' type='file'></div>"
+        # Nothing but a button: the button says what the upload takes.
+        "<div><div><input id='up4' type='file' style='display:none'>"
+        "<button type='button'><span>Select Transcript to Upload</span></button></div></div>"
+        "</form>"
+    )
+    files = [f for f in seen["fields"] if f["kind"] == "file"]
+    assert [f["label"] for f in files] == [
+        "Resume",
+        "Cover letter",
+        "Attach",
+        "Select Transcript to Upload",
+    ]
+    assert [f["required"] for f in files] == [True, True, False, False]
+    assert not any(f.get("label_missing") for f in files)
+
+
+def test_custom_dropdowns_are_read_as_one_field_each(reader):
+    seen = reader.read((FIXTURES / "custom_selects.html").read_text())
+    texting, state, country = seen["fields"]
+    assert texting["label"] == "May we text you about this application? (required)"
+    assert texting["kind"] == "combobox" and texting["widget"] == "listbox" and texting["required"]
+    assert option_labels(texting) == ["--", "Yes*", "No"] and texting["selected"] is None
+    assert state["label"] == "State" and state["widget"] == "shell" and state["id"] == "state"
+    assert state["role"] == "combobox" and state["required"] and state["selected"] is None
+    assert at(reader, state).get_attribute("id") == "state-select-wrapper"
+    assert country["label"] == "Country *" and country["widget"] == "toggle"
+    assert country["name"] == "countryId" and country["required"] and country["selected"] is None
+    assert country["options"] == [] and country["tag"] == "button"
+    # None of them is a plain input the fill could type into by mistake.
+    assert all(f["role"] == "combobox" for f in seen["fields"])
+
+
+def test_custom_dropdowns_take_one_exact_option_and_prove_it_by_what_they_show(reader):
+    seen = reader.read((FIXTURES / "custom_selects.html").read_text())
+    texting, state, country = seen["fields"]
+    # The covered search input cannot be clicked; the box around it can.
+    with pytest.raises(Exception, match="intercepts pointer events|Timeout"):
+        reader.page.locator("#state").click(timeout=700)
+    assert reader.select_combobox(at(reader, texting), texting, "Yes", {})
+    assert reader.page.locator("#texting .rw-input").inner_text() == "Yes*"
+    # "Kansas" is not among the rows first drawn: typing it brings it up, beside "Arkansas".
+    assert reader.select_combobox(at(reader, state), state, "Kansas", {})
+    assert reader.page.locator(".input-select-input-single-value").inner_text() == "Kansas"
+    assert reader.select_combobox(at(reader, country), country, "USA", {})
+    assert reader.page.locator(".fab-SelectToggle").get_attribute("aria-label") == (
+        "Country United States"
+    )
+    assert opened(reader) == 3
+    # What the form now shows is read back, and an answer it already shows is left alone.
+    texting, state, country = reader.observe()["fields"]
+    assert (texting["selected"], state["selected"], country["selected"]) == (
+        "Yes*",
+        "Kansas",
+        "United States",
+    )
+    assert reader.select_combobox(at(reader, texting), texting, "Yes", {})
+    assert reader.select_combobox(at(reader, state), state, "Kansas", {})
+    assert reader.select_combobox(at(reader, country), country, "United States", {})
+    assert opened(reader) == 3
+    # A value the list does not offer is refused and nothing changes.
+    assert not reader.select_combobox(at(reader, state), state, "Atlantis", {})
+    assert not reader.select_combobox(at(reader, country), country, "Atlantis", {})
+    assert reader.page.locator(".input-select-input-single-value").inner_text() in {"Kansas", ""}
+    assert reader.page.locator(".fab-SelectToggle").inner_text() == "United States"
+
+
+def test_filling_answers_a_custom_dropdown_from_the_owners_reply(reader, approved):
+    seen = reader.read((FIXTURES / "custom_selects.html").read_text())
+    reader.run["profile_hash"] = approved["profile_hash"]
+    texting = seen["fields"][0]
+    answers = {texting["key"]: {"value": "No", "source": "owner Discord message 9"}}
+    filled, pending = reader._fill_page(RUN, seen, approved, answers)
+    assert [(f["label"], f["value"], f["control"]) for f in filled] == [
+        (texting["label"], "No", "combobox")
+    ]
+    assert reader.page.locator("#texting .rw-input").inner_text() == "No"
+    assert {q["label"] for q in pending} == {"State", "Country *"}
+    assert reader.observe()["fields"][0]["selected"] == "No"
+
+
+def test_a_styled_radio_is_chosen_through_its_wrapper(reader):
+    html = (FIXTURES / "boards" / "workable" / "apply.html").read_text()
+    seen = reader.read(html)
+    group = next(f for f in seen["fields"] if f["kind"] == "radio_group")
+    assert option_labels(group) == ["YES", "NO"] and group["value"] == ""
+    assert reader.select_choice(group, "NO")
+    assert reader.page.locator("#q1no").is_checked()
+    assert not reader.page.locator("#q1yes").is_checked()
+    again = next(f for f in reader.observe()["fields"] if f["kind"] == "radio_group")
+    assert again["value"] == "NO" and again["key"] == group["key"]
+
+
+UPLOAD_FORM = """<!doctype html><title>Harborview Logistics - Apply</title>
+<div id="modal" role="dialog"><h2>Apply with resume</h2>
+<input id="forced" type="file" style="display:none"><button type="button">Upload Resume</button></div>
+<form id="application-form">
+<div id="second"><input id="resume" type="file" style="display:none">
+<button type="button">Select Resume to Upload</button></div>
+<div class="form-group form-required"><label>First Name <em>(required)</em></label><input id="first"></div>
+<div class="form-group form-required"><label>Last Name <em>(required)</em></label><input id="last"></div>
+<div class="form-group form-required"><label>Email Address <em>(required)</em></label><input id="email"></div>
+</form><script>
+document.querySelectorAll('form input').forEach(i => i.addEventListener('keydown',
+  () => { document.body.dataset.typed = (document.body.dataset.typed || '') + i.id + ' '; }));
+document.getElementById('forced').addEventListener('change', async () => {
+  document.getElementById('modal').remove();
+  document.getElementById('second').remove();
+  await fetch('/parse', {method: 'POST', body: '{}'});
+  const set = (id, value) => { document.getElementById(id).value = value; };
+  set('first', 'Alex'); set('last', 'Sample'); set('email', 'alex@example.invalid');
+  document.querySelector('form').insertAdjacentHTML('beforeend',
+    '<div class="form-group"><label>Preferred First Name</label><input id="preferred"></div>');
+});
+</script>"""
+
+
+def test_an_upload_that_changes_the_form_is_waited_out_and_read_again(
+    reader, approved, monkeypatch
+):
+    import time
+
+    page = reader.page
+    posts = []
+
+    def serve(route):
+        if route.request.method == "POST":
+            posts.append(route.request.url)
+            time.sleep(0.4)  # the parse takes a moment; the fill must wait for its reply
+            route.fulfill(status=200, content_type="application/json", body="{}")
+        elif route.request.url == "https://forms.example.test/apply":
+            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=UPLOAD_FORM)
+        else:
+            route.abort()
+
+    page.route("**/*", serve)
+    page.goto("https://forms.example.test/apply")
+    # A pass that types like a person: a prefilled value must not be typed over.
+    monkeypatch.setattr(workflow, "config", lambda: {"enabled": False, "human_pacing": False})
+    seen = reader.observe()
+    reader.run["profile_hash"] = approved["profile_hash"]
+    assert [f["id"] for f in seen["fields"]] == ["forced", "resume", "first", "last", "email"]
+    started = time.monotonic()
+    filled, pending = reader._fill_page(RUN, seen, approved, {})
+    # The removed second upload control is skipped, not waited on for its timeout.
+    assert time.monotonic() - started < 15
+    assert posts == ["https://forms.example.test/parse"]
+    assert [f["label"] for f in filled] == [
+        "Apply with resume",
+        "First Name (required)",
+        "Email Address (required)",
+    ]
+    assert filled[0]["sha256"] == reader.run["resume_sha256"]
+    # The parse's values that equal the approved ones are kept as they are; one that
+    # differs is left for the owner, never overwritten.
+    assert page.evaluate("() => document.body.dataset.typed || ''") == ""
+    assert page.locator("#first").input_value() == "Alex"
+    assert page.locator("#last").input_value() == "Sample"
+    waiting = {q["label"]: q["reason"] for q in pending}
+    assert waiting["Last Name (required)"] == "Existing value differs; preserved for review"
+    # A field the upload added is handled in the same pass and is known to the caller.
+    assert "Preferred First Name" in waiting
+    assert [f["id"] for f in seen["fields"]][:4] == ["first", "last", "email", "preferred"]
+    assert {"forced", "resume"} <= {f["id"] for f in seen["fields"]}
+
+
+def test_a_field_that_left_the_page_is_skipped_and_the_form_is_read_again(reader, approved):
+    seen = reader.read(
+        "<title>Apply</title><form><label for='e'>Email</label><input id='e' name='email'>"
+        "<label for='x'>First name</label><input id='x' name='first'></form>"
+    )
+    reader.run["profile_hash"] = approved["profile_hash"]
+    # The page swaps the second field for another before the fill gets to it.
+    reader.page.evaluate(
+        "html => { document.getElementById('x').remove();"
+        " document.querySelector('form').insertAdjacentHTML('beforeend', html); }",
+        "<label for='y'>Last name</label><input id='y' name='last'>",
+    )
+    filled, pending = reader._fill_page(RUN, seen, approved, {})
+    assert [(f["label"], f["value"]) for f in filled] == [
+        ("Email", "alex@example.invalid"),
+        ("Last name", "Example"),
+    ]
+    assert pending == []
+    assert reader.page.locator("#y").input_value() == "Example"

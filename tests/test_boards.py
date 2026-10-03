@@ -400,16 +400,20 @@ def test_the_bamboohr_honeypot_is_never_offered_as_a_question(show):
     """An answer in the trap field marks the application as a bot's, so it is not a field."""
     seen = show("bamboohr", "apply")
     assert show.page.locator(bamboohr.HONEYPOT).count() == 1
-    raw = show.page.evaluate(live_browser.OBSERVE)["fields"]
-    trap = [f for f in raw if bamboohr.is_trap(f)]
-    assert [f["id"] for f in trap] == ["nickname_hpxmpl"]
     assert field(seen, "leave this field blank") is None
     assert not any(f["id"].startswith("nickname_") for f in seen["fields"])
-    assert len(seen["fields"]) == len(raw) - 1
-    # Only the board that has the trap filters it, and only that one field.
-    assert boards.fillable(BAMBOOHR, raw) == [f for f in raw if f not in trap]
-    assert boards.fillable(f"{JAZZHR}/Zx9Kq2LmNp/Field-Technician", raw) == raw
-    assert boards.fillable("https://careers.example.com/jobs/12345", raw) == raw
+    # The reader itself leaves the trap out: it is parked off the page. No reference is
+    # put on it, so nothing can type into it.
+    raw = show.page.evaluate(live_browser.OBSERVE)["fields"]
+    assert not any(bamboohr.is_trap(f) for f in raw)
+    assert show.page.locator(bamboohr.HONEYPOT).get_attribute("data-rove-field") is None
+    # The board's own filter is the second line of defence, for the day the markup moves
+    # the trap somewhere the reader does not look. Only that board applies it.
+    trap = {"label": "Please leave this field blank", "id": "nickname_hpxmpl", "name": ""}
+    assert bamboohr.is_trap(trap) and bamboohr.is_trap({"label": "", "name": "nickname_ab12"})
+    assert boards.fillable(BAMBOOHR, [*raw, trap]) == raw
+    assert boards.fillable(f"{JAZZHR}/Zx9Kq2LmNp/Field-Technician", [*raw, trap]) == [*raw, trap]
+    assert boards.fillable("https://careers.example.com/jobs/12345", [*raw, trap]) == [*raw, trap]
     assert not bamboohr.is_trap({"label": "Nickname", "id": "nickname", "name": "nickname"})
 
 
@@ -421,63 +425,88 @@ def resume_upload(observation: dict) -> bool:
     )
 
 
-# What the form reader does not yet get from these boards' markup. Each is the reading a
-# full preparation needs, with the fixture that shows the markup; the cases pass once the
-# reader handles them and are reported as expected failures until then.
-READING_GAPS = {
-    "paylocity marks required fields with '(required)' in the label, not an attribute": (
-        "paylocity",
-        "apply",
-        lambda seen: field(seen, "First Name")["required"],
-    ),
-    "paylocity react-widgets dropdowns have no input element": (
-        "paylocity",
-        "apply",
-        lambda seen: field(seen, "permission to text you"),
-    ),
-    "paylocity radio questions sit in a label outside the radiogroup": (
-        "paylocity",
-        "apply",
-        lambda seen: field(seen, "How did you hear about us?", kind="radio_group"),
-    ),
-    "paylocity select boxes keep the chosen value in a sibling of the input": (
-        "paylocity",
-        "apply",
-        lambda seen: field(seen, "Country").get("selected") == "United States",
-    ),
-    "workable yes/no questions are role=radio wrappers around aria-hidden radios": (
-        "workable",
-        "apply",
-        lambda seen: field(seen, "maintained a production service"),
-    ),
-    "workable names its resume upload only through aria-labelledby and data-ui": (
-        "workable",
-        "apply",
-        resume_upload,
-    ),
-    "jazzhr submits through a link, a#resumator-submit-resume": (
-        "jazzhr",
-        "apply",
-        lambda seen: [c["label"] for c in seen["final_controls"]] == ["Submit Application"],
-    ),
-    "bamboohr selects are a toggle button over an aria-hidden select": (
-        "bamboohr",
-        "apply",
-        lambda seen: field(seen, "Country"),
-    ),
-    "bamboohr labels its resume upload with a paragraph, not a label": (
-        "bamboohr",
-        "apply",
-        resume_upload,
-    ),
-}
+def options(item: dict) -> list[str]:
+    return [o["label"] for o in item["options"]]
 
 
-@pytest.mark.parametrize("gap", sorted(READING_GAPS))
-@pytest.mark.xfail(strict=False, reason="form reading does not cover this board markup yet")
-def test_board_markup_the_form_reader_still_misses(show, gap):
-    board, name, read = READING_GAPS[gap]
-    assert read(show(board, name))
+def marked(show, item: dict) -> str | None:
+    """The id of the element the field's reference sits on: the thing a click would hit."""
+    return show.page.locator(f'[data-rove-field="{item["ref"]}"]').get_attribute("id")
+
+
+def test_paylocity_required_marks_and_custom_dropdowns_are_read(show):
+    seen = show("paylocity", "apply")
+    # Required is said in the label, "(required)", not by an attribute or an asterisk.
+    for label in ("First Name", "Last Name", "Email Address", "Mobile Number", "LinkedIn"):
+        assert field(seen, label, kind="text")["required"], label
+    assert field(seen, "School Name")["required"]
+    assert not field(seen, "Preferred First Name")["required"]
+    assert not field(seen, "Skills")["required"]
+    # A react-widgets dropdown has no input element: the widget itself is the field.
+    sms = field(seen, "permission to text you")
+    assert sms["kind"] == "combobox" and sms["role"] == "combobox" and sms["widget"] == "listbox"
+    assert sms["required"] and sms["selected"] is None and sms["value"] == ""
+    assert options(sms) == ["--", "Yes*", "No"] and marked(show, sms) == "info.smsOptedIn"
+    graduated = field(seen, "Did you Graduate?")
+    assert graduated["widget"] == "listbox" and not graduated["required"]
+    assert graduated["selected"] is None and options(graduated) == []
+    # The radio question's text sits in a label outside the radiogroup.
+    heard = field(seen, "How did you hear about us?", kind="radio_group")
+    assert heard["label"] == "How did you hear about us?" and heard["required"]
+    assert options(heard) == ["Online Job Board", "Company Website", "Other"]
+    # A select box shows its value on top of its search input: the label is the question
+    # alone, the value is read from the box, and the reference is on the box, which is what
+    # a click can reach.
+    country = field(seen, "Country")
+    assert country["label"] == "Country" and country["selected"] == "United States"
+    assert country["widget"] == "shell" and country["role"] == "combobox" and country["required"]
+    assert country["id"] == "public-site-address-country"
+    assert marked(show, country) == "public-site-address-country-select-wrapper"
+    state = field(seen, "State")
+    assert state["label"] == "State" and state["selected"] is None and state["widget"] == "shell"
+    # The upload controls are named by their buttons; the resume one is found by its id.
+    assert resume_upload(seen)
+    assert field(seen, "Select Resume to Upload", kind="file")["id"] == "btn-resume"
+    assert field(seen, "Upload Cover Letter", kind="file")["id"] == "btn-coverLetter"
+
+
+def test_workable_styled_radios_and_resume_upload_are_read(show):
+    seen = show("workable", "apply")
+    # The real radios are hidden; the role=radio wrappers around them are what is clicked.
+    service = field(seen, "maintained a production service", kind="radio_group")
+    assert service["label"] == "Have you maintained a production service before?"
+    assert service["required"] and options(service) == ["YES", "NO"] and service["value"] == ""
+    members = [f for f in seen["fields"] if f["ref"] in service["member_refs"]]
+    assert [marked(show, m) for m in members] == ["wrapper_q1yes", "wrapper_q1no"]
+    assert all(m["in_group"] and m["kind"] == "radio" and not m["checked"] for m in members)
+    # The helper input that carries a dropdown's value is not a question.
+    assert not any(f["name"] == "CA_20002" for f in seen["fields"])
+    # The upload is named by what its ARIA name points at, without "Choose file".
+    resume = field(seen, "Resume", kind="file")
+    assert resume["label"] == "Resume" and resume["required"] and resume_upload(seen)
+
+
+def test_jazzhr_submit_link_is_the_final_control(show):
+    seen = show("jazzhr", "apply")
+    assert [c["label"] for c in seen["final_controls"]] == ["Submit Application"]
+    link = show.page.locator('[data-rove-submit="0"]')
+    assert link.get_attribute("id") == "resumator-submit-resume"
+    assert show.page.locator(jazzhr.FINAL_CONTROL["selector"]).count() == 1
+
+
+def test_bamboohr_select_toggle_and_resume_upload_are_read(show):
+    seen = show("bamboohr", "apply")
+    # A toggle button over a hidden select: label and name from the select, value and
+    # reference from the button.
+    country = field(seen, "Country")
+    assert country["label"] == "Country *" and country["required"]
+    assert country["widget"] == "toggle" and country["role"] == "combobox"
+    assert country["name"] == "countryId.value" and country["selected"] == "United States"
+    toggle = show.page.locator(f'[data-rove-field="{country["ref"]}"]')
+    assert toggle.get_attribute("aria-label") == "Country United States"
+    # The upload's own name is "file-input"; the paragraph above it says what it is.
+    resume = field(seen, "Resume", kind="file")
+    assert resume["label"] == "Resume" and resume["required"] and resume_upload(seen)
 
 
 # --- what a send looks like ----------------------------------------------------------
