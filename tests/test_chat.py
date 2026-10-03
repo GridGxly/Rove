@@ -47,10 +47,12 @@ def lines(monkeypatch):
     return posted
 
 
-def call(name: str, arguments: dict | None = None) -> dict:
+def call(name: str, arguments: dict | None = None) -> str:
+    """A tool called the way Hermes calls it; the answer tools return plain text only."""
     result = asyncio.run(server.mcp.call_tool(name, arguments or {}))
     assert not result.is_error
-    return json.loads(result.content[0].text)
+    assert getattr(result, "structured_content", None) is None  # no second, escaped copy
+    return result.content[0].text
 
 
 def add(application_id: str, title: str, status: str, **values):
@@ -106,7 +108,7 @@ def plain_words(text: str):
 
 def test_each_call_writes_one_quiet_line_without_arguments_or_result(state, lines):
     add("a00000000001", "Example Labs — Intern 5550100199", "QUEUED")
-    said = call("company_history", {"company": "Example Labs"})["say"]
+    said = call("company_history", {"company": "Example Labs"})
     assert "5550100199" in said  # the answer carries what the owner asked about
     assert len(lines) == 1
     line = lines[0]

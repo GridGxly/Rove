@@ -121,8 +121,13 @@ def logged(fn):
 
 
 def tool(fn):
-    """Register `fn` as an MCP tool behind `logged`. Python callers keep the plain function."""
-    mcp.add_tool(logged(fn))
+    """Register `fn` as an MCP tool behind `logged`. Python callers keep the plain function.
+
+    A tool that returns words for the owner sends them as plain text only; a structured
+    copy next to it would reach the model twice.
+    """
+    words_only = inspect.signature(fn).return_annotation is str
+    mcp.add_tool(logged(fn), structured_output=False if words_only else None)
     return fn
 
 
@@ -345,57 +350,58 @@ def application_workflow_status() -> dict:
     return status()
 
 
-# The owner's everyday questions in agent-control. Each returns {"say": ...}: plain
-# lines written by code for his phone, which the agent passes on as they are.
+# The owner's everyday questions in agent-control. Each returns the words to send him:
+# plain lines written by code for his phone, which the agent passes on as they are. Plain
+# text, not JSON, so the model copies a sentence instead of unpicking an escaped string.
 
 
 @tool
-def rove_status() -> dict:
-    """Status: what Rove is working on, how many need the owner, queue size, sends today."""
-    return chat.status()
+def rove_status() -> str:
+    """Status: what Rove is working on, how many need him, queue size, sends today. Send as is."""
+    return chat.status()["say"]
 
 
 @tool
-def whats_waiting() -> dict:
-    """What waits on the owner right now, and which channel has each card."""
-    return chat.waiting()
+def whats_waiting() -> str:
+    """What waits on him right now, and which channel has each card. Send as is."""
+    return chat.waiting()["say"]
 
 
 @tool
-def sends_today() -> dict:
-    """How many applications Rove sent today, which ones, and the daily cap."""
-    return chat.sent_today()
+def sends_today() -> str:
+    """How many applications Rove sent today, which ones, and the daily cap. Send as is."""
+    return chat.sent_today()["say"]
 
 
 @tool
-def pause_feed() -> dict:
-    """Pause jobs from the feed. The owner's own links and picks still go. Only on his ask."""
-    return chat.pause_feed()
+def pause_feed() -> str:
+    """Pause jobs from the feed; his own links and picks still go. Only on his ask. Send as is."""
+    return chat.pause_feed()["say"]
 
 
 @tool
-def resume_feed() -> dict:
-    """Start jobs from the feed again after a pause. Only on the owner's ask."""
-    return chat.resume_feed()
+def resume_feed() -> str:
+    """Start jobs from the feed again after a pause. Only on his ask. Send as is."""
+    return chat.resume_feed()["say"]
 
 
 @tool
-def company_history(company: str) -> dict:
-    """What happened with one company: its applications and any feed job skipped, with why."""
-    return chat.company_history(company)
+def company_history(company: str) -> str:
+    """What happened with one company: its applications and feed jobs skipped, with why. Send as is."""
+    return chat.company_history(company)["say"]
 
 
 @tool
-def answer_paste() -> dict:
-    """When his message is only job links (maybe with apply or first) or only `first`:
-    applies it as his and returns where it stands. Reads his real message, not yours."""
-    return chat.answer_paste()
+def answer_paste() -> str:
+    """When his message is only job links (maybe with apply or first) or only `first`: applies
+    his own message as his and returns where it stands. Send as is. Empty: answer him yourself."""
+    return chat.answer_paste().get("say", "")
 
 
 @tool
-def what_you_can_ask() -> dict:
-    """The short list of things the owner can ask, with examples."""
-    return chat.help_reply()
+def what_you_can_ask() -> str:
+    """The short list of things he can ask, with examples. Send as is."""
+    return chat.help_reply()["say"]
 
 
 def refresh_help_message():
