@@ -57,6 +57,10 @@ DIALOG = (
     '<button type="button" class="close" aria-label="Close" '
     "onclick=\"document.getElementById('apply-dialog').remove()\">×</button>" + FRAME + "</div>"
 )
+# An embed that shows the posting first, with its own Apply link to the form inside it.
+EMBED_POSTING = """<!doctype html><title>Northwind - Platform Intern</title>
+<h1>Platform Intern</h1><p>Help run the routing platform.</p>
+<a href="/embed/apply/application">Apply for this job</a>"""
 # A chat window in a small frame beside a form the page holds itself.
 CHAT = """<!doctype html><title>Chat</title><div><label for="m">Type your message</label>
 <textarea id="m"></textarea><button type="button">Send</button></div>"""
@@ -222,6 +226,8 @@ def sites(tmp_path, monkeypatch):
     runtime = RecruitingBrowser(headless=True)
     Board.pages["/embed/job_app"] = BOARD_FORM
     Board.pages["/chat"] = CHAT
+    Board.pages["/embed/apply"] = EMBED_POSTING
+    Board.pages["/embed/apply/application"] = BOARD_FORM
     Employer.pages["/careers/jobs/4471"] = EMPLOYER.replace("__FRAME__", FRAME).replace(
         "__BOARD__", board
     )
@@ -229,6 +235,9 @@ def sites(tmp_path, monkeypatch):
         "__BOARD__", board
     )
     Employer.pages["/careers/jobs/4473"] = OWN_FORM_WITH_CHAT.replace("__BOARD__", board)
+    Employer.pages["/careers/jobs/4474"] = EMPLOYER.replace(
+        "__FRAME__", FRAME.replace("/embed/job_app?for=northwind&amp;token=4471", "/embed/apply")
+    ).replace("__BOARD__", board)
     Employer.pages["/acme/jobs/7"] = SHADOW
     Employer.pages["/acme/jobs/8"] = RICH
     try:
@@ -330,6 +339,23 @@ def test_a_chat_frame_and_a_chat_window_are_not_the_application(sites):
     assert runtime.page.locator("#ask").input_value() == ""
 
 
+def test_an_apply_link_inside_the_frame_is_followed_there(sites):
+    runtime, employer, board, state = sites
+    opened = runtime.open(f"{employer}/careers/jobs/4474")
+    # The page's search box is not the way in; the frame's own Apply link is.
+    assert opened["fields"] == [] and opened["url"] == f"{board}/embed/apply"
+    (link,) = opened["application_links"]
+    assert link["label"] == "Apply for this job"
+    landed = runtime.follow(opened["run_id"], opened["observation_id"], link["ref"])
+    assert landed["url"] == f"{board}/embed/apply/application"
+    assert landed["page_url"] == f"{employer}/careers/jobs/4474"
+    assert [f["label"] for f in landed["fields"]] == ["First name", "Last name", "Email", "Resume"]
+    freeze_resume(state, opened["run_id"])
+    result = runtime.prepare(opened["run_id"])
+    assert result["status"] == "READY_FOR_REVIEW", result.get("reason")
+    assert runtime.form.locator("#l").input_value() == "Example"
+
+
 def test_the_frame_choice_weighs_questions_not_controls():
     form = {"fields": [{"ref": str(i)} for i in range(4)], "final_controls": [{"ref": "0"}]}
     search = {"fields": [{"ref": "0"}], "application_links": [], "auth_controls": []}
@@ -343,6 +369,8 @@ def test_the_frame_choice_weighs_questions_not_controls():
     posting = {"fields": [], "application_links": [], "auth_controls": []}
     described = {"fields": [], "application_links": [{"ref": "0"}]}
     assert form_frames.choose(posting, [described]) == 0
+    assert form_frames.choose(search, [described]) == 0
+    assert form_frames.choose({**search, "application_links": [{"ref": "0"}]}, [described]) is None
     assert not form_frames.candidate("https://www.google.com/recaptcha/api2/anchor?k=x")
     assert not form_frames.candidate("https://newassets.hcaptcha.com/captcha/v1/x")
     assert not form_frames.candidate("about:blank")

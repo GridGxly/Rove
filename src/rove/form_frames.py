@@ -82,11 +82,10 @@ def holds_form(reading: dict) -> bool:
     )
 
 
-def actionable(reading: dict) -> bool:
-    """The reading offers something to do: a question, an Apply link or a sign-in."""
-    return bool(
-        reading.get("fields") or reading.get("application_links") or reading.get("auth_controls")
-    )
+def needs_frame(reading: dict) -> bool:
+    """The tab's own document holds no form and no Apply link: what it has (a job search
+    box, a header's sign-in link) is not the way into this application."""
+    return not reading.get("application_links") and not holds_form(reading)
 
 
 def choose(main: dict, children: list[dict]) -> int | None:
@@ -94,15 +93,16 @@ def choose(main: dict, children: list[dict]) -> int | None:
 
     A child frame wins when it holds a form with more questions than the tab's own
     document has (a search box or a newsletter field on an employer page is not the
-    application). When the tab's own document offers nothing to act on, a child frame with
-    an Apply link or a sign-in control is the way in. Ties go to the earlier frame.
+    application). When the tab's own document holds no form and no Apply link, a child
+    frame with an Apply link or a sign-in control is the way in. Ties go to the earlier
+    frame.
     """
     forms = [i for i, reading in enumerate(children) if holds_form(reading)]
     if forms:
         best = max(forms, key=lambda i: (weight(children[i]), -i))
         if weight(children[best]) > weight(main):
             return best
-    if not actionable(main):
+    if needs_frame(main):
         for index, reading in enumerate(children):
             if reading.get("application_links") or reading.get("auth_controls"):
                 return index

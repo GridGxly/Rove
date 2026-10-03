@@ -1030,7 +1030,7 @@ class RecruitingBrowser:
         main = self.page.main_frame
         if (
             frame is main
-            and not form_frames.actionable(data)
+            and form_frames.needs_frame(data)
             and len(self.page.frames) > 1
             and self.frames_waited != (self.run["id"], self.page.url)
         ):
