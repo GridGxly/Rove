@@ -13,18 +13,20 @@ import os
 import random
 import re
 import shutil
+import signal
 import socket
 import socketserver
 import subprocess
+import sys
 import time
-import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
 from patchright.sync_api import sync_playwright
 
-from . import boards, form_reading, overlays, questions, timing, workflow
+from . import boards, browser_app, form_reading, overlays, questions, timing, workflow
+from .browser_app import devtools_alive
 from .jobs import lookup_job_link, public_link
 from .onboarding import read_approved
 from .runtime import state_root, write_private
@@ -307,12 +309,29 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
-def devtools_alive(port: int) -> bool:
+def process_alive(pid: int) -> bool:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as reply:
-            return reply.status == 200
-    except (OSError, ValueError):
+        os.kill(pid, 0)
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
+    return True
+
+
+# The flags every launch gets.
+LAUNCH_FLAGS = (
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--no-startup-window",
+    "--disable-background-networking",
+    "--window-size=1280,900",
+    "--lang=en-US",
+)
+# The Rove Browser is a bundle the Keychain has never seen, so without this flag it would
+# ask for "Chrome Safe Storage" at every start. With it, the cookies and passwords of its
+# profile are encrypted with a fixed key, which the profile's own permissions protect.
+MOCK_KEYCHAIN = "--use-mock-keychain"
 
 
 class ChromeLauncher:
@@ -321,57 +340,102 @@ class ChromeLauncher:
     Launching it ourselves means no automation flag is ever set (navigator.webdriver stays
     false), the window survives daemon restarts, and new tabs open in the background.
     The DevTools port binds to localhost only; the local account is trusted by design.
+
+    The app is the Rove Browser that `rove browser install` built under the state root:
+    the owner's Chrome, copied, under its own bundle id. The shared /Applications/Google
+    Chrome.app is used only when the private config says `browser_app: "shared-chrome"`,
+    and nothing falls back from one to the other.
     """
 
     def __init__(self):
         self.session = state_root() / "browser/session.json"
 
-    def app(self, playwright) -> tuple[str, str]:
-        preference = workflow.config().get("browser_app", "chrome")
-        chrome = Path("/Applications/Google Chrome.app")
-        if preference == "chrome" and chrome.is_dir():
-            return str(chrome), "com.google.Chrome"
-        executable = Path(playwright.chromium.executable_path)
-        bundle = next((p for p in executable.parents if p.suffix == ".app"), None)
-        if bundle is None:
-            raise RuntimeError("No launchable Chrome application bundle was found")
-        return str(bundle), "com.google.chrome.for.testing"
+    def app(self) -> dict:
+        return browser_app.chosen(workflow.config())
 
     def running_port(self) -> int | None:
-        if not self.session.is_file():
-            return None
+        port = browser_app.session_info().get("port")
         try:
-            port = int(json.loads(self.session.read_text())["port"])
-        except (ValueError, KeyError, TypeError):
+            port = int(port)
+        except (ValueError, TypeError):
             return None
         return port if devtools_alive(port) else None
 
-    def ensure_running(self, profile: Path, playwright) -> int:
+    def running_app(self) -> str | None:
+        """The path of the app behind the live session, or None when nothing answers."""
+        if self.running_port() is None:
+            return None
+        return str(browser_app.session_info().get("app") or "")
+
+    def retire_other_apps(self, app_path: str) -> list[dict]:
+        """Stop a recruiting browser that is not the configured app, so the profile is free.
+
+        That is the shared Chrome from before the switch. The holder is read from the
+        profile's own lock, so a stale session file does not matter. SIGTERM is Chrome's
+        clean shutdown.
+        """
+        stopped = []
+        for name in ("recruiting-profile", "recruiting-profile-rove"):
+            holder = browser_app.profile_holder(state_root() / f"browser/{name}")
+            if holder is None:
+                continue
+            pid, executable = holder
+            if executable.startswith(app_path.rstrip("/") + "/"):
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                continue
+            for _ in range(30):
+                time.sleep(0.5)
+                if not process_alive(pid):
+                    break
+            else:
+                with contextlib.suppress(OSError):
+                    os.kill(pid, signal.SIGKILL)
+            stopped.append({"pid": pid, "executable": executable, "profile": name})
+        if stopped:
+            apps = ", ".join(sorted({Path(s["executable"]).name for s in stopped}))
+            workflow.system_line(
+                "browser",
+                f"closed the previous recruiting browser ({apps}) so the configured app "
+                f"can open the profile",
+            )
+        return stopped
+
+    def command(self, app: dict, profile: Path, port: int) -> list[str]:
+        keychain = [] if app["shared_chrome"] else [MOCK_KEYCHAIN]
+        return [
+            "open",
+            "-g",
+            "-n",
+            "-a",
+            app["path"],
+            "--args",
+            f"--user-data-dir={profile}",
+            f"--remote-debugging-port={port}",
+            *LAUNCH_FLAGS,
+            *keychain,
+        ]
+
+    def ensure_running(self) -> int:
+        app = self.app()
         port = self.running_port()
-        if port:
+        if port and self.running_app() == app["path"]:
             return port
-        app, bundle = self.app(playwright)
+        self.retire_other_apps(app["path"])
+        if not app["shared_chrome"]:
+            # Chrome may have updated since the copy was made; the copy follows it.
+            rebuilt = browser_app.refresh()
+            if rebuilt:
+                workflow.system_line("browser", rebuilt)
+                app = self.app()
+        profile = browser_app.profile_dir(app["shared_chrome"])
+        profile.mkdir(parents=True, exist_ok=True, mode=0o700)
         port = free_port()
         previous = front_app()
         subprocess.run(
-            [
-                "open",
-                "-n",
-                "-a",
-                app,
-                "--args",
-                f"--user-data-dir={profile}",
-                f"--remote-debugging-port={port}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--no-startup-window",
-                "--disable-background-networking",
-                "--window-size=1280,900",
-                "--lang=en-US",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=30,
+            self.command(app, profile, port), check=True, capture_output=True, timeout=30
         )
         for _ in range(60):
             if devtools_alive(port):
@@ -384,8 +448,12 @@ class ChromeLauncher:
             self.session,
             {
                 "port": port,
-                "app": app,
-                "bundle": bundle,
+                "app": app["path"],
+                "bundle": app["bundle_id"],
+                "name": app["name"],
+                "version": app["version"],
+                "shared_chrome": app["shared_chrome"],
+                "profile": str(profile),
                 "started_at": workflow.now(),
                 "focus": focus,
             },
@@ -470,16 +538,32 @@ class RecruitingBrowser:
             return self.browser.is_connected()
         return bool(self.context and self.context.browser and self.context.browser.is_connected())
 
+    def attach_if_running(self) -> bool:
+        """Reconnect to a running recruiting browser of the configured app; never launch one."""
+        if self.connected():
+            return True
+        if self.headless:
+            return False
+        try:
+            wanted = self.launcher.app()["path"]
+        except RuntimeError:
+            return False
+        if self.launcher.running_app() != wanted:
+            return False
+        self.ensure()
+        return True
+
     def ensure(self):
         if self.context and self.connected():
             return
         if self.playwright:
             self.playwright.stop()
         self.playwright = sync_playwright().start()
-        directory = state_root() / "browser/recruiting-profile"
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.browser = self.cdp = None
         if self.headless:
+            # Tests and the synthetic fixture: Patchright's Chromium, no app bundle at all.
+            directory = state_root() / "browser/recruiting-profile"
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             self.context = self.playwright.chromium.launch_persistent_context(
                 str(directory),
                 headless=True,
@@ -488,7 +572,7 @@ class RecruitingBrowser:
                 accept_downloads=False,
             )
         else:
-            port = self.launcher.ensure_running(directory, self.playwright)
+            port = self.launcher.ensure_running()
             self.browser = self.playwright.chromium.connect_over_cdp(
                 f"http://127.0.0.1:{port}", timeout=20000
             )
@@ -2132,69 +2216,105 @@ def socket_path() -> Path:
     return state_root() / "browser.sock"
 
 
+def announce_app(settings: dict) -> str | None:
+    """At daemon start: one warning line when the shared Google Chrome is configured."""
+    if settings.get("browser_app") != browser_app.SHARED_SETTING:
+        return None
+    warning = (
+        "the recruiting browser is the shared Google Chrome (browser_app: shared-chrome): "
+        "a Dock click or a link from another app can open in the recruiting profile; "
+        "run `rove browser install` and drop the setting to use the Rove Browser"
+    )
+    print("warning: " + warning, file=sys.stderr, flush=True)
+    workflow.system_line("browser", "warning · " + warning)
+    return warning
+
+
+def status_report(browser) -> dict:
+    app = browser_app.status(workflow.config())
+    running = browser.launcher.running_app()
+    return {
+        "daemon_running": True,
+        "browser_connected": browser.connected(),
+        "browser_running": running is not None,
+        "app": {**app, "running": running is not None and running == app["path"]},
+        "open_tabs": sorted(r for r, page in browser.pages.items() if not page.is_closed()),
+        "run_id": browser.run["id"] if browser.run else None,
+    }
+
+
+# Actions that need the browser; it is launched by the first of them, not at login.
+BROWSER_ACTIONS = {"open", "observe", "follow", "prepare", "register", "login", "reopen", "submit"}
+
+
+def handle_request(browser, request: dict) -> dict:
+    action = request["action"]
+    if action == "status":
+        browser.attach_if_running()
+        return status_report(browser)
+    if action == "close":
+        browser.attach_if_running()
+        return browser.close_run(request["run_id"])
+    if action not in BROWSER_ACTIONS:
+        raise PermissionError("Unsupported browser action")
+    browser.ensure()
+    if action == "open":
+        return browser.open(request["url"])
+    if action == "observe":
+        if request.get("run_id"):
+            browser.check(request["run_id"])
+        return browser.observe()
+    if action == "follow":
+        return browser.follow(request["run_id"], request["observation_id"], request["ref"])
+    if action == "prepare":
+        return browser.prepare(request["run_id"])
+    if action == "register":
+        return browser.register(request["run_id"])
+    if action == "login":
+        return browser.login(request["run_id"])
+    if action == "reopen":
+        return browser.reopen(request["run_id"])
+    # submit: only the worker calls this, with an authenticated owner approval for one
+    # exact package; the model has no submit tool.
+    from .submission import submit
+
+    return submit(browser, request["run_id"], request["package_hash"], request["owner_message_id"])
+
+
 def serve():
     os.umask(0o077)
     lock = open(state_root() / "browser-daemon.lock", "a")  # noqa: SIM115 -- lifetime of service
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     socket_path().unlink(missing_ok=True)
     browser = RecruitingBrowser()
-    try:
-        # Launch at service start (login), when the one-time activation bothers no one.
-        browser.ensure()
-    except Exception as error:  # noqa: BLE001 -- the first request retries with a clear error
-        write_private(state_root() / "browser/launch-error.json", {"error": str(error)[:500]})
+    settings = workflow.config()
+    announce_app(settings)
+    # The browser starts with the first call that needs it, not at login. A recruiting
+    # browser of another app than the configured one is closed now, so the switch happens
+    # at the restart and the profile is free when the configured app opens it. A copy that
+    # fell behind the owner's Chrome is rebuilt while nothing runs.
+    configured = browser_app.status(settings)
+    if configured["path"]:
+        with contextlib.suppress(Exception):
+            browser.launcher.retire_other_apps(configured["path"])
+    if not configured["shared_chrome"]:
+        try:
+            rebuilt = browser_app.refresh()
+        except Exception as error:  # noqa: BLE001 -- the next launch reports it again
+            rebuilt = f"the Rove Browser could not be rebuilt: {error}"[:400]
+        if rebuilt:
+            print(rebuilt, file=sys.stderr, flush=True)
+            workflow.system_line("browser", rebuilt)
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
+            request = {}
             try:
                 raw = self.rfile.readline(32769)
                 if len(raw) > 32768:
                     raise ValueError("Request too large")
                 request = json.loads(raw)
-                action = request["action"]
-                if action == "open":
-                    result = browser.open(request["url"])
-                elif action == "observe":
-                    if request.get("run_id"):
-                        browser.check(request["run_id"])
-                    result = browser.observe()
-                elif action == "follow":
-                    result = browser.follow(
-                        request["run_id"], request["observation_id"], request["ref"]
-                    )
-                elif action == "prepare":
-                    result = browser.prepare(request["run_id"])
-                elif action == "close":
-                    result = browser.close_run(request["run_id"])
-                elif action == "register":
-                    result = browser.register(request["run_id"])
-                elif action == "login":
-                    result = browser.login(request["run_id"])
-                elif action == "reopen":
-                    result = browser.reopen(request["run_id"])
-                elif action == "submit":
-                    # Only the worker calls this, with an authenticated owner approval
-                    # for one exact package; the model has no submit tool.
-                    from .submission import submit
-
-                    result = submit(
-                        browser,
-                        request["run_id"],
-                        request["package_hash"],
-                        request["owner_message_id"],
-                    )
-                elif action == "status":
-                    result = {
-                        "daemon_running": True,
-                        "browser_connected": browser.connected(),
-                        "open_tabs": sorted(
-                            r for r, page in browser.pages.items() if not page.is_closed()
-                        ),
-                        "run_id": browser.run["id"] if browser.run else None,
-                    }
-                else:
-                    raise PermissionError("Unsupported browser action")
-                response = {"result": result}
+                response = {"result": handle_request(browser, request)}
             except Exception as error:  # noqa: BLE001 -- serialize failures at the IPC boundary
                 response = {"error": str(error)[:800], "error_type": type(error).__name__}
                 run_id = request.get("run_id") if isinstance(request, dict) else None

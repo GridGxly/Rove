@@ -69,9 +69,13 @@ def main():
     memory.add_argument("--query", default="")
     sub.add_parser("install-services")
     live = sub.add_parser("browser")
-    live.add_argument("action", choices=["serve", "status", "open", "observe", "prepare"])
+    live.add_argument(
+        "action", choices=["serve", "status", "open", "observe", "prepare", "install"]
+    )
     live.add_argument("--url")
     live.add_argument("--run-id")
+    # install: fetch the Stable Chrome for Testing into the state root; --check only reports.
+    live.add_argument("--check", action="store_true")
     feed = sub.add_parser("feed")
     feed.add_argument("action", choices=["tick", "seed"])
     workflow = sub.add_parser("workflow")
@@ -117,6 +121,10 @@ def main():
 
         if args.action == "serve":
             serve()
+        elif args.action == "install":
+            from .browser_app import install
+
+            print(json.dumps(install(check=args.check), indent=2))
         else:
             params = {}
             if args.url:
