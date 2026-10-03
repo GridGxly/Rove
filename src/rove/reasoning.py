@@ -188,20 +188,35 @@ def static_first(system: str, static: dict, dynamic: dict) -> dict:
     """A context whose leading part is the same for every job of a profile version.
 
     The server reuses a prompt prefix in whole 2,048-token blocks, so the system prompt,
-    profile, evidence and voice note go first and the job's own text after them. When
-    that leading part may be short of one block, `cache_padding` (one token per digit)
-    fills it, so the block is reused from the second job on instead of never.
+    profile, evidence and voice note go first and the job's own text after them.
+    `cache_padding` (digits, one token each) marks where the shared part ends. Here it
+    holds what an estimate says is missing for one whole block; the request replaces it
+    with the server's exact count (`pad_to_block`).
     """
     context = dict(static)
-    lacking = (
-        model_client.CACHE_BLOCK_TOKENS
-        + 64
-        - model_client.at_least_tokens(system + model_client.user_content(context))
-    )
-    if lacking > 0:
-        context["cache_padding"] = "0" * lacking
+    estimate = model_client.at_least_tokens(system + json.dumps(context, ensure_ascii=False))
+    context["cache_padding"] = "0" * model_client.padding_for(estimate, exact=False)
     context.update(dynamic)
     return context
+
+
+def pad_to_block(system: str, context: dict) -> dict:
+    """The context with its shared part padded on the server's own count of it, so the
+    whole shared part fills cache blocks. Unchanged when the server cannot count; an
+    empty padding is dropped."""
+    keys = list(context)
+    if "cache_padding" not in keys:
+        return context
+    end = keys.index("cache_padding")
+    shared = json.dumps({k: context[k] for k in keys[:end]}, ensure_ascii=False)
+    tokens = model_client.prefix_tokens(system, shared)
+    padding = context["cache_padding"]
+    if tokens is not None:
+        padding = "0" * model_client.padding_for(tokens, exact=True)
+    padded = {k: (padding if k == "cache_padding" else v) for k, v in context.items()}
+    if not padding:
+        del padded["cache_padding"]
+    return padded
 
 
 # One read of Erga's approved evidence serves the fit review and the drafting of a pass,
@@ -302,6 +317,13 @@ def request(directory: Path, context: dict, basename: str, attempts: int = 2) ->
     system = system_prompt(context.get("review_type"))
     hermes = transport() == "hermes"
     budget = model_client.PROMPT_TOKEN_BUDGET - (HERMES_PROMPT_TOKENS if hermes else 0)
+    ensure_model()
+    # The Hermes prompt comes first, so no padding of Rove's part lines up with a block.
+    context = (
+        {k: v for k, v in context.items() if k != "cache_padding"}
+        if hermes
+        else pad_to_block(system, context)
+    )
     context = fit_budget(context, system, budget)
     write_private(directory / f"{basename}-input.json", context)
     if model_client.prompt_tokens(system, context) > budget:
@@ -309,7 +331,6 @@ def request(directory: Path, context: dict, basename: str, attempts: int = 2) ->
             f"The {context.get('review_type') or 'answers'} prompt is over the model's "
             f"{model_client.PROMPT_TOKEN_BUDGET}-token budget even after trimming"
         )
-    ensure_model()
     try:
         if hermes:
             return hermes_request(directory, basename, attempts)

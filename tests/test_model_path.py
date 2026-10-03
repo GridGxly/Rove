@@ -43,6 +43,8 @@ class FakeServer:
         self.replies: list = []
         self.status = {"active_requests": 0, "waiting_requests": 0}
         self.consumed = 0
+        self.count = None  # the tokenizer's count of a shared prefix; None: cannot count
+        self.counted: list[dict] = []
 
     def reply(self, *parts, finish="stop", usage=None, reasoning_parts=(), error=None):
         chunks = [{"choices": [{"delta": {"reasoning_content": r}}]} for r in reasoning_parts]
@@ -63,6 +65,11 @@ class FakeServer:
                 return httpx.Response(404)
             return httpx.Response(200, json=self.status)
         body = json.loads(request.content)
+        if path == "/v1/messages/count_tokens":
+            self.counted.append(body)
+            if self.count is None:
+                return httpx.Response(404)
+            return httpx.Response(200, json={"input_tokens": self.count})
         self.requests.append(body)
         reply = self.replies.pop(0) if self.replies else None
         if isinstance(reply, httpx.Response):
@@ -334,7 +341,8 @@ def test_the_shared_part_of_each_prompt_comes_first_and_fills_a_cache_block(
     static = one[: one.index('"expected_job_title"')]
     assert shared >= len(static)
     system = server.requests[0]["messages"][0]["content"]
-    # The padding is digits, one token each; the rest is counted at its lowest estimate.
+    # The server could not count here: the padding is the estimate's, digits (one token
+    # each) after a shared part counted at its lowest.
     padding = context["cache_padding"]
     assert set(padding) == {"0"}
     unpadded = static.replace(padding, "")
@@ -342,9 +350,37 @@ def test_the_shared_part_of_each_prompt_comes_first_and_fills_a_cache_block(
         model_client.at_least_tokens(system + unpadded) + len(padding)
         >= model_client.CACHE_BLOCK_TOKENS
     )
-    # Padding is only what is missing: a long static part gets none.
+    assert len(server.counted) == 2  # asked each time, since no count came back
+    # Padding is only what is missing: a long static part gets none from the estimate.
     long = {"profile": {"note": "word " * 4000}}
-    assert "cache_padding" not in reasoning.static_first("", long, {"job_text": "x"})
+    assert reasoning.static_first("", long, {"job_text": "x"})["cache_padding"] == ""
+
+
+@pytest.mark.parametrize(
+    ("counted", "padding"),
+    [
+        (1500, 2048 - 1500 + 48),  # short of one block: fill it
+        (3309, 4096 - 3309 + 48),  # a partial second block within reach: fill it too
+        (2335, 0),  # the next boundary is far: no padding, the first block is reused
+    ],
+)
+def test_the_shared_part_is_padded_on_the_servers_own_count(
+    state, server, evidence, counted, padding
+):
+    server.count = counted
+    for path in ("a", "b"):
+        app = queued(state, path, title="Example — Intern")
+        server.reply(json.dumps(FIT))
+        reasoning.review_job(app, {"url": f"https://jobs.example.com/{path}", "text": path})
+    sent = [sent_context(body) for body in server.requests]
+    assert [len(c.get("cache_padding", "")) for c in sent] == [padding, padding]
+    assert ("cache_padding" in sent[0]) == bool(padding)
+    # The count is asked once for a shared part, then kept.
+    assert len(server.counted) == 1
+    [asked] = server.counted
+    assert asked["system"] == reasoning.system_prompt("job_fit")
+    shared = json.loads(asked["messages"][0]["content"])
+    assert list(shared) == ["review_type", "prompt_version", "profile", "career_evidence"]
 
 
 def test_one_evidence_read_serves_the_fit_review_and_the_drafting(state, server, evidence):

@@ -12,6 +12,7 @@ Every failure of the server itself (down, a 5xx, a dropped stream, a timeout) is
 `ModelUnavailable`: the work waits for the next tick instead of failing an application.
 """
 
+import hashlib
 import json
 import math
 import os
@@ -30,8 +31,13 @@ PROMPT_TOKEN_BUDGET = 12_500
 CHARS_PER_TOKEN = 2.8
 # oMLX reuses a prompt prefix only in whole blocks of this many tokens.
 CACHE_BLOCK_TOKENS = 2048
-# A low estimate of the same text, used to be sure a static prefix fills a whole block.
-CHARS_PER_TOKEN_HIGH = 4.2
+# A low estimate of the same text, used to be sure a static prefix fills a whole block
+# when the server cannot count it (measured: 4.0 to 4.3 characters a token for the
+# prompts and the profile JSON).
+CHARS_PER_TOKEN_HIGH = 4.8
+# Padding past the block boundary: the server's count includes the closing brace and
+# the chat template's tail, which the shared prefix does not.
+PAD_MARGIN = 48
 # The model unloads after 600 idle seconds; a ping a little before that keeps it loaded.
 KEEPALIVE_SECONDS = 480
 NO_THINK = "/no_think"
@@ -71,6 +77,61 @@ def user_content(context: dict) -> str:
 
 def prompt_tokens(system: str, context: dict) -> int:
     return estimate_tokens(system) + estimate_tokens(user_content(context))
+
+
+def padding_for(tokens: int, exact: bool) -> int:
+    """Digits of padding (one token each) after a shared prefix of `tokens` tokens.
+
+    Short of one block, the prefix is padded to fill it: otherwise nothing is reused. Past
+    one block, and only on the server's exact count, it is padded to the next boundary
+    when that is at most half a block away, so the whole shared part is reused instead of
+    being read again on every call.
+    """
+    block = CACHE_BLOCK_TOKENS
+    if tokens < block:
+        return block - tokens + PAD_MARGIN
+    lacking = -tokens % block
+    return lacking + PAD_MARGIN if exact and lacking <= block // 2 else 0
+
+
+def count_tokens(system: str, user: str) -> int | None:
+    """The server's own token count of a prompt, or None when it cannot give one.
+
+    oMLX counts with the loaded model's tokenizer on its Anthropic-compatible
+    `messages/count_tokens` route; nothing is generated.
+    """
+    payload = {
+        "model": runtime.MODEL,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+    }
+    try:
+        with runtime.client() as client:
+            response = client.post("/messages/count_tokens", json=payload, timeout=60)
+        count = response.json().get("input_tokens") if response.is_success else None
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return None
+    return count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else None
+
+
+def prefix_tokens(system: str, text: str) -> int | None:
+    """The server's count for a shared prompt prefix, asked once and kept by its hash."""
+    key = hashlib.sha256((system + "\0" + text).encode()).hexdigest()
+    path = runtime.state_root() / "prompt-prefix-tokens.json"
+    try:
+        known = json.loads(path.read_text())
+    except (OSError, ValueError):
+        known = {}
+    if not isinstance(known, dict):
+        known = {}
+    if isinstance(known.get(key), int):
+        return known[key]
+    count = count_tokens(system, text)
+    if count is not None:
+        known[key] = count
+        # A few profile and prompt versions are enough to keep.
+        runtime.write_private(path, dict(list(known.items())[-16:]))
+    return count
 
 
 # How reasoning prose begins when it lands in the answer itself.
