@@ -18,6 +18,7 @@ import json
 import re
 import subprocess
 import sys
+import tokenize
 import tomllib
 from collections import Counter
 from pathlib import Path
@@ -132,7 +133,13 @@ def missing_reasons() -> list[str]:
         path = ROOT / name
         if not path.exists():
             continue
-        for number, text in enumerate(path.read_text().splitlines(), 1):
+        with path.open("rb") as source:
+            comments = [
+                (token.start[0], token.string)
+                for token in tokenize.tokenize(source.readline)
+                if token.type == tokenize.COMMENT
+            ]
+        for number, text in comments:
             match = NOQA.search(text)
             if not match:
                 continue
