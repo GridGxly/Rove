@@ -90,7 +90,7 @@ Code chooses an option only when the value matches exactly one option, and it re
 
 A question is required when the form marks it: the `required` attribute, a trailing asterisk or "(required)", or a class on its title that says so, hashed or not (`required`, `is-required`, `_required_f7cvd_91`).
 
-Some questions are answered by rule from the approved profile: whether he returns to school after the internship (yes when the stated graduation is in a later year than the internship), a "U.S. Person" question in the rule's own words or as a stated definition that lists a citizen followed by "confirm one of the statuses" (yes for a citizen; any denial or exception in the wording leaves it to him). The owner's standing yes covers consent to be contacted about the application (calls, mail, text messages), and being considered for other roles at the employer. Whether he can work a posting's listed dates is never answered by rule: it depends on the posting. A certification that the application is true is one question however a form words it: his answer is asked once and kept. A value the site changed stops the run with a card naming the field. A complete page that shows Next or Continue is advanced and the next page is filled, for at most four pages.
+Some questions are answered by rule from the approved profile: whether he returns to school after the internship (yes when the stated graduation is in a later year than the internship), a "U.S. Person" question in the rule's own words or as a stated definition that lists a citizen followed by "confirm one of the statuses" (yes for a citizen; any denial or exception in the wording leaves it to him). The owner's standing yes covers consent to be contacted about the application (calls, mail, text messages), and being considered for other roles at the employer. Whether he can work a posting's listed dates is never answered by rule: it depends on the posting. A certification that the application is true is one question however a form words it: his answer is asked once and kept. A value the site changed stops the run with a card naming the field. A complete page that shows Next or Continue is advanced and the next page is filled, for at most eight pages per browser pass.
 
 An optional field with no fact and no draft is left blank and listed in one line in the thread. Only required questions reach the owner.
 
@@ -373,9 +373,9 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 
 - Forms are filled only on boards in the table and on hosts the owner let in, and only for the same job as the queued link (see [Where a form may be filled](#where-a-form-may-be-filled)). A posting on an employer page whose Apply control leads to a board's own job page, not an embed, is not yet matched to that job and stops for the owner.
 - `lever_v1`'s handling of a CAPTCHA-rejected send follows Lever's reported wording and has not been observed in a live run. Lever's inline field messages use a class the shared error read does not cover, so a Lever form kept open by a field error without the verification sentence is recorded as unclear.
-- Multi-page support advances only on Next, Continue, "Save and continue" and "Next step" controls, after a complete page, for at most four pages.
+- Multi-page support advances after a complete page through recognized navigation controls such as Next, Continue, Proceed, Save and Continue, or Review. Each browser pass handles at most eight pages; the worker resolves up to eight new question batches under the draft policy. Repeated unresolved questions and manual steps stop the pass.
 - Account creation covers email, password, a terms checkbox and text fields the profile resolves. Anything else on a registration page is a stop.
-- Code does not yet stop a Qwen draft on a legal or sensitive question from becoming the answer under `auto_use_drafts`. The prompt tells Qwen to leave unknown personal facts to the owner, and a code gate is in progress.
+- Code refuses automatic drafts for legal or sensitive questions, unknown personal facts and unreadable labels. A required fact missing from the approved profile or remembered answers still needs the owner.
 - Mail tracking reads the Inbox of one Zoho account. Mail about a job that was not applied to through Rove is ignored.
 - The `Accepted` and `Withdrawn` states are not set by code. There are no reminders or calendar entries.
 - Only the replies listed in [Discord](discord.md#replies) are understood. A sentence is not interpreted.
@@ -385,8 +385,6 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 
 These are being built now and are not described above. Each will be documented here when it lands.
 
-- Question handling and a gate for sensitive answers
-- Timing measurements and `rove bench`
 - Adapters for Paylocity, Workable, JazzHR and BambooHR
 - Scored intake with a daily digest
 - Per-platform pacing

@@ -173,6 +173,13 @@ When no value is known, the daemon opens the list once to read its options so Qw
 
 When a page is complete, has no final Submit control and shows a Next or Continue control, the daemon clicks it, waits for the next step's fields, and fills again. It does this for at most eight pages.
 
+When a later page introduces questions that need drafting, the worker can resolve up
+to eight new question batches in one preparation pass under the configured draft
+policy. Each batch is saved before the browser uses it. A repeated unresolved question,
+missing required fact, unapproved draft or manual verification stops the pass. Optional
+fields without an approved fact or draft remain blank. A form that keeps adding new
+questions reaches a named continuation hold; it is never called ready or submitted.
+
 A first step that only asks for an email address to start under (an email field, at most two more fields, and a Next control) counts as the form's first page. It is filled from the profile like any other page, after the fit review and the site check.
 
 When a step does not move, the data requests the page made during the click (method, path and status, never a query string or a body) are saved as `step-stuck.json`, and the system log gets one line with their count and statuses.

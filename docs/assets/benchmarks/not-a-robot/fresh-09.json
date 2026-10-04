@@ -1,0 +1,293 @@
+{
+  "url": "https://neal.fun/not-a-robot/",
+  "started_at": "2026-10-04T16:28:06.208615+00:00",
+  "model": "Qwen3.8-27B-Uncensored-4bit",
+  "model_revision": "14963e70f886455cf93090ac95bdbf4c8730cbe1",
+  "temperature": 0,
+  "thinking": false,
+  "max_tokens": 768,
+  "response_format": {
+    "type": "json_object"
+  },
+  "decision_schema": "visible observation and one action",
+  "viewport": {
+    "width": 1000,
+    "height": 900
+  },
+  "headless": true,
+  "runner_sha256": "8f660c133b07c4fea574fc77e5b4bbaa8ce2e2882077848956ecef6fdc9dc27e",
+  "prompt_sha256": "867ac12cb548ad80a594583d4c0ec1f3e7cb756f95fd5b0bf5c76fd6127fbb86",
+  "verified_complete": false,
+  "actions": [
+    {
+      "step": 0,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.028
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 10.761,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            65,
+            377
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "",
+      "page_text_after": "neal.fun\nVerifying you are human. This may take a few seconds.\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a4558eb7cd91b5bb\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 13.025,
+      "feedback": "Still on the same level after 1 actions."
+    },
+    {
+      "step": 1,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.044
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 10.042,
+      "action": {
+        "action": "wait"
+      },
+      "outcome": "executed",
+      "level_after": "",
+      "page_text_after": "neal.fun\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a4558f1fc905b5bb\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 25.158,
+      "feedback": "Still on the same level after 2 actions."
+    },
+    {
+      "step": 2,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.027
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 9.573,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            65,
+            377
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "",
+      "page_text_after": "neal.fun\nVerifying you are human. This may take a few seconds.\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a4558f1fc905b5bb\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 36.977,
+      "feedback": "Still on the same level after 3 actions."
+    },
+    {
+      "step": 3,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.023
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 9.343,
+      "action": {
+        "action": "wait"
+      },
+      "outcome": "executed",
+      "level_after": "",
+      "page_text_after": "neal.fun\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a4558fc10ef2b5bb\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 48.391,
+      "feedback": "Still on the same level after 4 actions."
+    },
+    {
+      "step": 4,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.026
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 11.242,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            65,
+            377
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "",
+      "page_text_after": "neal.fun\nVerifying you are human. This may take a few seconds.\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a4558fc10ef2b5bb\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 61.873,
+      "feedback": "Still on the same level after 5 actions."
+    },
+    {
+      "step": 5,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.026
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 12.703,
+      "action": {
+        "action": "wait"
+      },
+      "outcome": "executed",
+      "level_after": "",
+      "page_text_after": "neal.fun\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a45590768b74c0da\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 76.651,
+      "feedback": "Still on the same level after 6 actions."
+    },
+    {
+      "step": 6,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.031
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 11.739,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            65,
+            377
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "",
+      "page_text_after": "neal.fun\nVerifying you are human. This may take a few seconds.\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a45590768b74c0da\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 90.618,
+      "feedback": "Still on the same level after 7 actions."
+    },
+    {
+      "step": 7,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.029
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 12.953,
+      "action": {
+        "action": "wait"
+      },
+      "outcome": "executed",
+      "level_after": "",
+      "page_text_after": "neal.fun\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a45591580c818047\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 105.652,
+      "feedback": "Still on the same level after 8 actions."
+    },
+    {
+      "step": 8,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.029
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 10.455,
+      "action": {
+        "action": "wait"
+      },
+      "outcome": "executed",
+      "level_after": "",
+      "page_text_after": "neal.fun\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a45591580c818047\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 118.19,
+      "feedback": "Still on the same level after 9 actions."
+    },
+    {
+      "step": 9,
+      "level": "",
+      "frames": 1,
+      "frame_seconds": [
+        0.024
+      ],
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 10.839,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            65,
+            377
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "",
+      "page_text_after": "neal.fun\nVerifying you are human. This may take a few seconds.\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a45591580c818047\nPerformance and Security by Cloudflare\nPrivacy",
+      "elapsed_seconds": 131.298,
+      "feedback": "Still on the same level after 10 actions."
+    }
+  ],
+  "elapsed_seconds": 131.298,
+  "stop_reason": "KeyboardInterrupt",
+  "final_text": "neal.fun\nVerifying you are human. This may take a few seconds.\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a45591580c818047\nPerformance and Security by Cloudflare\nPrivacy",
+  "independent_review": {
+    "verified_complete": false,
+    "verified_final_level": null,
+    "evidence": "Final screenshot independently inspected; it displays the Cloudflare access-verification page, not the game.",
+    "human_puzzle_inputs": false,
+    "notes": "Headless run never reached the game. Interrupted by the operator after ten recorded model actions. This is a startup/access failure, not evidence of game accuracy."
+  }
+}

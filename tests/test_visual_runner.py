@@ -1,6 +1,7 @@
 """Exercise the game's generic input tools on synthetic pages, never puzzle answers."""
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -81,3 +82,23 @@ def test_model_requested_frame_sequence_is_bounded_recorded_and_used_once(
         runner.perform(
             reader.page, {"action": "observe", "frames": 4, "interval_ms": 1}, view, capture=capture
         )
+
+
+def test_access_page_is_recorded_without_asking_qwen_to_play_it(reader, tmp_path, monkeypatch):
+    reader.page.set_content("<h1>Performing security verification</h1>")
+
+    def expired(*args, **kwargs):
+        assert kwargs["timeout"] == 15000
+        raise runner.BrowserTimeout("startup deadline")
+
+    def unexpected_model(*args):
+        pytest.fail("A site access page is not a puzzle observation")
+
+    monkeypatch.setattr(reader.page, "wait_for_function", expired)
+    monkeypatch.setattr(runner, "ask", unexpected_model)
+    runner.run(reader.page, tmp_path, 10, headless=True)
+    report = json.loads((tmp_path / "attempt.json").read_text())
+    assert report["actions"] == [] and not report["verified_complete"]
+    assert report["stop_reason"] == "game did not appear before startup deadline"
+    assert "security verification" in report["final_text"] and report["headless"]
+    assert (tmp_path / "final.png").is_file()

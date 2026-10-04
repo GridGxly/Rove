@@ -21,9 +21,12 @@ to Discord and Obsidian. Those require separate workflow evidence.
 | Fresh 05 | Fresh profile, Level 1 | Advanced to Level 3 | Brief visible observation plus action. Stopped after 28 actions and 776 seconds; unsuccessful text submissions, response-format errors, focus errors and repeated zoom. No operator puzzle input. |
 | Fresh 06 | Fresh profile, Level 1 | Advanced to Level 3 | Observed button/input references and keyboard events. Stopped after 27 actions and 854 seconds. Incorrect text submissions, repeated zooming and invalid actions remain in the record. No operator puzzle input. |
 | Fresh 07 | Fresh profile, Level 1 | Advanced to Level 2 | Model-requested frame sequences available but never used. Stopped after 25 actions and 306 seconds, with repeated malformed button actions. No operator puzzle input. |
+| Fresh 08 | Fresh headed profile | No independently verified game progress | Initial screenshot timed out before any model decision. Saved text names Level 1, but no final screenshot exists. Infrastructure failure; total elapsed time was not preserved. |
+| Fresh 09 | Fresh headless profile | Game never appeared | Ten recorded model actions on Cloudflare's access-verification page before operator interruption. The last recorded elapsed time is 131 seconds. Startup/access failure, not a game-accuracy measurement. |
+| Fresh 10 | Fresh headed profile, Level 1 | Advanced to Level 3 | Stopped at the owner's pause request after nine recorded actions. Text entry and Submit worked, but answers were rejected. The last recorded elapsed time is 101 seconds, not total time to interruption. No human puzzle input. |
 
 The development rows are two segments of **one session**, not two independent trials.
-Fresh 01 through Fresh 07 are separate sessions. There are zero verified full-game completions in this
+Fresh 01 through Fresh 10 are separate sessions. There are zero verified full-game completions in this
 record. No accuracy percentage is inferred from it. The development segments used
 temperature 0, disabled thinking, and a 512-token output
 limit. They did not preserve per-decision timing or the complete original prompt, so
@@ -74,6 +77,19 @@ referenced buttons; it did not correct this repeated error. The next revision ac
 both spellings with the same stale-control checks. This is an interaction change, not
 a provided puzzle answer. No concurrent browser tests or model requests ran during
 Fresh 07, although ordinary local development continued.
+
+The [Fresh 08 record](assets/benchmarks/not-a-robot/fresh-08.json) and
+[Fresh 09 record](assets/benchmarks/not-a-robot/fresh-09.json) retain these setup failures.
+The next runner revision brings the headed window forward and waits up to fifteen
+seconds for a visible numbered game level before requesting any model action. It
+records a startup failure when the game does not appear. These changes do not prove
+the cause of the screenshot timeout or resolve the site's access check. Headed mode
+remains the default; `--headless` is an optional, separately recorded mode.
+
+The [Fresh 10 record](assets/benchmarks/not-a-robot/fresh-10.json) preserves the attempt
+stopped at the owner's request. It reached the game and advanced through its first two
+levels. Independent review of the final screenshot confirms that Level 3 remained
+unresolved. Successful browser input did not establish successful text recognition.
 
 ## Reproducible runner
 

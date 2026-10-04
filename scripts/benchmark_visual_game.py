@@ -16,6 +16,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from patchright.sync_api import TimeoutError as BrowserTimeout
 from patchright.sync_api import sync_playwright
 from PIL import Image
 
@@ -349,7 +350,24 @@ def decide_and_act(
     return entry
 
 
-def run(page, directory: Path, limit: int):
+def wait_for_game(page, directory: Path, report: dict, started: float) -> bool:
+    """An access/interstitial page is a setup failure, not a puzzle attempt."""
+    try:
+        page.wait_for_function(r"() => /Level \d+:/.test(document.body.innerText)", timeout=15000)
+    except BrowserTimeout:
+        report.update(
+            stop_reason="game did not appear before startup deadline",
+            final_text=page.locator("body").inner_text()[:6000],
+            elapsed_seconds=round(time.monotonic() - started, 3),
+        )
+        runtime.write_private(directory / "attempt.json", report)
+        with contextlib.suppress(BrowserTimeout):
+            runtime.write_private_bytes(directory / "final.png", page.screenshot(timeout=5000))
+        return False
+    return True
+
+
+def run(page, directory: Path, limit: int, *, headless: bool = False):
     started = time.monotonic()
     history: list[dict] = []
     report = {
@@ -363,6 +381,7 @@ def run(page, directory: Path, limit: int):
         "response_format": {"type": "json_object"},
         "decision_schema": "visible observation and one action",
         "viewport": VIEWPORT,
+        "headless": headless,
         "runner_sha256": hashlib.sha256(RUNNER_BYTES).hexdigest(),
         "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
         "verified_complete": False,
@@ -370,6 +389,9 @@ def run(page, directory: Path, limit: int):
     }
     runtime.write_private_bytes(directory / "runner.py", RUNNER_BYTES)
     runtime.write_private(directory / "attempt.json", report)
+    if not wait_for_game(page, directory, report, started):
+        print(report["stop_reason"], flush=True)
+        return
     same = 0
     view = {"x": 0, "y": 0, **VIEWPORT}
     capture: dict = {}
@@ -418,6 +440,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--max-actions", type=int, default=250)
+    parser.add_argument("--headless", action="store_true", help="Render without a desktop window")
     args = parser.parse_args()
     directory = (
         runtime.state_root()
@@ -433,14 +456,16 @@ def main():
             context = engine.chromium.launch_persistent_context(
                 str(directory / "profile"),
                 executable_path=str(args.executable),
-                headless=False,
+                headless=args.headless,
                 viewport=VIEWPORT,
             )
             try:
                 page = context.pages[0]
                 page.goto(URL, wait_until="domcontentloaded")
                 page.wait_for_timeout(3000)
-                run(page, directory, args.max_actions)
+                if not args.headless:
+                    page.bring_to_front()
+                run(page, directory, args.max_actions, headless=args.headless)
             except (KeyboardInterrupt, Exception) as error:
                 # Keep partial evidence even when the operator interrupts or the server
                 # fails. A failed run must never disappear from the benchmark record.

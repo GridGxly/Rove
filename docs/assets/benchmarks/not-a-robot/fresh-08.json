@@ -1,0 +1,30 @@
+{
+  "url": "https://neal.fun/not-a-robot/",
+  "started_at": "2026-10-04T16:24:35.242251+00:00",
+  "model": "Qwen3.8-27B-Uncensored-4bit",
+  "model_revision": "14963e70f886455cf93090ac95bdbf4c8730cbe1",
+  "temperature": 0,
+  "thinking": false,
+  "max_tokens": 768,
+  "response_format": {
+    "type": "json_object"
+  },
+  "decision_schema": "visible observation and one action",
+  "viewport": {
+    "width": 1000,
+    "height": 900
+  },
+  "runner_sha256": "eb092ccc519f97077fcca50793f1ea59ae34af05b4a8d3c2c1687e382121eeef",
+  "prompt_sha256": "867ac12cb548ad80a594583d4c0ec1f3e7cb756f95fd5b0bf5c76fd6127fbb86",
+  "verified_complete": false,
+  "actions": [],
+  "stop_reason": "TimeoutError",
+  "final_text": "Level 1: Checkbox\nI'm not a robot\nreCAPTCHA\nReset\nMade by Neal (human) ",
+  "independent_review": {
+    "verified_complete": false,
+    "verified_final_level": null,
+    "evidence": "No final screenshot was captured. The saved page text names Level 1, but that is not independent visual verification.",
+    "human_puzzle_inputs": false,
+    "notes": "Headed run stopped before any model decision: initial screenshot timed out after 30 seconds. This is an infrastructure failure, not a measured model puzzle attempt. Total elapsed time was not preserved."
+  }
+}

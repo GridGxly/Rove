@@ -508,65 +508,78 @@ def prepare_stop(page: dict, headline: str) -> tuple[str, str]:
     return headline, given if recovery.plain_text(given) else LOOK_AGAIN
 
 
-def prepare_fields(application_id: str, settings: dict) -> tuple[dict, list]:
-    """Fill approved facts, draft unresolved questions once, and apply approved drafts.
-
-    Verification and CAPTCHA holds never enter the drafting stage.
-    """
+def draft_pending(application_id: str, page: dict, settings: dict) -> tuple[dict, list, set, bool]:
+    """Resolve one observed question batch; return whether another browser pass is useful."""
     from .reasoning import review_application
 
+    pending = page["pending"]
+    kinds = fastpath.drafting_counts(pending, page.get("fields"))
+    proposals: dict = {"answers": []}
+    if fastpath.needs_model(kinds):
+        with timing.stage(application_id, "drafting", **kinds):
+            proposals = review_application(application_id, page)
+            timing.note(
+                proposals=sum(a.get("kind") == "proposal" for a in proposals.get("answers", []))
+            )
+    else:
+        timing.record(application_id, "drafting", 0.0, skipped=True, **kinds)
+        workflow.system_line(
+            application_id,
+            f"drafting skipped · {kinds['questions']} pending, "
+            "none needs writing or a model choice",
+        )
+    drafted = {a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"}
+    optional = [q for q in pending if not q.get("required", True) and q["key"] not in drafted]
+    asked = [q for q in pending if q not in optional]
+    used = (
+        set(use_drafts(application_id, proposals, asked))
+        if settings.get("auto_use_drafts", settings.get("auto_submit"))
+        else set()
+    )
+    if optional:
+        skip_optional(application_id, optional)
+    return proposals, asked, used, bool(optional or used)
+
+
+PREPARATION_ROUNDS = 8
+
+
+def prepare_fields(application_id: str, settings: dict) -> tuple[dict, list]:
+    """Continue through new question batches without an extra owner reply per step.
+
+    A repeated unresolved question, manual verification or unapproved draft stops the
+    pass. The bound also stops a form that adds new questions indefinitely.
+    """
     phase = "prepare"
+    proposals: dict = {"answers": []}
+    asked: list = []
+    used: set = set()
+    seen: set = set()
     try:
         timing.lap("fill")
         page = browser_call("prepare", run_id=application_id)
         timing.note(**fastpath.fill_counts(application_id, page))
-        pending = page.get("pending", [])
-        proposals: dict = {"answers": []}
-        asked: list = []
-        used: set = set()
-        if pending and not any(q.get("manual") for q in pending):
+        for _ in range(PREPARATION_ROUNDS):
+            pending = page.get("pending", [])
+            keys = {q.get("key") for q in pending}
+            if not pending or any(q.get("manual") for q in pending) or keys & seen:
+                break
+            seen.update(keys)
             phase = "answer_drafting"
-            kinds = fastpath.drafting_counts(pending, page.get("fields"))
-            if fastpath.needs_model(kinds):
-                with timing.stage(application_id, "drafting", **kinds):
-                    proposals = review_application(application_id, page)
-                    timing.note(
-                        proposals=sum(
-                            a.get("kind") == "proposal" for a in proposals.get("answers", [])
-                        )
-                    )
-            else:
-                # Nothing here is Qwen's to write or choose: no call. The questions
-                # go to the owner exactly as they would after a needs-owner reply.
-                timing.record(application_id, "drafting", 0.0, skipped=True, **kinds)
-                workflow.system_line(
-                    application_id,
-                    f"drafting skipped · {kinds['questions']} pending, none needs "
-                    "writing or a model choice",
-                )
+            proposals, asked, used, changed = draft_pending(application_id, page, settings)
             page["qwen_review"] = proposals
-            drafted_keys = {
-                a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"
-            }
-            optional = [
-                q for q in pending if not q.get("required", True) and q["key"] not in drafted_keys
-            ]
-            # The owner's numbered list: what the form asked beyond approved facts,
-            # in form order, without the optional fields that are left blank.
-            asked = [q for q in pending if q not in optional]
-            if settings.get("auto_use_drafts", settings.get("auto_submit")):
-                used = set(use_drafts(application_id, proposals, asked))
-            if optional:
-                # An optional field nobody can fill from approved facts stays blank.
-                skip_optional(application_id, optional)
-            if optional or used:
-                phase = "prepare"
-                timing.lap("fill")
-                page = browser_call("prepare", run_id=application_id)
-                timing.note(**fastpath.fill_counts(application_id, page))
-                page["qwen_review"] = proposals
-                pending = page.get("pending", [])
-        return page, question_list(asked, pending, proposals, used)
+            if not changed:
+                break
+            phase = "prepare"
+            timing.lap("fill")
+            page = browser_call("prepare", run_id=application_id)
+            timing.note(**fastpath.fill_counts(application_id, page))
+            page["qwen_review"] = proposals
+        else:
+            pending = page.get("pending", [])
+            if pending and not any(q.get("manual") or q.get("key") in seen for q in pending):
+                page["preparation_limit"] = True
+        return page, question_list(asked, page.get("pending", []), proposals, used)
     except Exception as error:
         raise PhaseError(phase, error) from error
 
@@ -596,6 +609,16 @@ def finish_preparation(item: dict, page: dict, questions: list, fit: dict, setti
             "MANUAL_TAKEOVER",
             by_hand["reason"],
             "A step in the browser needs you",
+            commands=["go", "park it"],
+            in_place=True,
+        )
+    if page.get("preparation_limit"):
+        return held(
+            application_id,
+            "NEEDS_USER",
+            "The form kept adding new questions after eight preparation rounds. "
+            "Nothing was sent. Reply `go` to continue from this step.",
+            "More form steps remain",
             commands=["go", "park it"],
             in_place=True,
         )
