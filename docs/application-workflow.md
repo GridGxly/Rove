@@ -150,7 +150,10 @@ Every stop is one card in the thread and one in an owner channel, with the repli
 | Apply control not found | No Apply control on the page. | `go` after reaching the form |
 | Navigation stopped | Six page steps passed without reaching a form. | `go`, `park it` |
 | Final step not reached | The last step with its Submit control was never reached, or the site rejected a value on a step. | `go` |
-| Browser needs a look | Anything else, including a form on a host or job that does not match the queued link. | `go`, `park it` |
+| First time on this site | The form (or an account or sign-in page) is on a host outside the board table that the owner has not let in. The card names the host. | `go`, `park it` |
+| First application to this employer | Only with `first_send_hold: all`: the first form for an employer on a board. | `go`, `park it` |
+| This site cannot take the application | The form is on a host that never takes applicant data: an address instead of a name, a private network, rented hosting or a form builder, a link shortener, or a name that is not a public site. | `applied` after applying by hand, `park it` |
+| Browser needs a look | Anything else, including a form for another job than the queued link, and a job already sent through another link. | `go`, `park it` |
 | Preparation stopped | A step raised an error. The card names the step. | `go`, `park it` |
 | Preparation interrupted | The worker found a preparation older than fifteen minutes. | `go`, `park it` |
 | Ready to submit | The form is complete and an adapter is enabled. Not posted when `auto_submit` is on. | `send it`, `go` |
@@ -163,6 +166,20 @@ Every stop is one card in the thread and one in an owner channel, with the repli
 A posting whose page says it no longer accepts applications is parked with a line in the thread and no card.
 
 Rove never solves a CAPTCHA, never completes MFA, and never types a password it did not generate itself. It uses no proxies.
+
+### Where a form may be filled
+
+A form is filled only on a public HTTPS host, and only for the job that was queued.
+
+- A board in the table in `destinations.BOARDS` (exact hosts, with tenant and job read from the address) takes a form without asking. The table covers Greenhouse, Lever, Ashby, Jobvite, SmartRecruiters, Eightfold, Workday, iCIMS, Oracle Recruiting, Paylocity, Workable, JazzHR and BambooHR.
+- A host outside the table takes a form once the owner has let it in, and is then remembered in `familiar_hosts`. A link the owner pasted or picked lets in its own host and the host its posting's Apply control leads to. A feed job, or a link the agent queued, stops at a "First time on this site" card naming the host; the owner's `go` on that card lets in that host and no other. A redirect or a changed link to another host asks again, also for a link the owner pasted.
+- `first_send_hold` in `config/workflow.json` sets the policy: `unfamiliar` (the default) as above, `all` also holds the first application to each employer on a board, `off` holds nothing. Under every policy a host that can never take applicant data is refused: an IP address, a private, loopback or link-local address, rented hosting and object storage, form builders, link shorteners, and names that fail a public-suffix check.
+- A board's form embedded in the employer's page (Greenhouse's `embed/job_app?for=…&token=…`, Lever's and Ashby's apply pages) is the queued job when the page is on the queued link's host, or one the owner let in, and the board's job id is the one the queued link names (`gh_jid`, a path number, or the posting id). Its key is the board's key.
+- The same check runs before an account is created or a stored account signs in, since both type into the site. For a new site, the question rides on the "Account needed" card: `create account` lets that site in.
+
+Every navigation's landing page and each redirect hop on the way are checked before the page is read, again after the settle wait, and again before each banner or pop-up click. A private or local address closes the tab with a "Redirect blocked" line; after a send's click the line says the outcome is unclear instead of saying nothing was sent. An address whose lookup fails is tried once more and then stops the run with a plain reason, leaving the tab open.
+
+One job is sent once. A send takes the key of its posting link and the key of the form it goes through, so the employer's page and the board's own link to the same job cannot both send, and preparation stops before typing when another link already sent the job.
 
 ### Accounts
 
@@ -192,13 +209,15 @@ The daemon observes the live page again and refuses to click unless all of this 
 
 If the check fails, nothing is sent and the owner gets a "Submission not attempted" card with the reason.
 
-When it passes, the daemon records the attempt in SQLite and marks the application as submitting in one transaction. A second attempt is refused unless the first was recorded as not submitted. It then arms the page's submit guard for one click, clicks once, waits up to 45 seconds for the adapter's signal, and reads the page once.
+When it passes, the daemon arms the page's submit guard for one click, then records the attempt in SQLite and marks the application as submitting in one transaction. A second attempt is refused unless the first was recorded as not submitted, and so is a job another application already sent. Between that claim and the click nothing slow runs: one database read checks that the claim still stands, and if it was settled meanwhile there is no click. It then clicks once, waits up to 45 seconds for the adapter's signal, and reads the page once. The outcome is written to SQLite and the receipt before any Discord post and before the Erga sync, and only while the attempt is still claimed.
+
+A send whose outcome never comes (the browser service stopped between the claim and the record) becomes "Submission unclear" with its usual card after a little over six minutes, which covers every bounded wait of a send. If the service wrote its receipt first, the receipt's outcome is used. A late outcome from the service after that writes nothing. An unclear send waits for the owner on its own card; the rest of the queue keeps running.
 
 ### Outcomes
 
 Applied: the adapter saw its full confirmation contract. The receipt keeps the confirmation URL and text, screenshots before and after, the status codes of matching POST responses without headers or bodies, the adapter name and the package hash. Erga is told through `confirm_application_submission` when the resume manifest links an Erga application. The tag becomes `Applied` and the tab closes.
 
-Not submitted: the form stayed open and named a new validation error. The application goes back to the owner with the site's message, and a later `go` prepares a new package. When the message names a required field, that label is remembered for the application and treated as required on the next preparation. Only `lever_v1` and `generic_v1` can report this outcome.
+Not submitted: the form stayed open and named a new validation error. The application goes back to the owner with the site's message, and a later `go` prepares a new package. When the message names a required field, that label is remembered for the application and treated as required on the next preparation. Never while a POST the click started on the form's host is unanswered, whatever the adapter reads. For `generic_v1`, only when no POST left the page at all, or every POST on any host was refused with a 4xx: a backend on another host may have stored the application.
 
 Unclear: anything else, including an error after the click. The card says not to click again. The owner checks the browser and their email and replies `applied` or `not sent`. `applied` records the application as sent on the owner's word. `not sent` releases the attempt. With `auto_submit` on the application is then prepared again without another reply. With it off the owner gets a card and replies `go`. Code never infers the outcome and never retries the click. A recruiting mail about the application also settles it, as described under [Recruiting mail](#recruiting-mail).
 
@@ -210,24 +229,35 @@ For any outcome other than applied, the thread gets the screenshot of the form j
 
 `lever_v1` covers public Lever postings at `jobs.lever.co/{company}/{posting}/apply`. The Submit button runs hCaptcha, and the page posts the form itself when the CAPTCHA hands it a token. The attempt is applied only when the page landed on `/{company}/{posting}/thanks` for the same posting, shows the "Application submitted!" heading, and has no form left. The status of the form's POST is kept in the receipt as evidence and confirms nothing on its own. When the page comes back as the form under "There was an error verifying your application", the CAPTCHA rejected the send: the attempt is recorded as not submitted, the tab stays open, and the owner sends it by hand and replies `applied`. A form that stays open with a new validation message is not submitted either.
 
-`generic_v1` matches any HTTPS page and has no request to watch. List it last in `submit_adapters` so the stricter adapters win on their own sites. It clicks the one final control and waits until the page leaves, the form disappears, or a success or validation message appears that was not there before the click. It then compares the page with the observation taken before the click. The attempt is applied only when all three hold:
+`generic_v1` matches any HTTPS page and has no request to watch. List it last in `submit_adapters` so the stricter adapters win on their own sites. It clicks the one final control and waits until the page leaves, the form disappears, or a success or validation message appears that was not there before the click, then gives an error that follows a thank-you 2.5 seconds to show. It compares the page with the observation taken before the click. The attempt is applied only when all of these hold:
 
-- at least one new confirmation signal: the URL path or query newly matches the `url` pattern, the page text newly matches the `sentence` pattern, or a visible `[role=alert]`, `[role=status]`, `.confirmation` or `.success` element newly matches the `sentence` pattern
-- the form left: no fields and no final control, or a different URL
-- no new validation message: visible text in `[role=alert]`, `.error`, or the message beside an `[aria-invalid=true]` field that matches the `error` pattern and differs from what was there before the click
+- the form is gone: no fields and no final control
+- the page text, or a visible `[role=alert]`, `[role=status]`, `.confirmation` or `.success` element, newly says one of the `sentence` patterns, in a sentence that does not take it back ("thank you for applying, but there was an error")
+- no new validation message: text in `[role=alert]`, `.error` or beside an `[aria-invalid=true]` field matching `error`
+- no new `failure` sentence, the posting does not read as closed, and the site does not say an application already exists
+- the address carries no failure word (`not`, `error`, `failed`, `invalid`, `incomplete`, `login`, `signin` and similar, as whole words)
+- no step is left: no new `pending` sentence, and the address is not a sign-in, login, verify-email or activation page
 
-The patterns, all case-insensitive:
+A confirmation-looking address (whole words such as `thank-you`, `confirmation`, `submitted`) is kept as evidence and never confirms on its own, and neither does a changed address. The patterns, all case-insensitive:
 
 ```text
-url       confirmation|thank|success|submitted|complete|received
-sentence  thank you for (applying|your (application|interest))
+sentence  thank you for (applying|your application)
           |application (has been |was )?(submitted|received|complete)
           |we('ve| have) received your application
           |successfully (submitted|applied)
+pending   (verify|confirm|activate) your (email|account)
+          |check your (email|inbox) to (finish|complete|confirm|verify|activate)
+          |to (finish|complete) your application
+          |(sign|log) in to (continue|finish|complete|apply|your account)
+          |please (sign|log) in
+          |create (an|your) account to (continue|finish|complete|apply)
+failure   something went wrong · could not / unable to / failed to submit, process,
+          complete, save or send · submission failed · was not submitted, received,
+          sent or saved · application incomplete · please try again · session expired
 error     required|invalid|error|could not|try again
 ```
 
-Wording and URL tokens already present before the click never count. A careers page that opens with "thank you for your interest" cannot confirm itself, and a thank-you sentence under a form that is still open is not a confirmation. A new validation message on a form that stayed on the same URL is the not-submitted outcome. Anything else is unclear.
+Wording already present before the click never counts, so a careers page that thanks the visitor for their interest confirms nothing, and "thank you for your interest" is not a confirmation sentence at all. A page that asks to verify an email or sign in is unclear with its own reason: the owner finishes that step, then reconciles. A new validation message on a form that stayed on the same address is the not-submitted outcome under the POST rule above. Anything else is unclear, and the card lists the checks in plain words.
 
 ## Unattended sending
 
@@ -315,7 +345,7 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 
 ## Limits
 
-- Forms are filled only on the hosts in the code's applicant-tracking list, and only for the same job as the queued link. `generic_v1` therefore reaches only those hosts.
+- Forms are filled only on boards in the table and on hosts the owner let in, and only for the same job as the queued link (see [Where a form may be filled](#where-a-form-may-be-filled)). A posting on an employer page whose Apply control leads to a board's own job page, not an embed, is not yet matched to that job and stops for the owner.
 - `lever_v1`'s handling of a CAPTCHA-rejected send follows Lever's reported wording and has not been observed in a live run. Lever's inline field messages use a class the shared error read does not cover, so a Lever form kept open by a field error without the verification sentence is recorded as unclear.
 - Multi-page support advances only on Next, Continue, "Save and continue" and "Next step" controls, after a complete page, for at most four pages.
 - Account creation covers email, password, a terms checkbox and text fields the profile resolves. Anything else on a registration page is a stop.

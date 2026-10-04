@@ -90,9 +90,23 @@ Rove uses one database, `recruiting.sqlite3` in the state root, readable only by
 | Answers | `application_answers` for one application, `answer_memory` across applications |
 | Memory channel | `memory_outbox` for replies and "Saved" lines, `memory_listing` for the last numbered list shown, `memory_announced` for a hash of the last announced value of each answer |
 | Submission | `live_submission_attempts` |
+| One send per job, and where forms may be filled | `application_jobs`, `job_sends`, `sent_tenants`, `familiar_hosts`, `site_asks`, `vouched_hosts`, `job_index_meta` |
 | Recruiting mail | `mail_checkpoints`, `mail_messages` |
 
 It answers questions such as whether a job was already queued, whether a Discord message was already applied, whether a submission was already attempted, which thread belongs to an application, and whether a mail was already handled.
+
+The job index tables:
+
+- `application_jobs` holds each application's job key, the same for every spelling of one job's link. One application per key is the job's own; older duplicates stay and can never send.
+- `job_sends` holds the one application that sent or is sending a job, under the key of its posting link and the key of the form it was sent through. The employer's page and the board's own link to one job share the form's key, so the job is sent once.
+- `sent_tenants` holds the employers on a board that were sent to or approved, for `first_send_hold: all`.
+- `familiar_hosts` holds hosts outside the board table where Rove filled a form because the owner vouched for that host.
+- `site_asks` holds which host (or employer) a hold card named, and when. An owner's `go` counts only for the host on a card shown before it.
+- `vouched_hosts` holds the host an owner-chosen posting's Apply control leads to.
+
+`application_jobs` and `job_sends` are derived from the queue, the attempts and each sent application's `package.json`, and are rebuilt when the key rules change. The rebuild adds a host to `familiar_hosts` only where Rove itself sent a form. The other tables are kept.
+
+A send claimed in `live_submission_attempts` whose outcome never came (the browser service stopped between the claim and the record) becomes an unclear submission after `submission.STALE_SEND_AFTER`, a little over six minutes: every bounded wait of a send plus five minutes. The send's outcome and that cleanup both write only while the attempt is still claimed, so whichever records first stands.
 
 Readable long-term knowledge does not go here. Remembered answers are the one place SQLite holds facts the owner gave, because filling a form needs an exact lookup by question. The text of a memory-channel reply is blanked in `memory_outbox` once Discord has it.
 
@@ -104,6 +118,7 @@ The state root is created with owner-only permissions. Its layout as the code us
 ~/.config/rove/
 ├── config/                 workflow.json, feed.json, mail.json, recruiting.json, setup.env
 ├── recruiting.sqlite3
+├── browser/tabs.json       the tabs Rove opened in the Rove Browser, by the browser's own id
 ├── applications/<id>/      everything about one application
 ├── profiles/snapshots/     one immutable JSON file per approved profile hash
 ├── onboarding/             the current draft

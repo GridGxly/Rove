@@ -106,6 +106,7 @@ Configuration is a handful of private JSON files and one env file under `config/
 | `hermes_python` | none | Path to the Python inside the Hermes install. Qwen calls run with it. |
 | `submission_enabled` | `false` | Allows the Submit click at all. |
 | `submit_adapters` | `[]` | Enabled adapters in order: `greenhouse_v1`, `lever_v1`, `generic_v1`. List `generic_v1` last. |
+| `first_send_hold` | `unfamiliar` | Which forms wait for the owner's `go` before anything is typed. `unfamiliar`: a form on a host outside the board table that the owner has not let in yet. `all`: also the first application to each employer on a board. `off`: nothing waits; a host that can never take applicant data is still refused. See [Where a form may be filled](application-workflow.md#where-a-form-may-be-filled). |
 | `auto_submit` | `false` | Sends a complete package without a `send it` reply. |
 | `auto_use_drafts` | value of `auto_submit` | Uses Qwen's drafts as answers without a `use draft` reply. |
 | `max_submissions_per_day` | `10` | Cap on submission attempts per UTC day under `auto_submit`. |
