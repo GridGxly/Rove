@@ -206,6 +206,75 @@ def transition(application_id: str, status: str, trigger: str, detail: str = "",
     sync_note(application_id)
 
 
+# Nothing has been sent and nothing is being sent: the application still follows the
+# approved profile.
+UNSENT = ("QUEUED", "PREPARING", "NEEDS_USER", "READY_FOR_REVIEW", "MANUAL_TAKEOVER", "DEFERRED")
+# Built from one profile version; rebuilt when the application takes another.
+PROFILE_BOUND_FILES = ("package.json", "answer-proposals.json")
+
+
+def adopt_profile() -> int:
+    """Applications not yet sent follow the approved profile; returns how many changed.
+
+    Approving a profile change is the owner's decision about his own facts. An application
+    that has not been sent has nothing frozen worth keeping, so it takes the new version
+    instead of stopping with a card: its frozen copy is replaced, and a package or drafts
+    built from the old version are dropped so they are rebuilt (his own answers are
+    kept). A package that was waiting for `send it` goes back to the queue, because what
+    it would send has changed. Sent applications and sends in flight keep the snapshot
+    they used. An unreadable profile changes nothing here; the profile gate reports it.
+    """
+    try:
+        approved = read_approved()
+    except Exception:  # noqa: BLE001 -- an invalid profile is reported by the profile gate
+        return 0
+    current = approved["profile_hash"]
+    marks = ",".join("?" * len(UNSENT))
+    with db() as conn:
+        # Only question marks are formatted in; every value is bound.
+        stale = f"profile_hash!=? AND status IN ({marks})"
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT id,status FROM application_queue WHERE " + stale, (current, *UNSENT)
+            )
+        ]
+        if not rows:
+            return 0
+        conn.execute(
+            "UPDATE application_queue SET profile_hash=? WHERE " + stale,
+            (current, current, *UNSENT),
+        )
+    rebuilt = []
+    for row in rows:
+        directory = state_root() / "applications" / row["id"]
+        if not directory.is_dir():
+            continue
+        for name in PROFILE_BOUND_FILES:
+            (directory / name).unlink(missing_ok=True)
+        if (directory / "profile.json").exists():
+            write_private(directory / "profile.json", approved)
+        run_file = directory / "run.json"
+        if run_file.exists():
+            with contextlib.suppress(ValueError, OSError):
+                run = json.loads(run_file.read_text())
+                write_private(run_file, {**run, "profile_hash": current})
+        if row["status"] == "READY_FOR_REVIEW":
+            transition(
+                row["id"],
+                "QUEUED",
+                "profile",
+                "Your approved profile changed, so this one is being prepared again with it.",
+            )
+        rebuilt.append(row["id"])
+    system_line(
+        "profile",
+        f"approved profile changed · {len(rows)} unsent application"
+        f"{'s' if len(rows) != 1 else ''} now use it · {len(rebuilt)} with files rebuilt",
+    )
+    return len(rows)
+
+
 def sync_note(application_id: str):
     """Refresh the application's Obsidian note; a missing vault never blocks the workflow."""
     from .vault import sync_application

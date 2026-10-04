@@ -1778,3 +1778,43 @@ def test_answers_mirror_uses_the_vault_from_private_config(tmp_path, monkeypatch
     (state / "config/recruiting.json").write_text(json.dumps({"obsidian_vault_path": str(notes)}))
     assert vault.sync_answers() == notes.resolve() / "Rove/Answers.md"
     assert (notes / "Rove/Answers.md").read_text().startswith("# Remembered answers")
+
+
+def test_unsent_applications_follow_a_profile_the_owner_approved_later(state, monkeypatch):
+    """A profile change must not strand the queue: every unsent application takes the new
+    version, a package built from the old one is rebuilt, and sent ones keep theirs."""
+    from rove import workflow as wf
+    from rove.runtime import state_root
+
+    monkeypatch.setattr(wf, "discord", lambda *a, **k: {"id": "1"})
+    queued = wf.enqueue("https://boards.greenhouse.io/acme/jobs/11", source="feed")[
+        "application_id"
+    ]
+    ready = wf.enqueue("https://boards.greenhouse.io/acme/jobs/12", source="feed")["application_id"]
+    sent = wf.enqueue("https://boards.greenhouse.io/acme/jobs/13", source="feed")["application_id"]
+    old = wf.get(queued)["profile_hash"]
+    directory = state_root() / "applications" / ready
+    directory.mkdir(parents=True)
+    (directory / "package.json").write_text("{}")
+    (directory / "answer-proposals.json").write_text("{}")
+    (directory / "profile.json").write_text(json.dumps({"profile_hash": old}))
+    (directory / "run.json").write_text(json.dumps({"id": ready, "profile_hash": old}))
+    with wf.db() as conn:
+        conn.execute("UPDATE application_queue SET status='READY_FOR_REVIEW' WHERE id=?", (ready,))
+        conn.execute("UPDATE application_queue SET status='APPLIED' WHERE id=?", (sent,))
+    assert wf.adopt_profile() == 0  # nothing changed yet
+
+    new = {"profile_hash": "f" * 64, "profile": {"identity": {}}}
+    monkeypatch.setattr(wf, "read_approved", lambda: new)
+    assert wf.adopt_profile() == 2
+    assert wf.get(queued)["profile_hash"] == new["profile_hash"]
+    assert wf.get(ready)["profile_hash"] == new["profile_hash"]
+    assert wf.get(ready)["status"] == "QUEUED"  # what it would send changed: prepared again
+    assert not (directory / "package.json").exists()
+    assert not (directory / "answer-proposals.json").exists()
+    assert (
+        json.loads((directory / "profile.json").read_text())["profile_hash"] == new["profile_hash"]
+    )
+    assert json.loads((directory / "run.json").read_text())["profile_hash"] == new["profile_hash"]
+    assert wf.get(sent)["profile_hash"] == old  # a sent application keeps its snapshot
+    assert wf.adopt_profile() == 0  # and it is done once

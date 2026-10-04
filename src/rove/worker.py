@@ -1644,10 +1644,27 @@ def tick() -> dict:
             attach_deferred_drafts()
 
 
+def release_stale_tabs():
+    """After the profile changed, let the browser service forget tabs it opened under the
+    old version; each reopens with the new one when its application runs. A browser that
+    is not running has nothing to forget and is not started for this."""
+    try:
+        status = browser_call("status")
+    except Exception:  # noqa: BLE001 -- the service may be down; the tabs die with it
+        return
+    for run_id in status.get("open_tabs") or []:
+        if workflow.get(run_id)["status"] in workflow.UNSENT:
+            with contextlib.suppress(Exception):
+                browser_call("close", run_id=run_id)
+
+
 def work(settings: dict, reachable: bool = True) -> dict:
     """The tick's work after the owner's messages are read: sends the owner approved,
     then the next application. A new application waits while Discord is unreachable,
     because its thread cannot be opened; that is not the application's problem."""
+    adopted = workflow.adopt_profile()  # unsent applications follow the approved profile
+    if adopted:
+        release_stale_tabs()
     prune_excluded()
     recover_interrupted()
     from .submission import settle_stale_sends
