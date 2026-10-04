@@ -688,6 +688,23 @@ def test_the_stuck_send_bound_covers_every_wait_of_a_send():
     assert default_click + 3000 <= submission.CLICK_TIMEOUT_MS
 
 
+def test_the_scrub_leaves_no_piece_of_a_typed_value_or_a_resolved_element():
+    """Finding 9."""
+    log = (
+        "Locator.fill: Timeout 12000ms exceeded.\nCall log:\n"
+        '  - fill("pa\\")ss-Tail-77")\n'
+        "  - waiting for locator('[data-rove-field=\"3\"]')\n"
+        '  -   locator resolved to <input id="pw" name="password" value="Alex Example-31"/>\n'
+        '  - element <input value="hidden-Value-5"> is not visible\n'
+        "  - retrying fill action, attempt #2"
+    )
+    clean = credentials.scrub(log)
+    for piece in ("pa", "ss-Tail-77", "Alex Example-31", "hidden-Value-5"):
+        assert piece not in clean.replace("password", "").replace("Call", ""), (piece, clean)
+    assert "retrying fill action, attempt #2" in clean
+    assert "locator resolved to <[redacted]>" in clean
+
+
 def test_coverage_counts_links_by_board_and_names_what_is_off_the_table():
     urls = [
         GREENHOUSE,

@@ -20,11 +20,17 @@ from .runtime import state_root
 
 ALPHABET = string.ascii_letters + string.digits + "!@#$%^&*-_=+"
 REDACTED = "[redacted]"
-# The browser driver quotes the value it was typing in a failed action's call log.
+# The browser driver quotes the value it was typing in a failed action's call log, one
+# call per line: everything after the call's name, to the end of its line, goes, so a
+# value that itself contains `")` cannot leave a piece behind.
 TYPED_VALUE = re.compile(
-    r"""\b(fill|type|press_sequentially|pressSequentially|select_option|selectOption)\((["']).*?\2\)""",
-    re.DOTALL,
+    r"\b(fill|type|press_sequentially|pressSequentially|select_option|selectOption)\(.*$",
+    re.MULTILINE,
 )
+# "locator resolved to <input ... value="...">": the element the driver found, as markup.
+RESOLVED_ELEMENT = re.compile(r"\b((?:locator|selector) resolved to )<.*$", re.MULTILINE)
+# Any other value attribute a driver message quotes.
+VALUE_ATTRIBUTE = re.compile(r"""\bvalue=(["']).*?\1""", re.DOTALL)
 
 
 def _paths():
@@ -124,4 +130,6 @@ def scrub(text, extra=()) -> str:
         known += [str(item["password"]) for item in _load().values() if item.get("password")]
     for secret in sorted(set(known), key=len, reverse=True):
         text = text.replace(secret, REDACTED)
-    return TYPED_VALUE.sub(lambda match: f'{match.group(1)}("{REDACTED}")', text)
+    text = TYPED_VALUE.sub(lambda match: f'{match.group(1)}("{REDACTED}")', text)
+    text = RESOLVED_ELEMENT.sub(lambda match: f"{match.group(1)}<{REDACTED}>", text)
+    return VALUE_ATTRIBUTE.sub(f'value="{REDACTED}"', text)
