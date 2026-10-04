@@ -175,15 +175,7 @@ def test_relative_links_in_the_docs_resolve():
 
 # Read by the code but missing from the workflow.json table in docs/requirements.md when
 # this check was added. The list only shrinks: document a key, then remove it here.
-UNDOCUMENTED_TODAY = {
-    "erga_failure_limit",
-    "erga_pause_minutes",
-    "feed_max_age_days",
-    "feed_paused",
-    "max_new_holds_per_day",
-    "min_seconds_between_submissions_per_platform",
-    "timing",
-}
+UNDOCUMENTED_TODAY: set[str] = set()
 
 
 class ConfigReads:

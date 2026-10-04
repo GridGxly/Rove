@@ -28,6 +28,7 @@
       "src/rove/intake.py": 2,
       "src/rove/live_browser.py": 2,
       "src/rove/mail.py": 2,
+      "src/rove/model_client.py": 1,
       "src/rove/questions.py": 3,
       "src/rove/reasoning.py": 2,
       "src/rove/resumes.py": 1,
@@ -37,25 +38,30 @@
       "src/rove/workflow.py": 1
     },
     "E501": {
-      "scripts/recruiting_reasoning.py": 2,
       "src/rove/browser.py": 7,
       "src/rove/discord_feed.py": 2,
-      "src/rove/form_reading.py": 55,
+      "src/rove/form_reading.py": 80,
+      "src/rove/inbound.py": 2,
       "src/rove/intake.py": 1,
-      "src/rove/live_browser.py": 37,
+      "src/rove/live_browser.py": 49,
       "src/rove/mail.py": 2,
       "src/rove/matching.py": 1,
       "src/rove/memory_channel.py": 1,
       "src/rove/overlays.py": 11,
-      "src/rove/questions.py": 11,
+      "src/rove/prompts.py": 1,
+      "src/rove/questions.py": 12,
       "src/rove/reasoning.py": 2,
+      "src/rove/server.py": 1,
       "src/rove/submission.py": 5,
       "src/rove/vault.py": 2,
       "src/rove/worker.py": 3,
       "src/rove/workflow.py": 10,
       "tests/test_boards.py": 1,
       "tests/test_browser_app.py": 1,
+      "tests/test_education.py": 1,
       "tests/test_form_reading.py": 4,
+      "tests/test_form_steps.py": 8,
+      "tests/test_frames.py": 5,
       "tests/test_live_submission.py": 21,
       "tests/test_live_widgets.py": 4,
       "tests/test_mail.py": 8,
@@ -66,6 +72,7 @@
       "src/rove/matching.py": 1,
       "tests/test_common_questions.py": 1,
       "tests/test_delivery.py": 1,
+      "tests/test_frames.py": 1,
       "tests/test_intake.py": 2,
       "tests/test_live_submission.py": 1,
       "tests/test_overlays.py": 1,
@@ -77,7 +84,7 @@
       "src/rove/live_browser.py": 2,
       "src/rove/mail.py": 1,
       "src/rove/memory_channel.py": 1,
-      "src/rove/questions.py": 5,
+      "src/rove/questions.py": 6,
       "src/rove/workflow.py": 3,
       "tests/test_delivery.py": 1,
       "tests/test_mail.py": 1
@@ -88,7 +95,8 @@
       "src/rove/intake.py": 2,
       "src/rove/live_browser.py": 2,
       "src/rove/mail.py": 2,
-      "src/rove/questions.py": 2,
+      "src/rove/model_client.py": 1,
+      "src/rove/questions.py": 3,
       "src/rove/reasoning.py": 2,
       "src/rove/submission.py": 1,
       "src/rove/vault.py": 1,
@@ -107,7 +115,7 @@
       "src/rove/cli.py": 1,
       "src/rove/discord_feed.py": 1,
       "src/rove/intake.py": 2,
-      "src/rove/live_browser.py": 2,
+      "src/rove/live_browser.py": 3,
       "src/rove/questions.py": 1,
       "src/rove/reasoning.py": 2,
       "src/rove/submission.py": 1,
@@ -116,6 +124,7 @@
       "tests/test_authority.py": 1
     },
     "PTH105": {
+      "src/rove/chat.py": 1,
       "src/rove/jobs.py": 1,
       "src/rove/onboarding.py": 1
     },
@@ -130,6 +139,7 @@
       "src/rove/resumes.py": 1,
       "src/rove/services.py": 1,
       "src/rove/worker.py": 1,
+      "tests/test_model_path.py": 1,
       "tests/test_reasoning.py": 1
     },
     "S101": {
@@ -138,7 +148,7 @@
       "src/rove/resumes.py": 1
     },
     "S311": {
-      "src/rove/live_browser.py": 4
+      "src/rove/live_browser.py": 5
     },
     "S603": {
       "src/rove/browser_app.py": 2,
@@ -167,8 +177,9 @@
     },
     "SIM105": {
       "src/rove/boards/base.py": 1,
-      "src/rove/live_browser.py": 8,
-      "src/rove/submission.py": 4
+      "src/rove/live_browser.py": 7,
+      "src/rove/submission.py": 4,
+      "tests/test_form_steps.py": 1
     },
     "SIM108": {
       "tests/test_overlays.py": 1

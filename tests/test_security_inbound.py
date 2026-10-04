@@ -913,7 +913,7 @@ for kind in ("recruiting_mail", "job_fit", "cleanup", None):
     assert len(script.system_prompt(kind)) > 200, kind
 assert "classifying one recruiting email" in script.system_prompt("recruiting_mail")
 loaded = sorted(name for name in sys.modules if name.startswith("rove."))
-assert loaded == ["rove.mail_prompt", "rove.unslop"], loaded
+assert loaded == ["rove.hermes_review", "rove.mail_prompt", "rove.prompts", "rove.unslop"], loaded
 try:
     import rove.mail
 except ImportError:

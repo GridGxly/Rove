@@ -109,13 +109,24 @@ Configuration is a handful of private JSON files and one env file under `config/
 | `first_send_hold` | `unfamiliar` | Which forms wait for the owner's `go` before anything is typed. `unfamiliar`: a form on a host outside the board table that the owner has not let in yet. `all`: also the first application to each employer on a board. `off`: nothing waits; a host that can never take applicant data is still refused. See [Where a form may be filled](application-workflow.md#where-a-form-may-be-filled). |
 | `auto_submit` | `false` | Sends a complete package without a `send it` reply. |
 | `auto_use_drafts` | value of `auto_submit` | Uses Qwen's drafts as answers without a `use draft` reply. |
-| `max_submissions_per_day` | `10` | Cap on submission attempts per UTC day under `auto_submit`. |
-| `min_minutes_between_submissions` | `8` | Minimum gap after the last attempt under `auto_submit`. |
-| `max_waiting_applications` | `1` | How many applications may wait on the owner before the worker stops starting feed jobs. |
+| `max_submissions_per_day` | `30` | Cap on submission attempts per UTC day under `auto_submit`. Links you paste and digest picks are exempt. |
+| `min_minutes_between_submissions` | `0` | Minimum gap after the last attempt on any site, under `auto_submit`. |
+| `min_seconds_between_submissions_per_platform` | `90` | Minimum gap between attempts on the same job board or employer site. `0` turns it off. |
+| `max_waiting_applications` | `1` | How many applications may wait on the owner before the worker stops starting feed jobs. Only applies when `auto_submit` is off. |
+| `max_new_holds_per_day` | no brake | With `auto_submit` on, feed jobs wait until the next UTC day once this many feed applications have stopped for the owner. Absent or `0` means no brake. |
+| `feed_paused` | `false` | Holds every feed job. Links you paste and digest picks still run. `pause` and `resume` in `agent-control` write it. |
+| `feed_max_age_days` | `21` | Queued feed jobs older than this are parked. `0` keeps them. |
 | `browser_app` | unset | Leave unset for the Rove Browser. `shared-chrome` runs `/Applications/Google Chrome.app` itself, with the old profile and a warning in `system-log` at every daemon start. |
 | `max_open_tabs` | `5` | Tabs kept open in the Rove Browser. |
 | `human_pacing` | `true` | Paced typing, clicks and navigation. |
 | `unslop_path` | none | A local Unslop clone whose scanners replace the built-in Unslop list. |
+| `model_transport` | `hermes` | How the worker sends its prompts: through the Hermes harness, or `direct` as one request to the model server (for measurement). |
+| `model_keepalive` | `true` | Sends a one-token request while jobs are queued and the model has been idle for eight minutes, so the weights stay loaded. |
+| `timing` | `true` | Records stage timings for `rove bench report`. |
+| `erga_failure_limit` | `3` | Identical Erga intake failures in a row before intake is paused. |
+| `erga_pause_minutes` | `60` | How long Erga intake stays paused after that; the approved base PDF is used meanwhile. |
+| `control_help_message_id` | set by Rove | The "What you can ask Rove" message in `agent-control`, so it is edited in place and never posted twice. |
+| `control_help_hash` | set by Rove | A hash of that message's text, so it is only edited when the text changes. |
 
 A synthetic example:
 

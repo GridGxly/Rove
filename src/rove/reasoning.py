@@ -6,9 +6,7 @@ Qwen interprets postings and drafts answers. Trusted code owns exact comparisons
 
 import asyncio
 import copy
-import functools
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -38,7 +36,7 @@ from .research import company_context
 from .research import quoted as quoted_research
 from .runtime import MODEL, state_root, write_private
 
-# The prompts in scripts/recruiting_reasoning.py are versioned apart, so work done under
+# The prompts in rove/prompts.py are versioned apart, so work done under
 # an older prompt is never reused silently and work done under an unchanged one is kept.
 # Bump FIT_PROMPT_VERSION when JOB_FIT_PROMPT changes: stored job-fit reviews are keyed by
 # it and every job is reviewed again. Bump ANSWERS_PROMPT_VERSION when ANSWER_PROMPT or
@@ -134,15 +132,11 @@ def completed_response(generated: dict) -> str:
     return text
 
 
-@functools.cache
 def prompts():
-    """The prompt texts, from the one file both transports read them from."""
-    spec = importlib.util.spec_from_file_location(
-        "recruiting_reasoning", REPOSITORY / "scripts/recruiting_reasoning.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """The prompt texts: one module inside the package, read by both transports."""
+    from . import prompts as texts
+
+    return texts
 
 
 def system_prompt(kind) -> str:
@@ -432,7 +426,7 @@ def hermes_request(directory: Path, basename: str, attempts: int) -> dict:
         run = subprocess.run(
             [
                 python,
-                str(REPOSITORY / "scripts/recruiting_reasoning.py"),
+                str(Path(__file__).with_name("hermes_review.py")),
                 "--hermes-checkout",
                 str(Path.home() / ".hermes/hermes-agent"),
                 "--input",
@@ -444,7 +438,13 @@ def hermes_request(directory: Path, basename: str, attempts: int) -> dict:
             capture_output=True,
             text=True,
             timeout=900,
-            env=dict(os.environ, PYTHONPATH=str(REPOSITORY / "src"), HERMES_AUTOPILOT_16K="1"),
+            env=dict(
+                os.environ,
+                # The package's parent directory: `src/` in a checkout, site-packages
+                # in an installed wheel.
+                PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+                HERMES_AUTOPILOT_16K="1",
+            ),
         )
         if run.returncode != 0:
             # Keep the last meaningful line only; owner cards never carry file paths.

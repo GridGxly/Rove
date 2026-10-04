@@ -215,7 +215,7 @@ def question_label(label: str) -> str | None:
     "Graduation month" and "Expected graduation date — Year" both read as the graduation
     date question, so the approved date can be looked up for it. None for a bare "Month".
     """
-    words = [w for w in re.findall(r"[a-z]+", str(label or "").lower())]
+    words = re.findall(r"[a-z]+", str(label or "").lower())
     kept = [w for w in words if w not in {"month", "day", "year", "mm", "dd", "yy", "yyyy"}]
     if not kept or kept == words:
         return None
