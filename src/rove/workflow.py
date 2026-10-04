@@ -1371,7 +1371,8 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list:
                     fields=fields,
                 )
             )
-        pending = data.get("pending", [])
+        # An optional question nobody answers is left blank, and its own line says so.
+        pending = [item for item in data.get("pending", []) if item.get("required", True)]
         if pending:
             cards.append(
                 f"→ {len(pending)} question{'s' if len(pending) != 1 else ''} left for Qwen or you"

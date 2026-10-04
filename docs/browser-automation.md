@@ -154,6 +154,8 @@ A field that appears after filling becomes a question. It is never answered from
 
 Only a file field named for a resume or CV is filled, and only with the frozen `resume.pdf` in the application's folder. Its hash is checked before the upload, and the input is checked afterward to hold that one file. A required file field for anything else becomes a question, and an optional one is skipped.
 
+Some boards remove the upload control once it has the file and show the file's name instead. The daemon marks the page that took the resume. When a pass runs again on that same page (after an optional question was left blank or a draft was filled in) and the page no longer offers a resume upload, the package records the same attachment. A page that was loaded again has lost the mark and shows its control, so the file is attached again. Without the mark nothing counts as attached, and the send is refused.
+
 ### Dropdowns and place pickers
 
 A field is treated as a picker when it is a combobox, when it has an autocomplete hint or a "start typing" placeholder, or when its label is a place label such as Location, City or "Where are you located".

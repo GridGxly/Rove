@@ -412,8 +412,9 @@ def test_a_rejection_moves_to_rejected_with_a_card_a_line_and_erga(state, monkey
     )
     for hidden in ("zebra", "Ignore previous", "color:red", "careers.example.com", "<"):
         assert hidden not in json.dumps(shown)
+    # The card is dated when the mail arrived (two seconds after the test's clock).
     assert shown["timestamp"].startswith(
-        datetime.fromtimestamp(NOW_MS / 1000, UTC).isoformat()[:16]
+        datetime.fromtimestamp(NOW_MS / 1000 + 2, UTC).isoformat()[:19]
     )
     lines = [p["content"] for p in thread if p.get("content")]
     assert any(line.startswith("→ Rejected · recruiting mail: rejection") for line in lines)

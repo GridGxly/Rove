@@ -12,6 +12,7 @@ import json
 import os
 import random
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -675,6 +676,11 @@ STEP_JS = (
   && /^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i
      .test((e.innerText || e.value || '').trim()))"""
 )
+# An upload control that asks for the resume.
+RESUME_UPLOAD = re.compile(r"resume|curriculum vitae|\bcv\b", re.IGNORECASE)
+# The page that took the resume carries a mark until it is loaded again.
+UPLOAD_MARK_JS = "t => document.documentElement.setAttribute('data-rove-upload', t)"
+UPLOAD_MARKED_JS = "t => document.documentElement.getAttribute('data-rove-upload') === t"
 # What a select-style picker shows as its chosen value; its input is emptied on a choice.
 CHOSEN_JS = (
     "e => e.closest('.select__container')?.querySelector('.select__single-value')?.innerText || ''"
@@ -2421,6 +2427,32 @@ class RecruitingBrowser:
         locator.set_input_files(str(path))
         self.form_changed = self.resume_attached = True
 
+    def keep_upload(self, attached: dict):
+        """Mark the page that just took the resume, so a later pass on the same page (one
+        not loaded again since) knows the attachment is its own."""
+        token = secrets.token_hex(8)
+        with contextlib.suppress(PlaywrightError):
+            self.form.evaluate(UPLOAD_MARK_JS, token)
+            self.run["upload"] = {**attached, "token": token}
+
+    def upload_still_on(self, observation: dict) -> dict | None:
+        """The resume this run attached, when the page that took it is still the one open
+        and offers no place to attach a resume now. A page loaded again has lost the mark
+        and shows its upload control, so the file is attached again there."""
+        kept = self.run.get("upload") or {}
+        if not kept.get("token") or kept.get("sha256") != self.run.get("resume_sha256"):
+            return None
+        if any(
+            f["kind"] == "file" and RESUME_UPLOAD.search(f"{f['label']} {f['name']} {f['id']}")
+            for f in observation.get("fields", [])
+        ):
+            return None
+        try:
+            same = self.form.evaluate(UPLOAD_MARKED_JS, kept["token"]) is True
+        except PlaywrightError:
+            return None
+        return {k: kept[k] for k in ("label", "source", "sha256")} if same else None
+
     def settle_form(self, quiet_ms: int = 600, timeout_ms: int = 12000):
         """Bounded wait until the form stops changing under the fill.
 
@@ -3037,11 +3069,7 @@ class RecruitingBrowser:
             if field["kind"] == "file":
                 # Resume uploads are a separate, explicit preparation action, using a
                 # frozen file only. Other requested files always remain unresolved.
-                if not re.search(
-                    r"resume|curriculum vitae|\bcv\b",
-                    field["label"] + " " + field["name"] + " " + field["id"],
-                    re.IGNORECASE,
-                ):
+                if not RESUME_UPLOAD.search(f"{field['label']} {field['name']} {field['id']}"):
                     if field["required"]:
                         pending.append(
                             {
@@ -3096,15 +3124,15 @@ class RecruitingBrowser:
                     is not True
                 ):
                     raise ValueError("Resume attachment verification failed")
-                filled.append(
-                    {
-                        "label": field["label"],
-                        "source": "frozen Erga job resume"
-                        if self.run.get("resume_is_tailored")
-                        else "frozen approved base resume",
-                        "sha256": self.run["resume_sha256"],
-                    }
-                )
+                attached = {
+                    "label": field["label"],
+                    "source": "frozen Erga job resume"
+                    if self.run.get("resume_is_tailored")
+                    else "frozen approved base resume",
+                    "sha256": self.run["resume_sha256"],
+                }
+                filled.append(attached)
+                self.keep_upload(attached)
                 continue
             owner_answer = questions.application_answer(field, answers, automatic)
             if owner_answer and owner_answer["value"].lower() == "skip":
@@ -3432,6 +3460,12 @@ class RecruitingBrowser:
                 break
             if not before["fields"] or stuck:
                 break
+        if not any(item.get("sha256") for item in filled):
+            # A pass run again on a page that took the resume earlier and no longer shows
+            # a place for one: the same attachment, on record for the package.
+            kept = self.upload_still_on(result)
+            if kept:
+                filled.append(kept)
         self.run["pending"] = pending
         self.save()
         package = {

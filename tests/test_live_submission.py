@@ -128,6 +128,14 @@ LEVER_VERIFICATION_ERROR = LEVER_FORM.replace(
 )
 
 
+# An upload control that goes away once it has the file and leaves the file's name.
+TAKEN_UPLOAD = FORM.replace(
+    b'<input id="r" name="resume" type="file">',
+    b'<span><input id="r" name="resume" type="file" '
+    b'onchange="this.parentElement.textContent = this.files[0].name"></span>',
+)
+
+
 class Board(BaseHTTPRequestHandler):
     posts: ClassVar[list[str]] = []
     reject: ClassVar[set[str]] = set()
@@ -141,6 +149,8 @@ class Board(BaseHTTPRequestHandler):
             body = GENERIC_FORM
         elif self.path.endswith("/jobs/9"):
             body = ASHBY_FORM
+        elif self.path.endswith(("/jobs/21", "/jobs/22")):
+            body = TAKEN_UPLOAD
         elif self.path.endswith("/jobs/13"):
             body = TWO_STEP
         elif self.path.endswith("/jobs/11"):
@@ -337,6 +347,45 @@ def test_guard_blocks_native_submit_until_one_approved_attempt_is_armed(board):
     with pytest.raises((PermissionError, ValueError)):
         submission.submit(runtime, run_id, package_hash, "msg-1")
     assert Board.posts == ["/acme/jobs/7"]
+
+
+def test_a_pass_run_again_keeps_the_resume_the_page_already_took(board):
+    # What a live board did: its upload control went away once it had the file, so the
+    # second pass on the same page found nothing to attach, the package named no resume
+    # and the send was refused.
+    runtime, base, state = board
+    run_id, _first = prepared(runtime, base, state, 21)
+    assert runtime.page.locator("input[type=file]").count() == 0
+    again = runtime.prepare(run_id)
+    assert again["status"] == "READY_FOR_REVIEW"
+    assert [f["label"] for f in again["filled"] if f.get("sha256")] == ["Resume"]
+    worker.apply_command(
+        {"kind": "submit", "application_id": run_id, "package_hash": again["package_hash"]},
+        "msg-1",
+    )
+    result = submission.submit(runtime, run_id, again["package_hash"], "msg-1")
+    assert result["status"] == "APPLIED", result
+
+
+def test_a_page_without_this_runs_mark_never_counts_as_holding_the_resume(board):
+    runtime, base, state = board
+    run_id, _first = prepared(runtime, base, state, 22)
+    # The same words on a page this run did not attach to (its mark is gone): no resume
+    # is on record, and the send is refused before any click.
+    runtime.page.evaluate("document.documentElement.removeAttribute('data-rove-upload')")
+    again = runtime.prepare(run_id)
+    assert not [f for f in again["filled"] if f.get("sha256")]
+    worker.apply_command(
+        {"kind": "submit", "application_id": run_id, "package_hash": again["package_hash"]},
+        "msg-1",
+    )
+    with pytest.raises(PermissionError, match="frozen resume was not uploaded"):
+        submission.submit(runtime, run_id, again["package_hash"], "msg-1")
+    assert Board.posts == []
+    # Loaded again, the page shows its control and takes the file afresh.
+    runtime.page.reload()
+    fresh = runtime.prepare(run_id)
+    assert [f["label"] for f in fresh["filled"] if f.get("sha256")] == ["Resume"]
 
 
 def test_rejected_submission_stays_unknown_until_the_owner_reconciles(board):

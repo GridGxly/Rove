@@ -1520,6 +1520,9 @@ def test_owner_cards_and_lines_carry_no_identifiers(state):
     assert filled["Resume"] == "resume PDF · _your resume_"
     assert filled["Phone"].endswith("_your reply_")
     assert rendered["fields_prepared"][1] == "→ 1 question left for Qwen or you"
+    # Optional questions that stay blank are not "left" for anyone.
+    optional = {"filled": [], "pending": [{"label": "Pronouns", "required": False}]}
+    assert workflow.event_embeds(app, "fields_prepared", optional) == []
     unknown = {f["name"]: f["value"] for f in rendered["submission_unknown"][0]["fields"]}
     assert unknown["Reply"] == workflow.command_block(["applied", "not sent"])
     confirmed = {f["name"]: f["value"] for f in rendered["submission_confirmed"][0]["fields"]}
