@@ -18,6 +18,7 @@ import socket
 import socketserver
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -461,10 +462,20 @@ def restore_front(previous: tuple[str, str], watch_seconds: float = 6.0) -> dict
             if front != asn:
                 subprocess.run(["open", "-b", bundle], check=False, capture_output=True, timeout=10)
                 outcome["restored"] += 1
-            time.sleep(0.5)
+            # Short steps: a stolen focus is handed back before a keystroke can land wrong.
+            time.sleep(0.1)
     except (OSError, subprocess.SubprocessError):
         pass
     return outcome
+
+
+def watch_front(previous: tuple[str, str], watch_seconds: float = 6.0) -> dict:
+    """Hand focus back in the background, so the launch or the new window it guards is
+    not held up while the watch runs."""
+    threading.Thread(
+        target=restore_front, args=(previous, watch_seconds), name="rove-focus", daemon=True
+    ).start()
+    return {"previous": previous[1], "watching_seconds": watch_seconds}
 
 
 def free_port() -> int:
@@ -571,7 +582,8 @@ class ChromeLauncher:
         keychain = [] if app["shared_chrome"] else [MOCK_KEYCHAIN]
         return [
             "open",
-            "-g",
+            "-g",  # never bring it to the front
+            "-j",  # launch hidden: its first window does not appear over the owner's work
             "-n",
             "-a",
             app["path"],
@@ -607,7 +619,7 @@ class ChromeLauncher:
             time.sleep(0.5)
         else:
             raise RuntimeError("The recruiting browser did not expose its local DevTools port")
-        focus = restore_front(previous)
+        focus = watch_front(previous)
         write_private(
             self.session,
             {
@@ -1119,11 +1131,15 @@ class RecruitingBrowser:
             self.remember_tab(page)
             return page
         first = not any(not page.is_closed() for page in self.context.pages)
+        previous = front_app() if first else None
         with self.context.expect_page(timeout=15000) as created:
             target = self.cdp.send(
                 "Target.createTarget",
                 {"url": "about:blank", "newWindow": first, "background": True},
             )
+        if previous:
+            # A browser's first window activates the app; give the owner his window back.
+            watch_front(previous, watch_seconds=3.0)
         self.watch_dialogs(created.value)
         self.remember_tab(created.value, (target or {}).get("targetId"))
         return created.value

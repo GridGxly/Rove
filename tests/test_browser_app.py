@@ -107,7 +107,7 @@ def launch(monkeypatch):
     )
     monkeypatch.setattr(live_browser, "devtools_alive", lambda port: True)
     monkeypatch.setattr(live_browser, "front_app", lambda: ("", ""))
-    monkeypatch.setattr(live_browser, "restore_front", lambda previous: {})
+    monkeypatch.setattr(live_browser, "watch_front", lambda previous, watch_seconds=6.0: {})
     monkeypatch.setattr(browser_app, "profile_holder", lambda profile: None)
     monkeypatch.setattr(workflow, "system_line", lambda who, text: lines.append((who, text)))
     return commands, lines
@@ -221,7 +221,14 @@ def test_launcher_uses_the_rove_browser(state, chrome, tools, launch):
     browser_app.install()
     port = live_browser.ChromeLauncher().ensure_running()
     (command,) = commands
-    assert command[:5] == ["open", "-g", "-n", "-a", str(state / "browser/Rove Browser.app")]
+    assert command[:6] == [
+        "open",
+        "-g",
+        "-j",
+        "-n",
+        "-a",
+        str(state / "browser/Rove Browser.app"),
+    ]
     assert f"--user-data-dir={state / 'browser/recruiting-profile-rove'}" in command
     assert f"--remote-debugging-port={port}" in command
     assert "--use-mock-keychain" in command and "--no-startup-window" in command
@@ -272,7 +279,7 @@ def test_shared_chrome_only_by_name_and_with_a_warning(state, chrome, tools, lau
     (state / "config/workflow.json").write_text(json.dumps({"browser_app": "shared-chrome"}))
     live_browser.ChromeLauncher().ensure_running()
     (command,) = commands
-    assert command[4] == str(chrome)
+    assert command[5] == str(chrome)
     assert "--use-mock-keychain" not in command  # the old profile keeps its own encryption
     assert f"--user-data-dir={state / 'browser/recruiting-profile'}" in command
     session = json.loads((state / "browser/session.json").read_text())
