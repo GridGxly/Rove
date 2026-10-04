@@ -17,7 +17,7 @@ from ci_marks import (  # noqa: F401 -- pytest reads hooks from this module
     pytest_runtest_protocol,
 )
 
-from rove import research
+from rove import discord_feed, research
 from rove.jobs import public_link
 
 real_http_client = research.http_client
@@ -59,6 +59,9 @@ def private_home(tmp_path_factory, monkeypatch):
     (home / ".hermes/.env").write_text("DISCORD_BOT_TOKEN=test-token\n")
     monkeypatch.setenv("ROVE_MODEL_API_KEY", "test-model-key")
     monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+    # Discord's clock as the last response gave it is kept per thread: a test never
+    # starts with the one an earlier test left behind.
+    monkeypatch.setattr(discord_feed._seen, "date", None, raising=False)
 
 
 @pytest.fixture(autouse=True)
