@@ -102,7 +102,7 @@
       "src/rove/reasoning.py": 2,
       "src/rove/submission.py": 2,
       "src/rove/vault.py": 1,
-      "src/rove/worker.py": 3,
+      "src/rove/worker.py": 2,
       "src/rove/workflow.py": 1
     },
     "PLR0913": {

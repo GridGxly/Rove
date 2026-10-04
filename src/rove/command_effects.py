@@ -23,6 +23,9 @@ def stage(conn, message_id: str, event: dict, remember: tuple | None, how: dict)
 def commit_local(row: dict, effects: dict):
     application_id, kind = row["application_id"], row["kind"]
     event = effects["event"]
+    if kind == "reconcile":
+        reconcile_reply(row, event)
+        return
     if effects["remember"]:
         label, offered, given = effects["remember"]
         how = effects["how"]
@@ -78,6 +81,26 @@ def commit_local(row: dict, effects: dict):
         conn.execute(
             "UPDATE owner_commands SET status='applied' WHERE message_id=?", (row["message_id"],)
         )
+
+
+def reconcile_reply(row: dict, event: dict):
+    from .submission import reconcile
+
+    try:
+        reconcile(row["application_id"], event["outcome"], row["message_id"])
+    except PermissionError:
+        with workflow.db() as conn:
+            applied = conn.execute(
+                "SELECT status FROM owner_commands WHERE message_id=?", (row["message_id"],)
+            ).fetchone()[0]
+            if applied != "pending":
+                raise  # Recording committed; a permission error repairing its files must surface.
+            current = conn.execute(
+                "SELECT status FROM application_queue WHERE id=?", (row["application_id"],)
+            ).fetchone()[0]
+            if current in {"UNKNOWN_SUBMISSION", "MANUAL_TAKEOVER"}:
+                raise
+            reject_stale(conn, row, current)
 
 
 def reject_stale(conn, row: dict, status: str):

@@ -1460,6 +1460,17 @@ def test_question_list_numbers_open_drafted_and_used_questions_in_form_order():
     no_ids(fields)
 
 
+def test_latest_location_ambiguity_reaches_the_owner_instead_of_a_generic_control_error():
+    from rove.worker import question_list
+
+    field = {"key": "city", "label": "City", "required": True}
+    reason = "Several locations match. Your county is needed to choose one."
+    pending = [{**field, "control_issue": True, "reason": reason}]
+    questions = question_list([field], pending, {}, set())
+    assert questions[0]["control_issue"] and questions[0]["reason"] == reason
+    assert reason in workflow.question_lines(enumerate(questions, 1))
+
+
 def test_owner_cards_and_lines_carry_no_identifiers(state):
     app = workflow.enqueue("https://jobs.example.com/clean")["application_id"]
     proposals_file(

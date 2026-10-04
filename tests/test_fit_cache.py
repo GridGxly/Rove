@@ -380,6 +380,7 @@ def test_a_known_answer_with_a_broken_control_is_not_sent_for_drafting(state, mo
     assert "only you can answer" not in hold["reason"]
     assert "known answer" in hold["reason"]
     assert "known answer" in workflow.question_lines(workflow.numbered(hold["questions"]))
+    assert "adapter" not in workflow.question_lines(workflow.numbered(hold["questions"]))
 
 
 def test_filled_fields_are_counted_by_who_supplied_the_value(state, monkeypatch):

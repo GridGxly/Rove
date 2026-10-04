@@ -332,9 +332,11 @@ def question_list(asked: list, pending: list, proposals: dict, used: set) -> lis
         if answer.get("kind") == "proposal" and answer.get("key"):
             drafts.setdefault(answer["key"], len(drafts) + 1)
     seen = {q["key"] for q in asked if q.get("key")}
+    latest = {q["key"]: q for q in pending if q.get("key")}
     ordered = [*asked, *[q for q in pending if q.get("key") and q["key"] not in seen]]
     questions = []
     for question in ordered:
+        question = {**question, **latest.get(question.get("key"), {})}
         key = question.get("key")
         if not key:
             continue
@@ -349,6 +351,7 @@ def question_list(asked: list, pending: list, proposals: dict, used: set) -> lis
             entry["label_missing"] = True  # the card says the question could not be read
         if question.get("control_issue"):
             entry["control_issue"] = True
+            entry["reason"] = question.get("reason", "")
         if key in used:
             entry["state"] = "used"
         elif key in drafts:
@@ -1443,23 +1446,15 @@ def _apply_command(command: dict, message_id: str):
                 application_id,
                 command["kind"],
                 json.dumps(command),
-                "applied" if command["kind"] == "reconcile" else "pending",
+                "pending",
                 workflow.now(),
             ),
         )
         data = {k: v for k, v in command.items() if k != "application_id"}
         if label is not None:
             data["label"] = label
-        if command["kind"] != "reconcile":
-            command_effects.stage(conn, message_id, data, remember_later, remember_how)
-    if command["kind"] == "reconcile":
-        from .submission import reconcile
-
-        workflow.record(application_id, "reconcile_requested", data)
-        workflow.flush_events(application_id)
-        reconcile(application_id, command["outcome"], message_id)
-    else:
-        command_effects.recover(close_deferred_tab)
+        command_effects.stage(conn, message_id, data, remember_later, remember_how)
+    command_effects.recover(close_deferred_tab)
 
 
 def close_deferred_tab(application_id: str):
@@ -1468,6 +1463,9 @@ def close_deferred_tab(application_id: str):
 
 
 def recover_commands():
+    from .submission import recover_outcomes
+
+    recover_outcomes()
     with private_lock(state_root() / "owner-commands.lock"):
         command_effects.recover(close_deferred_tab)
 

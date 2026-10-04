@@ -18,11 +18,11 @@ from urllib.parse import unquote_plus, urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
 
-from . import boards, job_index, live_browser, timing, workflow
+from . import boards, job_index, live_browser, submission_records, timing, workflow
 from .destinations import embedded_job, ineligible, tenant_key, tenant_words
 from .live_browser import ERROR_SELECTOR, MESSAGES_JS, PLAIN_STOP, STATUS_SELECTOR
 from .onboarding import digest, read_approved
-from .runtime import state_root, write_private
+from .runtime import private_lock, state_root, write_private
 
 CONFIRMATION_TIMEOUT_MS = 45000
 # The bounded waits of one send after its claim: the hover and the click (12 s, and 3 s of
@@ -993,114 +993,24 @@ CLAIMED = ("SUBMITTING",)
 def finish_attempt(
     application_id: str, status: str, evidence: dict, expect: tuple[str, ...] | None = None
 ) -> bool:
-    """Record a send's outcome; False, with nothing written, when `expect` names the
-    states the attempt must still be in and it is in none of them (another path settled
-    it first: an outcome the owner already reconciled is never overwritten).
+    """Commit outcome/state/timeline together, then repair receipt and readable mirrors.
 
-    The outcome is on record (the attempt, the receipt, the application's state) before
-    anything slow happens: Discord posts, the Erga sync.
+    A late outcome cannot replace a settled claim. Interrupted recording is recovered
+    from its journal; nothing here can repeat the employer submission.
     """
-    if status not in {"APPLIED", "UNKNOWN_SUBMISSION", "NOT_SUBMITTED"}:
-        raise ValueError("Invalid submission outcome")
-    directory = state_root() / f"applications/{application_id}"
-    receipt = directory / "receipt.json"
-    query, args = "UPDATE live_submission_attempts SET status=? WHERE application_id=?", ()
-    if expect:
-        query += f" AND status IN ({','.join('?' * len(expect))})"
-        args = expect
-    with workflow.db() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        late = bool(expect) and not conn.execute(query, (status, application_id, *args)).rowcount
-        if not expect:
-            conn.execute(query, (status, application_id))
-        if late:
-            pass  # settled elsewhere first: nothing here may change
-        elif status == "NOT_SUBMITTED":
-            # Nothing went out: the job is free to be sent once by a later attempt.
-            job_index.release_send(conn, application_id)
-        elif status == "APPLIED":
-            # Also the manual and mail-settled ways here, which never claimed an attempt:
-            # the job has its one application and the employer's board has been sent to.
-            item = conn.execute(
-                "SELECT url FROM application_queue WHERE id=?", (application_id,)
-            ).fetchone()
-            form = job_index.form_url(application_id)
-            job_index.keep_send(conn, application_id, item["url"], form)
-            job_index.approve_tenant(conn, item["url"], application_id, "applied")
-    if late:
-        workflow.system_line(
-            application_id, f"outcome {status} not recorded · the attempt was already settled"
-        )
-        return False
-    if receipt.exists():
-        shutil.move(receipt, directory / f"receipt-superseded-{int(receipt.stat().st_mtime)}.json")
-    write_private(receipt, evidence)
-    if status == "NOT_SUBMITTED":
-        workflow.record(application_id, "submission_rejected", evidence)
-        if evidence.get("owner_finishes"):
-            # The attempt stays NOT_SUBMITTED. The owner solves the CAPTCHA, presses Submit
-            # and replies `applied`, which records the application the manual way.
-            workflow.transition(
-                application_id,
-                "MANUAL_TAKEOVER",
-                "the site's CAPTCHA rejected the send and kept the form open",
-                str(evidence.get("reason", "")),
+    with private_lock(state_root() / "submission-records.lock"):
+        if not submission_records.commit(application_id, status, evidence, expect):
+            workflow.system_line(
+                application_id, f"outcome {status} not recorded · the attempt was already settled"
             )
-            workflow.action_needed(
-                application_id,
-                str(evidence.get("reason", ""))[:300],
-                commands=["applied", "park it"],
-                headline="The site's CAPTCHA rejected the send",
-            )
-            return True
-        workflow.transition(
-            application_id,
-            "NEEDS_USER",
-            "the site rejected the form and kept it open",
-            str(evidence.get("reason", "")),
-        )
-        workflow.action_needed(
-            application_id,
-            "The site rejected the form and kept it open; nothing was sent. "
-            + str(evidence.get("reason", ""))[:300],
-            commands=[f"resume {application_id}", f"defer {application_id}"],
-            headline="The site rejected the form",
-        )
-        return True
-    if status == "APPLIED":
-        # The attempt row and the receipt already hold the outcome; the Erga sync, the
-        # slowest step, comes after the application's own state.
-        workflow.record(application_id, "submission_confirmed", evidence)
-        workflow.transition(
-            application_id,
-            "APPLIED",
-            str(evidence.get("reason") or "verified employer confirmation after one submit"),
-            f"receipt {receipt.name}",
-        )
-        try:
-            evidence["erga"] = erga_confirm(application_id)
-        except Exception as error:  # noqa: BLE001 -- the submission already happened; record, do not hide
-            evidence["erga"] = {"synced": False, "error": type(error).__name__}
-        write_private(receipt, evidence)
-    else:
-        workflow.record(application_id, "submission_unknown", evidence)
-        workflow.transition(
-            application_id,
-            "UNKNOWN_SUBMISSION",
-            "submit clicked once; confirmation incomplete",
-            str(evidence.get("reason", "")),
-        )
-        workflow.action_needed(
-            application_id,
-            "One submission was attempted but not confirmed. Do not click Submit again. "
-            "Check the recruiting browser and any employer email, then tell me the outcome.",
-            commands=[
-                f"reconcile {application_id} applied",
-                f"reconcile {application_id} not-submitted",
-            ],
-            headline="Submission unclear",
-        )
+            return False
+        submission_records.recover(erga_confirm)
     return True
+
+
+def recover_outcomes():
+    with private_lock(state_root() / "submission-records.lock"):
+        submission_records.recover(erga_confirm)
 
 
 def own_receipt(application_id: str, package_hash: str, claimed_at: str) -> dict | None:
@@ -1173,63 +1083,34 @@ def settle_stale_sends(now: datetime | None = None) -> list[str]:
 
 
 def reconcile(application_id: str, outcome: str, owner_message_id: str):
-    """Owner-verified resolution of an unknown attempt; never inferred by code."""
+    """Owner-verified resolution; recording and the accepted reply commit together."""
+    if outcome not in {"applied", "not-submitted"}:
+        raise ValueError("Reconcile outcome must be applied or not-submitted")
     item = workflow.get(application_id)
     if item["status"] not in {"UNKNOWN_SUBMISSION", "MANUAL_TAKEOVER"}:
         raise PermissionError(
             "Only an unknown submission or a manual application can be reconciled"
         )
+    reason = "Owner verified nothing was submitted"
     if outcome == "applied":
-        finish_attempt(
-            application_id,
-            "APPLIED",
-            {
-                "application_id": application_id,
-                "package_hash": item["package_hash"],
-                "status": "APPLIED",
-                "confirmed_at": workflow.now(),
-                "reason": "Owner verified the employer confirmation independently"
-                if item["status"] == "UNKNOWN_SUBMISSION"
-                else "Owner applied manually outside the recruiting browser",
-                "owner_message_id": owner_message_id,
-            },
+        reason = (
+            "Owner verified the employer confirmation independently"
+            if item["status"] == "UNKNOWN_SUBMISSION"
+            else "Owner applied manually outside the recruiting browser"
         )
-        return
-    if outcome != "not-submitted":
-        raise ValueError("Reconcile outcome must be applied or not-submitted")
-    with workflow.db() as conn:
-        conn.execute(
-            "UPDATE live_submission_attempts SET status='NOT_SUBMITTED' WHERE application_id=?",
-            (application_id,),
-        )
-        job_index.release_send(conn, application_id)
-    workflow.transition(
+    finish_attempt(
         application_id,
-        "NEEDS_USER",
-        "owner verified nothing was submitted",
-        f"owner message {owner_message_id}; prepare and review again before another attempt",
-    )
-    if workflow.config().get("auto_submit"):
-        # The owner said nothing went out: prepare it again without another reply.
-        with workflow.db() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO owner_commands VALUES(?,?,?,?,?,?)",
-                (
-                    f"{owner_message_id}:resume",
-                    application_id,
-                    "resume",
-                    json.dumps({"kind": "resume", "application_id": application_id}),
-                    "applied",
-                    workflow.now(),
-                ),
-            )
-        workflow.set_state(application_id, "QUEUED")
-        return
-    workflow.action_needed(
-        application_id,
-        "You confirmed nothing was sent. Reply `go` to prepare and review it again.",
-        commands=["go", "park it"],
-        headline="Ready to try again",
+        "APPLIED" if outcome == "applied" else "NOT_SUBMITTED",
+        {
+            "application_id": application_id,
+            "package_hash": item["package_hash"],
+            "status": "APPLIED" if outcome == "applied" else "NOT_SUBMITTED",
+            "confirmed_at": workflow.now(),
+            "reason": reason,
+            "owner_message_id": owner_message_id,
+            "reconciled": True,
+            "outcome": outcome,
+        },
     )
 
 

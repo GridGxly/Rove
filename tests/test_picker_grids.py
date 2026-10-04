@@ -105,10 +105,77 @@ def test_state_abbreviations_and_ambiguous_cities_are_not_guessed():
     assert pickers.search_value("Kansas", {"label": "State *"}, profile) == "KS"
     cities = ["Springfield, First County, KS", "Springfield, Second County, KS", "Springfield, IL"]
     assert pickers.city_options(cities, "Springfield", profile) == [0, 1]
+    assert pickers.city_options(["Springfield, IL"], "Springfield", profile) == []
     assert pickers.city_options(["Springfield Heights, KS"], "Springfield", profile) == []
     field = {"label": "ZIP Code *"}
     assert pickers.matches("66501, Maple Hill, KS", "66501", field, profile)
     assert not pickers.matches("66502, Manhattan, KS", "66501", field, profile)
+    assert not pickers.matches("66501, Springfield, MO", "66501", field, profile)
+
+
+def test_approved_county_disambiguates_city_and_zip_without_changing_profile():
+    profile = {
+        "identity": {"city": "Springfield", "state_region": "Kansas", "country": "United States"}
+    }
+    scoped = pickers.with_county(profile, "Second County")
+    cities = ["Springfield, First, KS", "Springfield, Second, KS"]
+    assert pickers.city_options(cities, "Springfield", profile) == [0, 1]
+    assert pickers.city_options(cities, "Springfield", scoped) == [1]
+    assert pickers.city_options(["Springfield, KS, United States"], "Springfield", scoped) == [0]
+    field = {"label": "Postal Code"}
+    assert pickers.matches("66501, Springfield, Second, KS", "66501", field, scoped)
+    assert not pickers.matches("66501, Springfield, First, KS", "66501", field, scoped)
+    assert not pickers.matches("66501, Another City, Second, KS", "66501", field, scoped)
+    assert "county" not in profile["identity"]
+
+
+def test_location_selection_uses_county_answer_even_when_county_field_is_later(reader, approved):
+    profile = {
+        **approved,
+        "profile": {
+            **approved["profile"],
+            "identity": {
+                **approved["profile"]["identity"],
+                "city": "Springfield",
+                "state_region": "Kansas",
+                "country": "United States",
+            },
+        },
+    }
+    seen = reader.read("""<label>City<input id="city" role="combobox" aria-autocomplete="list"
+      aria-controls="cities" aria-expanded="false"></label>
+      <div id="cities"></div><label>County<input id="county" required></label>
+      <script>
+      const input=document.querySelector('#city'), list=document.querySelector('#cities');
+      input.onkeyup=()=>{list.innerHTML='';input.setAttribute('aria-expanded','true');
+        for(const text of ['Springfield, First, KS','Springfield, Second, KS']){
+          const row=document.createElement('div');row.setAttribute('role','option');
+          row.textContent=text;
+          row.onclick=()=>{input.value=text;list.innerHTML='';
+            input.setAttribute('aria-expanded','false');};
+          list.appendChild(row);
+        }};
+      </script>""")
+    county = next(f for f in seen["fields"] if f["label"] == "County")
+    answers = {county["key"]: {"value": "Second County", "source": "owner:owner-reply"}}
+    filled, pending = reader._fill_page(reader.run["id"], seen, profile, answers)
+    assert not pending and len(filled) == 2
+    assert reader.page.locator("#city").input_value() == "Springfield, Second, KS"
+    assert reader.page.locator("#county").input_value() == "Second County"
+
+
+def test_reordered_options_still_click_the_observed_label(reader):
+    reader.page.set_content("""<div role="option" id="first">Expected</div>
+        <div role="option" id="second">Other</div><script>
+        document.querySelectorAll('[role=option]').forEach(e=>e.onclick=()=>{
+          document.body.dataset.picked=e.textContent;});</script>""")
+    row = pickers.exact_row(reader.page.get_by_role("option"), "Expected")
+    reader.page.evaluate("""()=>{document.querySelector('#first').textContent='Other';
+        document.querySelector('#second').textContent='Expected';}""")
+    row.click()
+    assert reader.page.locator("body").get_attribute("data-picked") == "Expected"
+    reader.page.locator("#first").evaluate("e=>e.textContent='Expected'")
+    assert pickers.exact_row(reader.page.get_by_role("option"), "Expected") is None
 
 
 def test_expired_session_resumes_without_clicking_final_submit(reader, monkeypatch):

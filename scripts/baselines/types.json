@@ -22,7 +22,6 @@
       "src/rove/live_browser.py": 3,
       "src/rove/mail.py": 2,
       "src/rove/memory_channel.py": 1,
-      "src/rove/submission.py": 1,
       "src/rove/timing.py": 3
     },
     "attr-defined": {

@@ -91,7 +91,7 @@ Rove uses one database, `recruiting.sqlite3` in the state root, readable only by
 | Owner replies and cards | `owner_commands`, `owner_command_effects`, `workflow_checkpoints`, `owner_notices` |
 | Answers | `application_answers` for one application, `answer_memory` across applications |
 | Memory channel | `memory_outbox` for replies and "Saved" lines, `memory_listing` for the last numbered list shown, `memory_announced` for a hash of the last announced value of each answer |
-| Submission | `live_submission_attempts` |
+| Submission | `live_submission_attempts`, `submission_outcomes` |
 | One send per job, and where forms may be filled | `application_jobs`, `job_sends`, `sent_tenants`, `familiar_hosts`, `site_asks`, `vouched_hosts`, `job_index_meta` |
 | Recruiting mail | `mail_checkpoints`, `mail_messages` |
 
@@ -103,7 +103,15 @@ that journal before reading new replies or preparing a job. Scheduler, chat and 
 command callers share a process lock so replies cannot race the journal. Queue changes, timeline
 entries and the command's applied status commit together. Discord and Obsidian refresh
 after that commit without replaying the state change. Submission remains a separate,
-single-claim operation. Reconciliation commands still use the submission recovery path.
+single-claim operation. Reconciliation replies also remain pending until their outcome
+and command status commit together.
+
+Submission outcomes commit the attempt status, application status, job-send reservation,
+timeline and a repair journal in one SQLite transaction. Receipt files, Discord and
+Obsidian are repaired afterward from `submission_outcomes`, before the worker prepares
+more applications. Recovery never retries an employer submission or rewinds a later
+recruiting status. A filesystem failure therefore cannot leave a settled attempt paired
+with an application that is permanently stuck as submitting.
 
 The job index tables:
 

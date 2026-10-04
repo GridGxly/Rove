@@ -20,9 +20,10 @@ to Discord and Obsidian. Those require separate workflow evidence.
 | Fresh 04 | Fresh profile, Level 1 | Advanced to Level 2 | JSON output mode, longer action history and magnified crops. Stopped after 25 actions and 357 seconds, including repeated zoom/unzoom and unsuccessful selections. No operator puzzle input. |
 | Fresh 05 | Fresh profile, Level 1 | Advanced to Level 3 | Brief visible observation plus action. Stopped after 28 actions and 776 seconds; unsuccessful text submissions, response-format errors, focus errors and repeated zoom. No operator puzzle input. |
 | Fresh 06 | Fresh profile, Level 1 | Advanced to Level 3 | Observed button/input references and keyboard events. Stopped after 27 actions and 854 seconds. Incorrect text submissions, repeated zooming and invalid actions remain in the record. No operator puzzle input. |
+| Fresh 07 | Fresh profile, Level 1 | Advanced to Level 2 | Model-requested frame sequences available but never used. Stopped after 25 actions and 306 seconds, with repeated malformed button actions. No operator puzzle input. |
 
 The development rows are two segments of **one session**, not two independent trials.
-Fresh 01 through Fresh 06 are separate sessions. There are zero verified full-game completions in this
+Fresh 01 through Fresh 07 are separate sessions. There are zero verified full-game completions in this
 record. No accuracy percentage is inferred from it. The development segments used
 temperature 0, disabled thinking, and a 512-token output
 limit. They did not preserve per-decision timing or the complete original prompt, so
@@ -66,6 +67,14 @@ input delivery is not successful puzzle solving. Local model logs also showed me
 throttling during this attempt, so its later slow decisions are not a controlled
 comparison with the earlier trials.
 
+The [Fresh 07 record](assets/benchmarks/not-a-robot/fresh-07.json) retains the failed
+attempt with a general frame-sequence tool. Qwen did not request it. The runner rejected
+`click` actions with a control reference because this revision required `control` for
+referenced buttons; it did not correct this repeated error. The next revision accepts
+both spellings with the same stale-control checks. This is an interaction change, not
+a provided puzzle answer. No concurrent browser tests or model requests ran during
+Fresh 07, although ordinary local development continued.
+
 ## Reproducible runner
 
 [`scripts/benchmark_visual_game.py`](../scripts/benchmark_visual_game.py) runs the game
@@ -88,7 +97,8 @@ a 1,000 × 900 viewport. See [Local runtime](local-runtime.md) and
 
 Qwen receives screenshots, visible page text, observed button/input references, and
 feedback from its own previous actions. Referenced controls are checked again before
-use; typing emits keyboard events as well as input events. These generic tools are
+use; typing emits keyboard events as well as input events. Qwen may request two to four
+time-ordered frames, with bounded spacing, to inspect animation itself. These generic tools are
 tested on synthetic pages without game answers. The runner has no answer bank, level-specific strategy, game-source access,
 or way to mutate game state. Mouse and keyboard actions are bounded by code. It does
 not learn model weights from playing. Any human intervention or change to this method

@@ -51,6 +51,9 @@ def db():
       CREATE TABLE IF NOT EXISTS live_submission_attempts(
         application_id TEXT PRIMARY KEY, package_hash TEXT NOT NULL,
         owner_message_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS submission_outcomes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, application_id TEXT NOT NULL,
+        status TEXT NOT NULL, evidence TEXT NOT NULL, plan TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS answer_memory(
         fingerprint TEXT PRIMARY KEY, label TEXT NOT NULL, options TEXT NOT NULL,
         value TEXT NOT NULL, created_at TEXT NOT NULL, owner_message_id TEXT NOT NULL);
@@ -1312,13 +1315,21 @@ def question_lines(pairs, limit: int = 10) -> str:
         options = question.get("options") or []
         line = f"{number}. {label}"
         if question.get("control_issue"):
-            line += " — known answer; the browser could not select it"
+            line += " — " + control_issue_words(question)
         if options:
             line += "  (" + clip(" / ".join(str(o) for o in options[:6]), 100) + ")"
         lines.append(line)
     if len(pairs) > limit:
         lines.append(f"…and {len(pairs) - limit} more")
     return "\n".join(lines)
+
+
+def control_issue_words(question: dict) -> str:
+    words = "known answer; the browser could not select it"
+    reason = question.get("reason")
+    if reason and reason != "Needs reviewed answer or supported control adapter":
+        words += ": " + str(reason)
+    return clip(words, 240)
 
 
 def draft_lines(pairs, limit: int = 10) -> str:

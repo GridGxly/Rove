@@ -103,13 +103,61 @@ def city_options(texts: list[str], city: str, profile: dict) -> list[int]:
         i
         for i, t in enumerate(texts)
         if questions.normalized(t.split(",")[0]) == questions.normalized(city)
+        and region_matches(t.split(","), profile)
     ]
     located = [
         i
         for i in starts
         if any(questions.normalized(part) in regions for part in texts[i].split(",")[1:])
     ]
-    return located or starts
+    candidates = located or starts
+    county = (profile.get("identity") or {}).get("county")
+    if county:
+        candidates = [
+            i for i in candidates if matches_county(texts[i].split(",")[1:], county, profile)
+        ]
+    return candidates
+
+
+def region_matches(parts: list[str], profile: dict) -> bool:
+    """Reject a different explicitly displayed US state, without guessing absent columns."""
+    identity = profile.get("identity") or {}
+    country, state = identity.get("country"), identity.get("state_region")
+    if not state or not questions.option_matches(str(country or ""), "United States"):
+        return True
+    tail = (
+        parts[-2]
+        if len(parts) > 1 and questions.option_matches(parts[-1].strip(), country)
+        else parts[-1]
+    )
+    region = questions.normalized(tail)
+    known = {questions.normalized(x) for pair in US_REGIONS.items() for x in pair}
+    return region not in known or region in region_names(str(state), profile)
+
+
+def matches_county(parts: list[str], county: str, profile: dict) -> bool:
+    """Use a county column before the observed state; rows without one add no evidence."""
+    regions = region_names(str((profile.get("identity") or {}).get("state_region") or ""), profile)
+    boundary = next((i for i, part in enumerate(parts) if questions.normalized(part) in regions), 0)
+    if not boundary:
+        return True
+
+    def normalized(value):
+        return re.sub(r"\s+(?:county|parish|borough)$", "", questions.normalized(value))
+
+    return normalized(county) in {normalized(part) for part in parts[:boundary]}
+
+
+def with_county(profile: dict, value) -> dict:
+    if not isinstance(value, str) or not value.strip() or value.strip().lower() == "skip":
+        return profile
+    return {**profile, "identity": {**profile.get("identity", {}), "county": value.strip()}}
+
+
+def exact_row(options, expected: str):
+    """A changing list may reorder rows; the observed label must still name one row."""
+    row = options.filter(has_text=re.compile(r"^\s*" + re.escape(expected.strip()) + r"\s*$"))
+    return row if row.count() == 1 and row.is_visible() else None
 
 
 CUSTOM_ROWS_JS = """ref => {
@@ -188,7 +236,19 @@ def matches(label: str, value: str, field: dict, profile: dict) -> bool:
         return True
     kind = questions.classify(field.get("label", "")).canonical_id
     if kind == "postal_code":
-        return questions.normalized(label.split(",")[0]) == questions.normalized(value)
+        parts = label.split(",")
+        if questions.normalized(parts[0]) != questions.normalized(value) or not region_matches(
+            parts, profile
+        ):
+            return False
+        identity = profile.get("identity") or {}
+        if (
+            len(parts) > 1
+            and identity.get("city")
+            and (questions.normalized(parts[1]) != questions.normalized(identity["city"]))
+        ):
+            return False
+        return not identity.get("county") or matches_county(parts[2:], identity["county"], profile)
     if kind == "state_region":
         return questions.normalized(label) in region_names(value, profile)
     if kind != "phone_country_code":

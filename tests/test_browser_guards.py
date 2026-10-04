@@ -2024,41 +2024,44 @@ def test_nothing_slow_runs_between_the_claim_and_the_click(board, site, monkeypa
     approve(run_id, package_hash)
     order = []
     claim, click = submission.claim_attempt, runtime.click
-    record, flush = workflow.record, workflow.flush_events
+    flush = workflow.flush_events
     monkeypatch.setattr(
         submission, "claim_attempt", lambda *a: (claim(*a), order.append("claim"))[0]
     )
     monkeypatch.setattr(runtime, "click", lambda *a, **k: (order.append("click"), click(*a, **k)))
     monkeypatch.setattr(workflow, "flush_events", lambda app: (order.append("post"), flush(app))[0])
     monkeypatch.setattr(workflow, "system_line", lambda app, text: order.append("post"))
-    monkeypatch.setattr(
-        workflow,
-        "record",
-        lambda app, kind, data: (
-            order.append("outcome" if kind.startswith("submission_") else kind),
-            record(app, kind, data),
-        )[1],
-    )
-    monkeypatch.setattr(submission, "erga_confirm", lambda app: order.append("erga") or {})
-    status_at_outcome = []
-    finish = submission.finish_attempt
+    recorded_before_sync = []
 
-    def finishing(app, status, evidence, expect=None):
+    def sync(app):
+        # An independent connection must see all three committed records before a
+        # slow external sync starts, not merely observe a call to a recording helper.
         with workflow.db() as conn:
-            done = finish(app, status, evidence, expect)
-            status_at_outcome.append(
-                conn.execute(
-                    "SELECT status FROM live_submission_attempts WHERE application_id=?", (app,)
-                ).fetchone()[0]
+            recorded_before_sync.append(
+                (
+                    conn.execute(
+                        "SELECT status FROM live_submission_attempts WHERE application_id=?", (app,)
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT status FROM application_queue WHERE id=?", (app,)
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT count(*) FROM application_events WHERE application_id=? "
+                        "AND kind='submission_confirmed'",
+                        (app,),
+                    ).fetchone()[0],
+                )
             )
-        return done
+        receipt = json.loads((state / "applications" / app / "receipt.json").read_text())
+        assert receipt["status"] == "APPLIED"
+        order.append("erga")
+        return {}
 
-    monkeypatch.setattr(submission, "finish_attempt", finishing)
+    monkeypatch.setattr(submission, "erga_confirm", sync)
     result = submission.submit(runtime, run_id, package_hash, "msg-1")
     assert result["status"] == "APPLIED", result
     assert order.index("click") == order.index("claim") + 1, order
-    assert order.index("outcome") < order.index("erga"), order
-    assert status_at_outcome == ["APPLIED"]
+    assert "erga" in order and recorded_before_sync == [("APPLIED", "APPLIED", 1)]
 
 
 def test_a_redirect_to_a_private_address_while_settling_is_caught_before_any_click(

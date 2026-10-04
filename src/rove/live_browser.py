@@ -38,6 +38,7 @@ from . import (
     form_reading,
     gates,
     overlays,
+    pickers,
     questions,
     recovery,
     timing,
@@ -2177,8 +2178,6 @@ class RecruitingBrowser:
 
     def select_combobox(self, locator, field, value, profile) -> bool:
         """Select a unique visible exact option; text input alone is not selection."""
-        from . import pickers
-
         if field.get("selected") and option_matches(str(field["selected"]), value):
             # The form already shows this choice (its default, or a parsed resume put it
             # there): it is recorded, never reopened or toggled.
@@ -2249,11 +2248,23 @@ class RecruitingBrowser:
                 if normalized(text) in wanted or pickers.matches(text, value, field, profile)
             ]
         if len(matches) != 1:
+            if len(matches) > 1 and (
+                place or questions.classify(field["label"]).canonical_id == "postal_code"
+            ):
+                self.picker_reason = (
+                    "Several locations match this answer. Your county or full location "
+                    "is needed to choose one."
+                )
             self.picker_diagnostic(field, city or value, texts, locator)
             locator.press("Escape")
             return False
         expected = texts[matches[0]]
-        options.nth(matches[0]).click()
+        row = pickers.exact_row(options, expected)
+        if row is None:
+            self.picker_reason = "The location list changed before selection; read it again."
+            locator.press("Escape")
+            return False
+        row.click()
         # An ARIA grid can commit directly into its input and close itself. Check this
         # before reopening it, which discards that signal in some typeaheads.
         try:
@@ -3140,6 +3151,14 @@ class RecruitingBrowser:
             )
 
         grouped = {f["name"] for f in before["fields"] if f["kind"] == "radio_group"}
+        picker_profile = approved["profile"]
+        counties = [
+            f for f in before["fields"] if questions.classify(f["label"]).canonical_id == "county"
+        ]
+        if len(counties) == 1:
+            county_answer = questions.application_answer(counties[0], answers, automatic)
+            county = county_answer["value"] if county_answer else resolve(counties[0])[0]
+            picker_profile = pickers.with_county(picker_profile, county)
         for field in self.fields_to_fill(before):
             if field["disabled"] or field["readonly"] or field.get("hidden_trap"):
                 continue
@@ -3256,7 +3275,7 @@ class RecruitingBrowser:
                 value, source = resolve({**field, "options": [{"label": c} for c in choices]})
             if field["role"] == "combobox" and value is not None:
                 self.picked_label = self.picker_reason = None  # set by a school picker
-                if self.select_combobox(locator, field, value, approved["profile"]):
+                if self.select_combobox(locator, field, value, picker_profile):
                     filled.append(
                         {
                             "label": field["label"],
