@@ -340,6 +340,14 @@ def test_pasted_links_are_bare_or_come_with_a_few_apply_words():
     assert inbound.pasted_links(f"<{one}>") == [one]
     assert inbound.pasted_links(f"apply to this one please: {one}.") == [one]
     assert inbound.pasted_links(f"can you queue {one}") == [one]
+    # However he words it, asking to apply is a paste.
+    assert inbound.pasted_links(f"hi apply to this {one}") == [one]
+    assert inbound.pasted_links(f"try to apply to acme i wanna see {one}") == [one]
+    assert inbound.pasted_links(f"can you apply to this one? {one}") == [one]
+    assert inbound.pasted_links(f"hey rove here's another {one}") == [one]
+    # Asking whether to apply is a question for the agent, not a paste.
+    assert inbound.pasted_links(f"should i apply to {one}?") == []
+    assert inbound.pasted_links(f"is it worth applying to {one}") == []
     assert inbound.pasted_links(f"{one} {one}") == [one]
     many = " ".join(f"https://jobs.lever.co/acme/{n}" for n in range(6))
     assert inbound.pasted_links(many) == []

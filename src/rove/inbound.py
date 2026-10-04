@@ -29,6 +29,8 @@ PASTE_WORDS = frozenset(
         *("to", "for", "in", "the", "this", "that", "these", "one", "it", "here", "now", "next"),
         *("job", "role", "posting", "link", "please", "pls", "and", "also", "too"),
         *("me", "can", "could", "you", "first", "priority", "asap"),
+        *("hi", "hey", "hello", "yo", "rove", "ok", "okay", "here", "heres", "here's", "new"),
+        *("another", "now", "next", "for", "i", "want", "wanna", "it", "up", "thanks", "ty"),
     }
 )
 # Next to a pasted link, any of these puts it ahead of his other pasted links.
@@ -63,15 +65,43 @@ def words(text) -> str:
     return " ".join(str(text or "").strip().strip("`").rstrip(".!?").split()).lower()
 
 
+# A message with a link is a paste when it asks to apply, or says nothing else of substance.
+APPLY_WORDS = re.compile(r"\b(?:apply|applying|queue|add|submit)\b")
+# "don't apply", "skip this one": he is saying no, whatever else the message holds.
+REFUSAL_WORDS = re.compile(
+    r"\b(?:don'?t|dont|do not|not|never|no|stop|skip|cancel|remove|withdraw|park)\b"
+)
+# He is asking about the link, not asking for it: the agent answers instead.
+ASKING_WORDS = re.compile(
+    r"\b(?:should|worth|think|thoughts|opinion|why|what|how|is|are|does|did|good|fit)\b"
+)
+# "can you apply to this?" is a request even with a question mark.
+REQUEST_WORDS = re.compile(r"\b(?:can|could|will|would) (?:you|u)\b|\bplease\b|\bpls\b")
+MAX_PASTE_WORDS = 30
+
+
 def pasted_links(text) -> list[str]:
-    """The links of a message that is a pasted link: nothing but links, or links with a
-    few words that ask to apply. A message that talks about a link is not one."""
+    """The links of a message that is a pasted link.
+
+    It is one when the message is nothing but links and filler ("hi", "this one please"),
+    or when it asks to apply in his own words ("hi apply to this", "try to apply to acme i
+    wanna see"). A message that refuses ("don't apply"), asks about the link ("is this any
+    good?", "should i apply?") or merely mentions one ("the page said to open ...") is not
+    a paste: nothing is queued from text that does not ask for it.
+    """
     text = str(text or "")
     links = [match.rstrip(".,;:!?)") for match in LINK.findall(text)]
     if not links or len(links) > MAX_LINKS:
         return []
-    rest = re.findall(r"[a-z0-9']+", LINK.sub(" ", text).lower())
-    if len(rest) > 8 or any(word not in PASTE_WORDS for word in rest):
+    around = LINK.sub(" ", text).lower()
+    rest = re.findall(r"[a-z0-9']+", around)
+    if len(rest) > MAX_PASTE_WORDS or REFUSAL_WORDS.search(around):
+        return []
+    filler_only = all(word in PASTE_WORDS for word in rest)
+    asks_to_apply = bool(APPLY_WORDS.search(around)) and (
+        not ASKING_WORDS.search(around) or bool(REQUEST_WORDS.search(around))
+    )
+    if not (filler_only or asks_to_apply):
         return []
     return list(dict.fromkeys(links))
 
