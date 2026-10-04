@@ -165,7 +165,7 @@ answer_application(name, answer)  "for tesla, 6 months", "for the xai one put 40
 rove_status, whats_waiting, sends_today, pause_feed, resume_feed, company_history, what_you_can_ask
 ```
 
-Each returns the words he reads, written by code, and the model passes them on. When two readings are plausible the model asks one short question. A fact about him is read from the approved profile every time.
+Each returns the words he reads, written by code, and the model passes them on. When two readings are plausible the model asks one short question. A fact about him is read from the approved profile every time. A reply that claims something was queued, saved or parked in a turn where no tool ran is replaced by "I haven't done that yet. Say it once more and I'll do it."
 
 - **Code checks what the model says he wants.** `apply_to_link` gives a link owner standing only when the link is in one of his own messages in `agent-control` from the last 30 minutes, read back from Discord with the author ID checked; otherwise nothing is queued and he is asked to paste it himself. A link from a page, a mail, a tool result or the model's own words can never gain his standing. `retry_application` and `park_application` find his applications by company or role words and do what `go` and `park it` do in the thread, only when exactly one fits; with several they name them so the model can ask which. `answer_application` saves an answer like `N: answer` in the thread, by the same rules: only an answer in his own recent words, one of the options when the question has options, and for a legal or personal question only when the model names the question; with several questions open it lists them and asks which.
 
