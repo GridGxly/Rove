@@ -408,13 +408,21 @@ def test_questions_that_look_alike_keep_their_own_identity():
     )
     assert not classify("May we contact your current employer?").known
     assert not classify("May we contact your references?").known
-    # Export-control wording has one id for its class and stays one question per wording.
+    # Export-control wording has one id for its class and stays one question per wording,
+    # except the "U.S. person" question, which is one question however it is defined.
     first = classify("Are you subject to U.S. export control regulations?")
-    second = classify("Are you a U.S. person as defined by ITAR?")
+    second = classify("Are you subject to export control restrictions?")
     assert first.canonical_id == second.canonical_id == "export_control"
     assert first.sensitivity == SENSITIVE and not first.known
     assert questions.memory_key(first) != questions.memory_key(second)
-    assert questions.ask_each_time(first, PROFILE) and questions.ask_each_time(second, {})
+    person = classify("Are you a U.S. person as defined by ITAR?")
+    assert (person.canonical_id, person.sensitivity, person.topic) == (
+        "us_person",
+        SENSITIVE,
+        "export_control",
+    )
+    # Asked once, then remembered: never asked on every form again.
+    assert not questions.ask_each_time(first, PROFILE) and not questions.ask_each_time(person, {})
 
 
 def test_a_field_without_a_label_is_answered_by_nobody(state):
@@ -512,11 +520,15 @@ def test_sensitive_answers_are_recalled_only_for_the_exact_canonical_question(st
         is False
     )
     assert workflow.recall_answer("Veteran status", []) is None
-    # Export control stays ask-each-time, as the approved profile says.
-    export = "Are you a U.S. person under export control regulations?"
-    assert workflow.remember_answer(export, YES_NO, "Yes", "m3") is False
-    assert workflow.recall_answer(export, YES_NO) is None
-    assert [r["canonical_id"] for r in workflow.remembered_answers()] == ["gender"]
+    # Export control is asked once and then remembered, like any legal answer of his.
+    export = "Are you subject to export control restrictions?"
+    assert workflow.remember_answer(export, YES_NO, "No", "m3")
+    assert workflow.recall_answer(export, YES_NO) == "No"
+    assert workflow.recall_answer("Are you subject to U.S. export control regulations?") is None
+    assert [r["canonical_id"] for r in workflow.remembered_answers()] == [
+        "gender",
+        "export_control",
+    ]
     # A plain yes also fits the one option that starts with yes; a sensitive one never does.
     assert workflow.remember_answer("Are you able to commute to our office?", YES_NO, "Yes", "m4")
     assert (

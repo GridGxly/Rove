@@ -87,11 +87,23 @@ REQUIRED_IDS = {
     "past_employers",
 }
 # Left out on purpose: per employer, a policy already answers it better, or free text.
-LEFT_OUT = {"previously_applied_here", "previously_employed_here", "how_did_you_hear", "gender"}
+LEFT_OUT = {"previously_employed_here", "how_did_you_hear", "gender"}
+# Ties to an employer: one general answer for every company, overridden per company.
+EMPLOYER_TIES = {
+    "related_to_employee",
+    "knows_employee",
+    "referred_by_employee",
+    "previously_interviewed_here",
+    "previously_applied_here",
+}
 
 
 def test_the_corpus_covers_the_common_questions_and_nothing_per_employer():
-    assert {entry.id for entry in CORPUS} >= REQUIRED_IDS
+    assert {entry.id for entry in CORPUS} >= REQUIRED_IDS | EMPLOYER_TIES
+    for identifier in EMPLOYER_TIES:
+        # Kept as the general answer: the key the employer-specific one falls back to.
+        question = questions.classify(BY_ID[identifier].label)
+        assert question.scope == "employer" and questions.memory_key(question), identifier
     assert not {entry.id for entry in CORPUS} & LEFT_OUT
     assert len({entry.id for entry in CORPUS}) == len(CORPUS)
     assert len({entry.label for entry in CORPUS}) == len(CORPUS)

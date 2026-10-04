@@ -1112,8 +1112,13 @@ def review_application(application_id: str, page: dict) -> dict:
     controls = {
         f.get("key"): f.get("kind") for f in page.get("fields") or [] if isinstance(f, dict)
     }
+    from .questions import drafting_hints  # code's rule for a question, e.g. a free pick
+
     dynamic["questions"] = [
-        {**q, "control": controls[q["key"]]} if controls.get(q["key"]) else q for q in questions
+        {**q, **drafting_hints(q), "control": controls[q["key"]]}
+        if controls.get(q["key"])
+        else {**q, **drafting_hints(q)}
+        for q in questions
     ]
     context = static_first(system_prompt("answers"), static, dynamic)
     context_hash = fingerprint({k: v for k, v in context.items() if k != "cache_padding"})

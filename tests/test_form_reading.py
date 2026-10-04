@@ -377,6 +377,8 @@ def test_filling_a_lever_form_asks_real_questions_and_ticks_the_owners_choices(r
         "policy.default.how_did_you_hear"
     )
     asked = {q["label"]: q for q in pending}
+    # "If yes, what type of sponsorship …" follows a sponsorship question answered no:
+    # it is left blank without a word.
     assert set(asked) == {
         "Phone ✱",
         "Current location",
@@ -384,7 +386,6 @@ def test_filling_a_lever_form_asks_real_questions_and_ticks_the_owners_choices(r
         "LinkedIn URL",
         "GitHub URL",
         "Street address",
-        "If yes, what type of sponsorship will you require?",
         "What degree are you currently pursuing?",
         LANGUAGES,
         "What date can you start (month and year)?",
@@ -401,9 +402,9 @@ def test_filling_a_lever_form_asks_real_questions_and_ticks_the_owners_choices(r
     # The card the owner reads: numbered questions in form order, no option or key as a question.
     listed = workflow.numbered(worker.question_list(pending, [], {}, set()))
     card = workflow.question_lines(listed, limit=len(listed)).split("\n")
-    assert len(card) == 15 and "cards[" not in "\n".join(card)
-    assert f"9. {LANGUAGES}  (Python / Java / JavaScript / Other)" in card
-    assert f"13. {NOTES}  (Yes, I consent / No, I do not consent)" in card
+    assert len(card) == 14 and "cards[" not in "\n".join(card)
+    assert f"8. {LANGUAGES}  (Python / Java / JavaScript / Other)" in card
+    assert f"12. {NOTES}  (Yes, I consent / No, I do not consent)" in card
     assert not any(line.split(". ", 1)[1].startswith(("Yes", "No ")) for line in card)
     answers = {
         asked[LANGUAGES]["key"]: {

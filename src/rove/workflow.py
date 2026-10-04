@@ -1060,6 +1060,29 @@ def remember_answer(
     return True
 
 
+# What Rove's own record says about an employer, for the general answers that it can
+# make untrue: an application Rove sent there, an interview that followed one.
+HISTORY_STATES = {
+    "previously_applied_here": (*POST_APPLICATION, "ACCEPTED", "WITHDRAWN"),
+    "previously_interviewed_here": ("INTERVIEW", "OFFER", "ACCEPTED"),
+}
+
+
+def contradicted_by_history(canonical_id: str, employer: str) -> bool:
+    """Whether an application Rove sent to this employer makes the owner's general answer
+    to "applied here before?" or "interviewed here before?" untrue."""
+    from . import questions
+
+    states = HISTORY_STATES.get(canonical_id)
+    if not states or not employer or employer in {questions.NO_EMPLOYER, questions.ANY_EMPLOYER}:
+        return False
+    with db() as conn:
+        rows = conn.execute("SELECT url,status FROM application_queue").fetchall()
+    return any(
+        row["status"] in states and questions.employer_key(row["url"]) == employer for row in rows
+    )
+
+
 def recall_answer(
     label, options=(), *, kind: str = "", employer: str = "", profile: dict | None = None
 ) -> str | None:
@@ -1088,9 +1111,11 @@ def recall_answer(
             conn.execute("SELECT value FROM answer_memory WHERE fingerprint=?", (key,)).fetchone()
             for key in keys
         ]
-    for row in rows:
+    for position, row in enumerate(rows):
         if row is None:
             continue
+        if position and contradicted_by_history(question.canonical_id, employer):
+            continue  # his general "no" is not true here: Rove's own record says otherwise
         if not choices:
             return row["value"]
         if kind == "checkbox_group":

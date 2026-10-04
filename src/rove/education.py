@@ -54,20 +54,27 @@ def this_month(today: datetime | None = None) -> str:
 
 
 def current_index(profile: dict | None, today: datetime | None = None) -> int | None:
-    """The entry the owner is enrolled in today: its start is not after this month, its
-    graduation not before it, and it is not marked as left. None when no entry, or more
-    than one, fits: enrollment is never guessed."""
+    """The entry the owner is enrolled in today: begun (a start not after this month) or
+    marked as attended now, its graduation not before this month, and not marked as
+    left. An entry with only a graduation month ahead counts only as the profile's one
+    school: beside another it may be a school he has not started (a transfer). None when
+    no entry, or more than one, fits: enrollment is never guessed."""
     now = this_month(today)
-    fitting = []
-    for i, school in enumerate(schools(profile)):
+    entries = schools(profile)
+    possible, sure = [], []
+    for i, school in enumerate(entries):
         start, end = school.get("start_month"), school.get("graduation_month")
         enrolled = school.get("currently_enrolled")
-        if start is None and end is None and enrolled is not True:
-            continue  # nothing says when
         if enrolled is False or (start and start > now) or (end and end < now):
             continue
-        fitting.append(i)
-    return fitting[0] if len(fitting) == 1 else None
+        if start or enrolled is True:
+            sure.append(i)  # begun, or said to be attended now
+        elif end:
+            possible.append(i)  # only a graduation ahead: begun or not, nothing says
+    if sure:
+        return sure[0] if len(sure) == 1 else None
+    # One school, graduating later: that is the school he attends.
+    return possible[0] if len(entries) == 1 and possible else None
 
 
 def current(profile: dict | None, today: datetime | None = None) -> dict | None:

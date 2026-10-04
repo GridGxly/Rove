@@ -710,6 +710,10 @@ CONSENT_JS = """() => {
 
 
 class RecruitingBrowser:
+    # What a school picker chose instead of the name ("Other"), or why it chose nothing.
+    picked_label: str | None = None
+    picker_reason: str | None = None
+
     def __init__(self, headless: bool = False):
         self.headless = headless
         self.playwright = None
@@ -1864,6 +1868,8 @@ class RecruitingBrowser:
             return True
         if field.get("widget"):
             return self.select_custom(locator, field, value)
+        if questions.school_question(field):
+            return self.select_school(locator, field, value, profile)
         locator.click()
         place = normalized(field["label"]) in {
             "location city",
@@ -2022,6 +2028,71 @@ class RecruitingBrowser:
         )
         locator.press("Escape")
         return verified
+
+    def school_suggestions(self, locator, typed: str, school: str, places: list) -> list[str]:
+        """Type into a school typeahead and read what it suggests, waiting (up to about
+        five seconds) for the search to list the school itself."""
+        locator.fill(typed)
+        options = self.form.get_by_role("option")
+        texts: list[str] = []
+        for _ in range(10):
+            with contextlib.suppress(PlaywrightError):
+                options.first.wait_for(state="visible", timeout=500)
+            texts = [t.strip() for t in options.all_text_contents()[:300]]
+            found = (
+                questions.school_option(texts, school, places)
+                if school
+                else questions.other_option(texts)
+            )
+            if found is not None:
+                break
+        return texts
+
+    def select_school(self, locator, field: dict, value, profile: dict) -> bool:
+        """A school typeahead: type the school's name and choose the suggestion that is
+        the school (its exact name, or its name with a campus or place after it), never
+        the first suggestion for its own sake. If the list has no such school, the form's
+        own "Other"; if it has none, the field waits for the owner with the reason."""
+        identity = profile.get("identity") or {}
+        places = [identity.get("city"), identity.get("state_region")]
+        school = str(value)
+        locator.click()
+        texts = self.school_suggestions(locator, school, school, places)
+        index = questions.school_option(texts, school, places)
+        if index is None:
+            other = questions.other_option(texts)
+            if other is None:
+                texts = self.school_suggestions(locator, "Other", "", places)
+                other = questions.other_option(texts)
+            if other is None:
+                self.picker_diagnostic(field, school, texts, locator)
+                with contextlib.suppress(PlaywrightError):
+                    locator.fill("")
+                    locator.press("Escape")
+                self.picker_reason = (
+                    f"Your school ({school}) is not in this form's list of schools, and the "
+                    "list has no Other choice. Pick it in the recruiting browser."
+                )
+                return False
+            index, self.picked_label = other, texts[other]
+        expected = texts[index]
+        self.form.get_by_role("option").nth(index).click()
+        evidence = locator.evaluate(
+            "e=>[e.value||'', e.closest('.select__container')?.querySelector("
+            "'.select__single-value')?.innerText||'', e.parentElement?.innerText||'',"
+            " e.parentElement?.parentElement?.innerText||''].join(' | ')"
+        )
+        run: dict = self.run or {}
+        write_private(
+            state_root() / f"applications/{run.get('id')}/dropdown-{field['key']}.json",
+            {"expected": expected, "typed": school, "selected_evidence": evidence},
+        )
+        if normalized(expected) not in normalized(evidence):
+            self.picker_reason = "The school list did not keep the choice. Pick it in the browser."
+            return False
+        with contextlib.suppress(PlaywrightError):
+            locator.press("Escape")
+        return True
 
     def select_choice(self, field: dict, label: str) -> bool:
         """Select one observed option of a radio group or button group and verify it."""
@@ -2850,11 +2921,12 @@ class RecruitingBrowser:
                 # The options are known now: resolve again against them.
                 value, source = resolve({**field, "options": [{"label": c} for c in choices]})
             if field["role"] == "combobox" and value is not None:
+                self.picked_label = self.picker_reason = None  # set by a school picker
                 if self.select_combobox(locator, field, value, approved["profile"]):
                     filled.append(
                         {
                             "label": field["label"],
-                            "value": value,
+                            "value": self.picked_label or value,
                             "source": source,
                             "key": field["key"],
                             "control": "combobox",
@@ -2866,7 +2938,7 @@ class RecruitingBrowser:
                         "label": field["label"],
                         "key": field["key"],
                         "required": field["required"],
-                        "reason": "No unique matching dropdown option",
+                        "reason": self.picker_reason or "No unique matching dropdown option",
                     }
                 )
                 continue
@@ -2973,7 +3045,7 @@ class RecruitingBrowser:
             filled.append(
                 {"label": field["label"], "value": value, "source": source, "key": field["key"]}
             )
-        return filled, pending
+        return questions.settled_page(before["fields"], filled, pending)
 
     def _prepare(self, run_id: str) -> dict:
         from .submission import duplicate_words, embedded_form, fill_hold_words

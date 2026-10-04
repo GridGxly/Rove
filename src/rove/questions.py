@@ -419,6 +419,9 @@ IDENTITY_NAMES = {
     "|what is your major|degree major|course of study|program of study|major area of study"
     "|field of study major|major field of study discipline",
     "degree": "degree|degree type|type of degree|degree level|degree program|current degree"
+    "|degree level currently pursuing|degree currently pursuing|current degree level"
+    "|level of degree|level of degree currently pursuing|degree level pursuing"
+    "|what degree level are you currently pursuing|current degree program"
     "|degree in progress|what degree are you pursuing|what degree are you currently pursuing"
     "|degree you are pursuing|degree pursuing",
     "sex": "sex",
@@ -754,9 +757,55 @@ ENROLLED_FILLER = _words(
 ENROLLED_KIND = _words("graduate bachelor bachelors s master masters four 4 two 2 year full part")
 
 
+# Ties to the employer's people and earlier contact with it. Each is the owner's general
+# answer (given once in the warm-up) unless he answered for this employer.
+SOME = r"(?: [a-z0-9]+){0,6}"
+RELATED_HERE = re.compile(
+    r"(?:are you|is anyone in your (?:immediate )?family) related to (?:any|anyone|someone|a|an)"
+    rf"{SOME} (?:employees?|staff|team members?|people|person|individuals?)"
+    rf"(?: (?:at|of|for|with|who works? (?:at|for)|working (?:at|for))(?: [a-z0-9]+){{1,6}})?"
+    r"|do you have (?:any )?(?:relatives|family members?|family)"
+    rf"{SOME} (?:who (?:is|are) )?(?:currently )?(?:employed|working|work|works)"
+    r"(?: (?:at|by|for|with)(?: [a-z0-9]+){1,6})?"
+)
+KNOWS_HERE = re.compile(
+    r"do you (?:personally )?know (?:any|anyone|someone|any of the)"
+    rf"{SOME} (?:employees?|staff|people|team members?"
+    r"|who (?:currently )?works?(?: (?:at|for|here))?)"
+    r"(?: (?:at|of|for|with|here)(?: [a-z0-9]+){0,6})?"
+)
+REFERRED_HERE = re.compile(
+    rf"(?:were|have) you (?:been )?referred{SOME} by (?:a|an|any|someone|anyone){SOME}"
+    rf"|did (?:a|an|any|someone|anyone){SOME} refer you{SOME}"
+)
+INTERVIEWED_HERE = re.compile(
+    r"have you (?:(?:ever|previously|already) )*interviewed"
+    r"(?: (?:previously|before|in the past))? (?:with|at|for)(?: [a-z0-9]+){1,6}"
+)
+# "U.S. Person" as export rules define it: a citizen, a permanent resident, a refugee or
+# an asylee. One question however a form words its definition.
+US_PERSON = re.compile(r"\b(?:u s|us) persons?\b")
+US_PERSON_WORDS = _words(
+    "are you a an u s us person persons as defined by under the in itar ear export control"
+    " administration regulations regulation international traffic arms 22 cfr 120 62 15 772"
+    " i am do you qualify meaning of which includes means include including citizen citizens"
+    " national nationals lawful lawfully admitted permanent resident residents green card"
+    " holder holders refugee refugees asylee asylees protected individual individuals"
+    " granted asylum status or and of for this position purposes is be considered who"
+    " definition e g i e that 8 usc 1324b a 3 united states america in"
+)
+
+
 APPLIED_HERE = re.compile(
     r"have you (?:(?:ever|previously) )*applied(?: previously| before| in the past)?"
     r" (?:to|at|with|for)(?: [a-z0-9]+){1,6}"
+)
+EMPLOYER_TIES = (
+    ("related_to_employee", RELATED_HERE),
+    ("knows_employee", KNOWS_HERE),
+    ("referred_by_employee", REFERRED_HERE),
+    ("previously_interviewed_here", INTERVIEWED_HERE),
+    ("previously_applied_here", APPLIED_HERE),
 )
 WILLING = (
     r"(?:(?:are|would|will) you (?:be )?|i am )(?:(?:currently|also) )?"
@@ -904,6 +953,18 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
     gpa = GPA.fullmatch(text)
     if gpa:
         return {"id": "gpa", "detail": (gpa["scale"] or "").replace(" ", ".")}
+    if (
+        US_PERSON.search(text)
+        and re.match(r"(?:are you|i am|do you qualify)\b", text)
+        and set(words) <= US_PERSON_WORDS
+    ):
+        return {"id": "us_person"}
+    if not sensitive_topic(name):
+        # Ties to the employer: one question per employer however a form names it, so
+        # the owner's general answer (the warm-up) is found under any wording.
+        for canonical, pattern in EMPLOYER_TIES:
+            if pattern.fullmatch(text):
+                return {"id": canonical, "scope": "employer"}
     if CITIZEN.fullmatch(text):
         return {"id": "citizenship", "scope": place_scope(text, found)}
     if ADULT.fullmatch(text):
@@ -1003,8 +1064,6 @@ def _loose(name: str, text: str) -> dict | None:
         # "Are you currently enrolled at <school>?" asks about that school, today.
         named = [w for w in enrolled["school"].split() if w not in ENROLLED_FILLER]
         return {"id": "enrollment_status", "detail": "at:" + " ".join(named) if named else ""}
-    if APPLIED_HERE.fullmatch(text):
-        return {"id": "previously_applied_here", "scope": "employer"}
     if not WILLINGNESS.match(text):
         # Any other question about graduating: answered only by an option that states
         # the approved graduation month.
@@ -1054,6 +1113,44 @@ def _known(name: str, loose: bool) -> dict | None:
     return rule if rule.get("id") == "how_did_you_hear" else {**rule, "tolerant": True}
 
 
+WILLINGNESS_IDS = frozenset(
+    {
+        "onsite_willing",
+        "commute_willing",
+        "travel_willing",
+        "available_for_term",
+        "comfortable_with_stack",
+        "relocate_willing",
+    }
+)
+
+
+def final_question(label) -> str:
+    """The question at the end of a label that opens with statements ("We require all
+    employees onsite. Are you able to …?"), as a rule reads it; "" when there is none."""
+    text = " ".join(str(label or "").split())
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text) if p.strip()]
+    if len(parts) < 2 or not parts[-1].endswith("?") or any("?" in p for p in parts[:-1]):
+        return ""
+    return plain_name(parts[-1])
+
+
+def behind_statement(label, name: str) -> dict | None:
+    """A willingness question behind a statement takes the rule of its plain form. What
+    the statement says still counts: money words or a place the profile excludes make it
+    the owner's (the risk check reads the whole label), and a negation anywhere already
+    kept the label from this rule."""
+    asked = final_question(label)
+    if not asked or asked == name:
+        return None
+    rule = _known(asked, loose=True)
+    if not rule or (rule.get("id") not in WILLINGNESS_IDS and rule.get("default") != "willingness"):
+        return None
+    if RISK_WORDS & set(with_places(name)[0].split()):
+        return {**rule, "default": "", "detail": "risky"}
+    return rule
+
+
 def classify(label, kind: str = "", options=()) -> Question:
     """Canonical identity, class, polarity and scope of one form question."""
     name = plain_name(label)
@@ -1065,6 +1162,8 @@ def classify(label, kind: str = "", options=()) -> Question:
         # "Are you unwilling to relocate?" is the relocation question asked the other way
         # round: the same identity, never the same answer.
         rule, polarity = _known(bare, loose=True), NEGATED
+    if rule is None and not negated:
+        rule = behind_statement(label, name)
     rule = rule or {}
     topic = sensitive_topic(name)
     canonical, scope = rule.get("id", ""), rule.get("scope", "")
@@ -1118,6 +1217,7 @@ TOPIC_OF = {
     "citizenship": "citizenship",
     "citizenship_us": "citizenship",
     "citizenship_country": "citizenship",
+    "us_person": "export_control",
     "at_least_18": "age",
     "security_clearance": "clearance",
     "criminal_history": "criminal",
@@ -1214,13 +1314,17 @@ def employer_key(url) -> str:
 
 
 def ask_each_time(question: Question, profile: dict | None) -> bool:
-    """A class the approved profile keeps with the owner on every form."""
+    """A class the approved profile keeps with the owner on every form.
+
+    Export control is no longer one: the owner asked twice that an answer he gives be
+    kept. The profile's `export_control_questions: ask_each_time` now reads "ask once,
+    then remember" (still never a default or a draft: the sensitive gate sees to that).
+    """
     path = POLICY_KEYS.get(question.topic)
-    if not path:
+    if not path or question.topic == "export_control":
         return False
-    fallback = ASK_EACH_TIME if question.topic == "export_control" else ""
     section = (profile or {}).get(path[0]) or {}
-    return section.get(path[1], fallback) == ASK_EACH_TIME
+    return section.get(path[1], "") == ASK_EACH_TIME
 
 
 def option_matches(option_label, value) -> bool:
@@ -1374,6 +1478,10 @@ def profile_fact(
     if canonical == "citizenship_us":
         values = _yes_no(eligible.get("us_citizen"))
         return (values, "eligibility.us_citizen") if values else None
+    if canonical == "us_person":
+        # A citizen is a U.S. person by the question's own definition. A non-citizen may
+        # still be one (a permanent resident, a refugee): that is the owner's to say.
+        return (["Yes"], "eligibility.us_citizen") if eligible.get("us_citizen") is True else None
     if canonical == "at_least_18":
         values = _yes_no(eligible.get("at_least_18"))
         return (values, "eligibility.at_least_18") if values else None
@@ -1457,8 +1565,22 @@ SCHOOL_IDS = frozenset(
 NO_ENTRY = (None, None)  # a form's block with no entry of the owner's to state
 # Education facts no model draft answers (draft_gate): code or the owner only.
 EDUCATION_FACTS = frozenset(
-    {"degree", "major", "gpa", "current_school", "enrollment_status", "class_standing"}
+    {
+        "school",
+        "degree",
+        "major",
+        "gpa",
+        "graduation_date",
+        "school_start",
+        "degree_start",
+        "current_school",
+        "enrollment_status",
+        "class_standing",
+    }
 )
+# Halves of one fact a form asks in two fields (city and state). A model draft never
+# fills one half beside the profile's other half (pair_problems).
+PAIRED_FACTS = frozenset({"location_city", "state_region"})
 ENROLLED_WORDS = (
     "Currently enrolled",
     "Enrolled",
@@ -1753,6 +1875,7 @@ def gpa_choice(labels: list[str], gpa: str, scale) -> str | None:
 # history uses the same words, so the field's own id must say education when the label
 # does not.
 EDUCATION_DATE = re.compile(
+    r"(?:(?:what is your |what s your )?(?:expected|anticipated|estimated|projected) )?"
     r"(?:(?:education|school|degree|college|university) )?"
     r"(?P<edge>start|end|graduation|enrollment)(?: date)? (?P<part>month|year)"
 )
@@ -1812,12 +1935,40 @@ def education_date(
             str(when.month),
         ]
     if labels:
-        return first_listed(labels, candidates), source
+        chosen = first_listed(labels, candidates)
+        if chosen is None and unit == "month":
+            chosen = month_choice(labels, when.month)  # "April/May/June" holds May
+        return chosen, source
     if unit == "month" and field.get("kind") == "number":
         return str(when.month), source
     if unit == "month" and "mm" in normalized(field.get("placeholder")).split():
         return f"{when.month:02d}", source
     return candidates[0], source
+
+
+MONTH_NUMBERS = {
+    datetime(2000, n, 1, tzinfo=UTC).strftime(f).lower(): n
+    for n in range(1, 13)
+    for f in ("%B", "%b")
+} | {"sept": 9}
+MONTH_SPAN = re.compile(r"\b(?:to|through|thru|until)\b|\s[-–—]\s")
+
+
+def option_months(option: str) -> set[int]:
+    """The months an option names: listed ("April/May/June") or a span ("May - August")."""
+    text = str(option or "").lower()
+    named = [MONTH_NUMBERS[w] for w in re.findall(r"[a-z]+", text) if w in MONTH_NUMBERS]
+    if len(named) == 2 and MONTH_SPAN.search(text):
+        first, last = named
+        span = range(first, last + 1) if first <= last else [*range(first, 13), *range(1, last + 1)]
+        return set(span)
+    return set(named)
+
+
+def month_choice(labels: list[str], month: int) -> str | None:
+    """The one option whose months hold this month, when the form groups months."""
+    found = [o for o in labels if month in option_months(o)]
+    return found[0] if len(found) == 1 else None
 
 
 # --- "have you worked for us before" -------------------------------------------------
@@ -1964,14 +2115,22 @@ def draft_gate(question: dict | None) -> dict | None:
             "code": f"sensitive:{classified.topic or classified.canonical_id}",
             "words": "This is a legal or personal question, so only your own answer is used.",
         }
-    if classified.known and classified.canonical_id in EDUCATION_FACTS:
-        # The degree, major and GPA are facts: a list code could not map is the owner's
-        # pick, never a model's nearest guess. Where he is enrolled and his year in
-        # school are facts about today that a draft could get wrong.
+    education_date = EDUCATION_DATE.fullmatch(plain_name(question.get("label")))
+    if education_date or (classified.known and classified.canonical_id in EDUCATION_FACTS):
+        # The school, degree, major, GPA and school dates are facts: a list code could
+        # not map is the owner's pick, never a model's nearest guess, and a model must
+        # never state the wrong school beside the profile's other half of a date. Where
+        # he is enrolled and his year in school are facts about today.
         return {
-            "code": f"profile_fact:{classified.canonical_id}",
+            "code": f"profile_fact:{classified.canonical_id if not education_date else 'date'}",
             "words": "This asks for a fact about your education, so only your profile or "
             "your own answer fills it.",
+        }
+    if classified.known and classified.canonical_id in PAIRED_FACTS:
+        return {
+            "code": f"profile_fact:{classified.canonical_id}",
+            "words": "This is part of your address, so only your profile or your own answer "
+            "fills it.",
         }
     return None
 
@@ -2159,3 +2318,204 @@ def resolve(
         return value, source
     default = policy_default(question, labels, profile, kind)
     return default if default else (None, None)
+
+
+# --- questions that hang on another --------------------------------------------------
+FOLLOW_UP = re.compile(
+    r"^(?:if (?:yes|so)\b"
+    r"|if you (?:answered|selected|checked|chose|said|replied|responded|indicated) yes\b"
+    r"|if your answer (?:is|was) yes\b"
+    r"|if (?:the|your) answer to the (?:above|previous|prior) question (?:is|was) yes\b)"
+    r"|\b(?:please )?(?:explain|describe|elaborate|specify|provide (?:details|more details))"
+    r"(?: [a-z0-9]+){0,4} if (?:yes|so)$"
+)
+
+
+def follow_up(label) -> bool:
+    """Whether a question applies only when the one before it was answered yes."""
+    return bool(FOLLOW_UP.search(plain_name(label)))
+
+
+def yes_no_question(field: dict) -> bool:
+    """A question answered yes or no: a checkbox, or options that start with both."""
+    if field.get("kind") == "checkbox":
+        return True
+    labels = [normalized(o) for o in option_labels(field.get("options"))]
+    return {"yes", "no"} <= {label.split()[0] for label in labels if label}
+
+
+def said_yes(value) -> bool:
+    return (normalized(value).split() or [""])[0] in {"yes", "true"}
+
+
+def idle_follow_ups(fields: list[dict], filled: list[dict]) -> set[str]:
+    """Keys of follow-up questions ("If yes, …") whose question was not answered yes.
+
+    The question a follow-up hangs on is the nearest yes-or-no question before it, in
+    form order. Answered no, declined, or not answered at all, the follow-up is left
+    blank without a word: never drafted, never asked. Answered yes, it is a question like
+    any other.
+    """
+    answers = {entry.get("key"): entry.get("value") for entry in filled if entry.get("key")}
+    idle: set[str] = set()
+    parent = None
+    for field in fields:
+        if field.get("in_group"):
+            continue
+        if follow_up(field.get("label")):
+            if parent is None or not said_yes(answers.get(parent.get("key"))):
+                idle.add(str(field.get("key")))
+            continue
+        if yes_no_question(field):
+            parent = field
+    return idle
+
+
+# --- one fact asked in two fields ----------------------------------------------------
+PROFILE_RECORDS = ("education.schools.", "identity")
+
+
+def pair_half(field: dict) -> str | None:
+    """The fact a field is half of, when a form asks it in two fields: a school entry's
+    graduation or start by month and year, or the city and state."""
+    part = education_part(field)
+    if part:
+        return f"{part[0]}:{education.block_index(field) or 0}"
+    question = classify(field.get("label"), field.get("kind") or "")
+    return "place" if question.known and question.canonical_id in PAIRED_FACTS else None
+
+
+def source_entity(source) -> str:
+    """Which record a value came from: one school entry, the identity, or anything else
+    (an earlier answer, a reply, a draft) as itself."""
+    text = str(source or "")
+    school = re.match(r"education\.schools\.\d+", text)
+    if school:
+        return school.group(0)
+    return "identity" if text.startswith("identity.") else text
+
+
+def pair_problems(fields: list[dict], filled: list[dict]) -> list[dict]:
+    """Halves of one fact that did not come from one record: the profile's year beside a
+    month from anywhere else would be a wrong fact on the application. Each half that
+    is not the profile's comes back as a question for the owner, in plain words."""
+    by_key = {field.get("key"): field for field in fields}
+    facts: dict[str, list] = {}
+    for entry in filled:
+        field = by_key.get(entry.get("key"))
+        fact = pair_half(field) if field else None
+        if fact:
+            facts.setdefault(fact, []).append(entry)
+    problems = []
+    for entries in facts.values():
+        records = {source_entity(e.get("source")) for e in entries}
+        if len(records) < 2 or not any(r.startswith(PROFILE_RECORDS) for r in records):
+            continue  # one record, or none of it the profile's (his own answers agree)
+        for entry in entries:
+            if (
+                source_entity(entry.get("source")).startswith(PROFILE_RECORDS)
+                and len([r for r in records if r.startswith(PROFILE_RECORDS)]) == 1
+            ):
+                continue  # the profile's half stands; the other one waits
+            problems.append(
+                {
+                    "label": entry.get("label", ""),
+                    "key": entry.get("key"),
+                    "required": True,
+                    "reason": "This must match the other half of the same date or place, "
+                    "which came from your profile; it did not, so it waits for you.",
+                }
+            )
+    return problems
+
+
+def settled_page(fields: list[dict], filled: list[dict], pending: list[dict]):
+    """(filled, pending) for one filled page, after the checks that need the whole page:
+    a follow-up whose question was not answered yes is left out without a word, and a
+    half of a date or place that does not match the profile's other half waits for the
+    owner instead of standing on the form record."""
+    idle = idle_follow_ups(fields, filled)
+    problems = pair_problems(fields, filled)
+    waiting = {problem["key"] for problem in problems}
+    pending = [q for q in pending if q.get("key") not in idle and q.get("key") not in waiting]
+    return [f for f in filled if f.get("key") not in waiting], pending + problems
+
+
+# --- preferences among offered options -----------------------------------------------
+PREFERENCE = re.compile(
+    r"^(?:which|what)\b.*\b(?:interested in|interest you|interests you|prefer|preference"
+    r"|preferred|most excited|excite you|like to (?:work|join)|would you like|want to work)\b"
+    r"|^(?:areas?|teams?|offices?|locations?|roles?|products?|groups?) of interest\b"
+    r"|^preferred (?:team|teams|office|location|group|area|product|track)s?\b"
+)
+PREFERENCE_RULE = (
+    "A preference among the offered options, not a fact: choose the option that best fits "
+    "the profile and evidence (any reasonable one is acceptable) and answer with it as a "
+    "proposal. Do not answer needs_user for this question."
+)
+
+
+def preference_choice(question: dict) -> bool:
+    """A choice of what the owner would like among the form's own options ("Which
+    team(s) are you most interested in?") with no fact behind it. The owner's rule for
+    such plain questions is to choose whatever is reasonable."""
+    labels = option_labels(question.get("options"))
+    if len(labels) < 2 or form_reading.unreadable(question):
+        return False
+    classified = classify(question.get("label"), question.get("kind") or "", labels)
+    if classified.sensitivity != PLAIN or classified.known:
+        return False  # a fact code knows, or a legal question: never a free pick
+    return bool(PREFERENCE.search(classified.name))
+
+
+def drafting_hints(question: dict) -> dict:
+    """What the drafting context adds to one pending question, decided by code."""
+    return {"answer_rule": PREFERENCE_RULE} if preference_choice(question) else {}
+
+
+# --- a school among a picker's suggestions -------------------------------------------
+def school_question(field: dict) -> bool:
+    """Whether a field asks for a school by name (a school typeahead, when a picker)."""
+    question = classify(field.get("label"), field.get("kind") or "")
+    return question.known and question.canonical_id in {"school", "current_school"}
+
+
+SCHOOL_SUFFIX = re.compile(r"\s+[-–—]\s+|,\s+|\s+\(")
+
+
+def school_option(texts: list[str], school: str, places=()) -> int | None:
+    """Which suggestion is the school: its exact name, else its name followed by a campus
+    or place ("University of Example - Springfield, IL", "University of Example (UE)").
+    With several campuses, the exact name first, then the one whose suffix names one of
+    `places` (the owner's city or state). Never the first suggestion for its own sake."""
+    wanted = normalized(school)
+    if not wanted:
+        return None
+    exact = [i for i, text in enumerate(texts) if normalized(text) == wanted]
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+    suffixes = {
+        i: parts[1]
+        for i, text in enumerate(texts)
+        if len(parts := SCHOOL_SUFFIX.split(str(text), maxsplit=1)) == 2
+        and normalized(parts[0]) == wanted
+    }
+    if len(suffixes) == 1:
+        return next(iter(suffixes))
+    named = [normalized(p) for p in places if normalized(p)]
+    near = [
+        i
+        for i, suffix in suffixes.items()
+        if any(re.search(rf"\b{re.escape(p)}\b", normalized(suffix)) for p in named)
+    ]
+    return near[0] if len(near) == 1 else None
+
+
+def other_option(texts: list[str]) -> int | None:
+    """The form's own "Other" choice, when it offers exactly one."""
+    found = [
+        i
+        for i, text in enumerate(texts)
+        if re.fullmatch(r"other(?: [a-z ]{0,30})?", normalized(text))
+    ]
+    return found[0] if len(found) == 1 else None

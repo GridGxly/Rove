@@ -716,8 +716,8 @@ def test_the_drafting_context_carries_no_contact_pay_gpa_policy_or_eligibility(s
     assert set(profile["identity"]) == set(draft_guard.DRAFTING_FIELDS["identity"])
     assert profile["identity"]["legal_first_name"] == "Alex"
     assert profile["identity"]["city"] == "Columbus"
-    assert "gpa" not in profile["education"]["schools"][0]
-    assert profile["education"]["schools"][0]["major"] == "Computer Science"
+    assert "gpa" not in profile["education"]["state_on_applications"]
+    assert profile["education"]["state_on_applications"]["major"] == "Computer Science"
     assert set(profile["preferences"]) == set(draft_guard.DRAFTING_FIELDS["preferences"])
     # (The application id is random hex and could contain a short digit run by chance.)
     text = json.dumps({k: v for k, v in context.items() if k != "application_id"})
@@ -754,7 +754,7 @@ def test_a_disclosed_gpa_is_part_of_the_context_and_may_be_written(state, monkey
     sent = drafting(monkeypatch, [[proposal(KEYS[0], "My GPA is 3.87 out of 4.0.")]])
     app, page = drafted_application(state, 1)
     result = reasoning.review_application(app, page)
-    assert sent[0]["profile"]["education"]["schools"][0]["gpa"] == 3.87
+    assert sent[0]["profile"]["education"]["state_on_applications"]["gpa"] == 3.87
     assert result["answers"][0]["kind"] == "proposal"
 
 

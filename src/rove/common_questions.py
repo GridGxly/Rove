@@ -29,6 +29,7 @@ SHORT_TEXT, NUMBER, DATE, MONTH, YES_NO, CHOICE = (
 )
 SKIP = "skip"
 TEXT_LIMIT = 300
+EVERY_COMPANY = "for every company, unless you tell me otherwise for one"
 
 
 @dataclass(frozen=True)
@@ -209,6 +210,19 @@ CORPUS = (
         SHORT_TEXT,
         hint="company names separated by commas, or none",
     ),
+    # Ties to an employer, answered once for every company: his general answer, which an
+    # answer he gives for one company replaces there. "Applied" and "interviewed" also
+    # yield to Rove's own record of what it sent (workflow.contradicted_by_history).
+    *(
+        CommonQuestion(identifier, label, YES_NO, hint=EVERY_COMPANY)
+        for identifier, label in (
+            ("related_to_employee", "Are you related to any current employees of this company?"),
+            ("knows_employee", "Do you know any current employees of this company?"),
+            ("referred_by_employee", "Were you referred by a current employee of this company?"),
+            ("previously_interviewed_here", "Have you interviewed with this company before?"),
+            ("previously_applied_here", "Have you applied to this company before?"),
+        )
+    ),
 )
 BY_ID = {entry.id: entry for entry in CORPUS}
 
@@ -240,7 +254,7 @@ def choices(entry: CommonQuestion) -> tuple[str, ...]:
 def detail(entry: CommonQuestion) -> str:
     """What goes in brackets after the question: the options, or how to answer."""
     if choices(entry):
-        return " / ".join(choices(entry))
+        return " / ".join(choices(entry)) + (f"; {entry.hint}" if entry.hint else "")
     return entry.hint or entry.kind
 
 

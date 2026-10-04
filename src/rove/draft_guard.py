@@ -94,16 +94,23 @@ def drafting_profile(profile: dict) -> dict:
         section: {key: profile[section][key] for key in keys if key in profile[section]}
         for section, keys in DRAFTING_FIELDS.items()
     }
-    schools = []
-    for school in profile["education"]["schools"]:
-        entry = {key: school[key] for key in SCHOOL_FIELDS if key in school}
+    from . import education
+
+    def entry(school: dict) -> dict:
+        kept = {key: school[key] for key in SCHOOL_FIELDS if key in school}
         if school.get("disclose_gpa") is True and school.get("gpa") is not None:
-            entry["gpa"], entry["gpa_scale"] = school["gpa"], school.get("gpa_scale")
-        schools.append(entry)
+            kept["gpa"], kept["gpa_scale"] = school["gpa"], school.get("gpa_scale")
+        return kept
+
+    # Only the school applications state is education to write about; the school he
+    # attends today, when another, is named apart so no draft states it as his degree.
+    stated, now = education.primary(profile), education.current(profile)
     reduced["education"] = {
-        "schools": schools,
+        "state_on_applications": entry(stated) if stated else None,
         **{key: profile["education"].get(key) for key in EDUCATION_FIELDS},
     }
+    if now is not None and now is not stated:
+        reduced["education"]["enrolled_now_not_the_degree_to_state"] = entry(now)
     return reduced
 
 
