@@ -106,10 +106,28 @@ def code_senders(*urls: str) -> list[str]:
 
 CAPTCHA_WORDS = (
     "The site shows a picture check that only a person may pass. Open the recruiting browser "
-    "and solve it; if the check is no longer on screen, press the page's Next and it comes "
-    "back. I carry on by myself in the same tab; nothing was sent."
+    "and solve it. If you see no check there, press the page's Next: the check comes up after "
+    "that press. I carry on by myself in the same tab; nothing was sent."
 )
 CAPTCHA_HEADLINE = "CAPTCHA needs you"
+
+
+def captcha_words(after: str = "") -> str:
+    """What the CAPTCHA card tells the owner. `after` is the control whose press brought
+    the check up: such a check closes by itself when nobody answers it, so the card says
+    which control to press rather than pointing at a check that may be gone. The label is
+    the page's own text and is cut down to plain words before it is shown."""
+    label = " ".join(re.sub(r"[^A-Za-z0-9 &'-]", " ", str(after or "")).split())[:30].strip()
+    if not label:
+        return CAPTCHA_WORDS
+    return (
+        f"This site checks for a person once “{label}” is pressed, with a picture check that "
+        f"only you may pass. In the recruiting browser, press “{label}” on this application's "
+        "tab and solve the check that comes up. I carry on by myself in the same tab; nothing "
+        "was sent."
+    )
+
+
 NO_CODE_WORDS = (
     "The site mailed a code to your application address and I could not find it in your "
     "mailbox. Enter it in the recruiting browser, then reply `go`."

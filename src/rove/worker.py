@@ -22,7 +22,7 @@ from . import (
     workflow,
 )
 from .discord_feed import discord, private_env
-from .live_browser import browser_call, owner_words
+from .live_browser import browser_call, owner_words, socket_path
 from .reasoning import GATE_KINDS
 from .resumes import one_erga_pass, prepare_resume, start_preparation
 from .runtime import state_root, write_private
@@ -209,12 +209,42 @@ def ready_resume(application_id: str, url: str, preparing) -> dict:
     return resume
 
 
+# Cards that send the owner to the recruiting browser for a step of his own (a sign-in, a
+# page to reach, a Next to press). The card that asks for `send it` is not one: the send
+# stays Rove's, once, after his word.
+BROWSER_STEPS = frozenset(
+    {
+        "Browser needs a look",
+        "Sign-in needs you",
+        "Verify the account email",
+        "Manual step in the browser",
+        "Final step not reached",
+        "Apply control not found",
+        "Navigation stopped",
+        "Ready · send it yourself",
+    }
+)
+
+
+def leave_tab_to_owner(application_id: str):
+    """The next step is the owner's, in the browser: his own press of a Next, a Sign in
+    or a Verify in that application's tab goes through. Rove's guard against accidental
+    submits is back the moment Rove drives the tab again. No browser service, no tab:
+    nothing to leave."""
+    if not socket_path().exists():
+        return
+    with contextlib.suppress(Exception):
+        browser_call("hand_over", run_id=application_id)
+
+
 @timing.stage(None, "hold")
 def held(
     application_id: str, status: str, reason: str, headline: str, channel: str = "action", **extra
 ) -> dict:
     """End a run in a state the owner must act on, with one clear card in one channel."""
     workflow.set_state(application_id, status)
+    if status == "MANUAL_TAKEOVER" or extra.get("in_place") or headline in BROWSER_STEPS:
+        leave_tab_to_owner(application_id)
     workflow.action_needed(application_id, reason, headline=headline, channel=channel, **extra)
     attach_stop_screenshot(application_id)
     return {
@@ -761,7 +791,7 @@ def process(application_id: str) -> dict:
                     return held(
                         application_id,
                         "MANUAL_TAKEOVER",
-                        gates.CAPTCHA_WORDS,
+                        page.get("reason") or gates.CAPTCHA_WORDS,
                         gates.CAPTCHA_HEADLINE,
                         commands=["go", "park it"],
                         watch="captcha",

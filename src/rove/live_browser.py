@@ -1220,6 +1220,7 @@ class RecruitingBrowser:
         """
         depth = getattr(page, "_rove_guard", 0)
         if depth == 0:
+            self.take_back(page)
             self.hops = []
             note = self._hop_noter(page)
             page.route("**/*", self._route)
@@ -1234,6 +1235,31 @@ class RecruitingBrowser:
             page._rove_guard = max(getattr(page, "_rove_guard", 1) - 1, 0)
             if page._rove_guard == 0:
                 self.unguard(page)
+
+    def hand_over(self, run_id: str) -> dict:
+        """Leave this application's tab to the owner for a step only he takes.
+
+        The guard that stops an accidental submit while Rove fills a form would also
+        swallow his own press of the page's Next, Sign in or Verify. It is lifted on the
+        page as it stands; a page loaded afterwards has the guard again. `take_back` puts
+        it on again before Rove touches the tab.
+        """
+        page = self.pages.get(run_id)
+        if page is None or page.is_closed():
+            return {"handed_over": False}
+        armed = 0
+        for frame in page.frames:
+            with contextlib.suppress(PlaywrightError):
+                frame.evaluate(ARM_JS)
+                armed += 1
+        return {"handed_over": armed > 0}
+
+    @staticmethod
+    def take_back(page):
+        """Rove drives this tab again: no page in it lets a submit through unarmed."""
+        for frame in page.frames:
+            with contextlib.suppress(PlaywrightError):
+                frame.evaluate(DISARM_JS)
 
     def _hop_noter(self, page):
         def note(response):
@@ -3412,6 +3438,7 @@ class RecruitingBrowser:
                 # Where the page stands is kept, to tell later that it moved on.
                 captcha = True
                 self.run["captcha_state"] = self.where()
+                self.run["captcha_after"] = str(nav[0]["label"])[:60]
                 self.save()
                 result = landed = before
                 break
@@ -3498,7 +3525,8 @@ class RecruitingBrowser:
             error = self.run.pop("form_error", "")
             step = form_reading.owner_step(landed)
             if captcha:
-                result = {**result, "captcha": True, "reason": gates.CAPTCHA_WORDS}
+                words = gates.captcha_words(self.run.get("captcha_after", ""))
+                result = {**result, "captcha": True, "reason": words}
             elif sent_on_step:
                 result = {
                     **result,
@@ -3681,6 +3709,10 @@ def handle_request(browser, request: dict):
         # A look at a tab that is already open; a browser that is not running has none.
         browser.attach_if_running()
         return browser.challenge(str(checked_run_id(request)))
+    if action == "hand_over":
+        # The owner takes a step in a tab that is already open; nothing is typed or read.
+        browser.attach_if_running()
+        return browser.hand_over(str(checked_run_id(request)))
     if action not in BROWSER_ACTIONS:
         raise PermissionError("Unsupported browser action")
     run_id = checked_run_id(request)

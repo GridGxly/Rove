@@ -16,7 +16,7 @@ from test_browser_guards import Site
 from test_frames import freeze_resume
 from test_unattended_failure_modes import enabled_worker, posts, the_card
 
-from rove import gates, mail, worker, workflow
+from rove import gates, live_browser, mail, worker, workflow
 
 board = live.board
 site = test_browser_guards.site
@@ -114,7 +114,13 @@ def test_a_next_that_submits_its_step_is_taken_and_a_picture_check_is_the_owners
     # The step's Next is a submit of its own form: Rove's guard against accidental
     # submits lets this one observed click through, and the step is taken.
     assert result["captcha"] is True and result["status"] == "NEEDS_USER"
-    assert result["reason"] == gates.CAPTCHA_WORDS
+    # The card names the control whose press brings the check up, in plain words.
+    assert result["reason"] == gates.captcha_words("Next")
+    assert "press “Next” on this application's tab" in result["reason"]
+    assert gates.captcha_words("") == gates.CAPTCHA_WORDS
+    assert gates.captcha_words("**@everyone** `Next`") != gates.CAPTCHA_WORDS
+    assert "everyone Next" in gates.captcha_words("**@everyone** `Next`")
+    assert "@" not in gates.captcha_words("**@everyone** `Next`")
     assert result["filled"][0]["label"].startswith("Email Address")
     assert result["filled"][1]["value"] == "Yes"  # the standing contact consent
     # The board's trap for scripts stayed empty.
@@ -166,6 +172,34 @@ def test_after_the_owner_solves_it_rove_carries_on_in_the_same_tab_with_the_mail
     # Without `in_place` the same call starts from a fresh load of the posting.
     again = runtime.open(site + JOB)
     assert again["url"].endswith(JOB) and again["application_links"]
+
+
+def test_a_tab_left_to_the_owner_takes_his_own_press_until_rove_drives_it_again(
+    board, site, monkeypatch
+):
+    runtime, _base, state_root = board
+    run_id, _result = at_the_picture_check(runtime, site, state_root)
+    html, check = runtime.page.locator("html"), runtime.page.locator("#check iframe")
+    press_next = runtime.page.locator("#start button[type=submit]")
+    # The check closed by itself, as a live one did while nobody was there to answer it.
+    runtime.page.evaluate("() => { document.getElementById('check').innerHTML = '' }")
+    # As Rove leaves a tab it fills, a press of Next is swallowed: nothing comes up.
+    press_next.click()
+    runtime.page.wait_for_timeout(200)
+    assert check.count() == 0
+    # Left to the owner, his press goes through and the check is back.
+    assert runtime.hand_over(run_id) == {"handed_over": True}
+    assert html.get_attribute("data-rove-submit-armed") == "1"
+    press_next.click()
+    check.wait_for()
+    assert runtime.hand_over("0" * 12) == {"handed_over": False}
+    # Rove drives the tab again: the guard is on before anything is typed.
+    runtime.open(site + JOB, in_place=True)
+    assert html.get_attribute("data-rove-submit-armed") is None
+    # A page loaded afterwards never starts out open to a submit.
+    assert runtime.hand_over(run_id) == {"handed_over": True}
+    runtime.page.reload(wait_until="domcontentloaded")
+    assert html.get_attribute("data-rove-submit-armed") is None
 
 
 def test_a_code_that_never_comes_or_is_refused_leaves_the_step_to_the_owner(
@@ -226,11 +260,15 @@ def test_a_picture_check_is_one_plain_card_and_rove_picks_it_up_once_it_is_solve
         "application_links": [],
         "ats_markers": {"captcha_challenge": True},
     }
-    calls = stub_browser(monkeypatch, {"open": page, "challenge": lambda _kw: seen})
+    answers = {"open": page, "challenge": lambda _kw: seen, "hand_over": {"handed_over": True}}
+    calls = stub_browser(monkeypatch, answers)
     app = workflow.enqueue(
         "https://jobs.example.com/check", source="owner_link", title="Northwind — Intern"
     )["application_id"]
+    live_browser.socket_path().touch()  # a browser service is there to ask
     assert worker.tick()["status"] == "MANUAL_TAKEOVER"
+    # The tab is left to him: his own press in it is not swallowed by Rove's guard.
+    assert ("hand_over", {"run_id": app}) in calls
     card = the_card(discord_calls)
     assert "CAPTCHA needs you" in card["description"]
     assert "I carry on by myself in the same tab" in card["description"]
