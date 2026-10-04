@@ -14,6 +14,9 @@ what Rove decides:
   been quiet for a while or its history has grown, then let the model answer;
 - everything else, or any failure here: do nothing, and Hermes carries on as before.
 
+It also keeps the model honest on Discord: a reply that says something was queued,
+saved, parked or paused, in a turn where no Rove tool ran, is replaced (`on_reply`).
+
 The plugin imports nothing from Rove or Hermes; Rove checks the owner and the channel
 itself. `rove gateway install-shortcuts` copies this directory into the Hermes plugins
 directory and writes `settings.json` next to it with the command to run.
@@ -26,6 +29,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -180,5 +184,39 @@ async def on_message(event, gateway=None, session_store=None, **kwargs):
     return None
 
 
+# --- no claimed action without a tool ------------------------------------------------
+#
+# Rove's tools write every "Queued", "Saved", "Parked" the owner reads. The model now and
+# then writes one of those itself without calling the tool, which tells him something
+# happened that did not. A Discord reply that claims such an action in a turn where no
+# Rove tool ran is replaced by an honest line. This reads the model's words, never his.
+
+ACTED: dict = {}  # (session id, turn id) -> a Rove tool ran in that turn
+CLAIM = re.compile(
+    r"\b(queued|saved|parked|paused|resumed|moved it up|going again)\b", re.IGNORECASE
+)
+NOT_DONE = "I haven't done that yet. Say it once more and I'll do it."
+
+
+def on_tool(tool_name=None, session_id=None, turn_id=None, **kwargs):
+    if str(tool_name or "").startswith("mcp__rove__"):
+        ACTED[(session_id, turn_id)] = True
+        while len(ACTED) > 256:
+            ACTED.pop(next(iter(ACTED)))
+
+
+def on_reply(response_text=None, session_id=None, turn_id=None, platform=None, **kwargs):
+    if str(platform or "") != "discord":
+        return None
+    if ACTED.pop((session_id, turn_id), False):
+        return None
+    if CLAIM.search(str(response_text or "")):
+        logger.warning("rove_shortcuts: the reply claimed an action no tool took; replaced")
+        return NOT_DONE
+    return None
+
+
 def register(ctx) -> None:
     ctx.register_hook("pre_gateway_dispatch", on_message)
+    ctx.register_hook("post_tool_call", on_tool)
+    ctx.register_hook("transform_llm_output", on_reply)

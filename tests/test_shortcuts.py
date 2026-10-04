@@ -531,3 +531,25 @@ def test_new_or_reset_starts_fresh_without_hermes_banner(monkeypatch):
     assert result == {"action": "skip", "reason": "answered by rove"}
     assert resets == ["/new"]
     assert adapter.sent == [("control", "Fresh start.")]  # Hermes' banner is never posted
+
+
+def test_a_reply_claiming_an_action_no_tool_took_is_replaced():
+    plugin = load_plugin()
+    # The model wrote "Queued." itself, with no tool in the turn: he is told the truth.
+    assert plugin.on_reply("Queued.", session_id="s", turn_id="t1", platform="discord") == (
+        plugin.NOT_DONE
+    )
+    assert plugin.on_reply("Got it, 40 hrs saved for xAI.", "s", "t2", "discord") == (
+        plugin.NOT_DONE
+    )
+    # A Rove tool ran in the turn: its words stand.
+    plugin.on_tool(tool_name="mcp__rove__apply_to_link", session_id="s", turn_id="t3")
+    assert plugin.on_reply("Queued. It goes next.", "s", "t3", "discord") is None
+    # Ordinary answers, and other platforms, are left alone.
+    assert plugin.on_reply("Hey. What do you need?", "s", "t4", "discord") is None
+    assert plugin.on_reply("Queued.", "s", "t5", "cli") is None
+    plugin.on_tool(tool_name="read_file", session_id="s", turn_id="t6")
+    assert plugin.on_reply("Saved.", "s", "t6", "discord") == plugin.NOT_DONE
+    registered = []
+    plugin.register(SimpleNamespace(register_hook=lambda name, fn: registered.append(name)))
+    assert registered == ["pre_gateway_dispatch", "post_tool_call", "transform_llm_output"]
