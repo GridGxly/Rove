@@ -1,10 +1,12 @@
 # Third-party notices
 
-Erga Autopilot is an independent project by Ralph Clavens Love Noel.
+Rove is an independent project by Ralph Clavens Love Noel.
 
-It exists because [Erga](https://github.com/Adr1an04/erga-mcp) already gave me a strong local-first recruiting foundation. I wanted to take that setup further for my own use by letting the agent operate the application browser, ask me for missing information, keep the exact resume and answers it submitted, and track the recruiting process afterward.
+It started from [Erga](https://github.com/Adr1an04/erga-mcp), a local-first recruiting assistant maintained by Adrian (`Adr1an04`) and the Erga contributors.
 
-This is not an official Erga project, is not endorsed by its maintainer, and should not be confused with the upstream repository.
+I built this repo because I wanted to take that foundation further for my own use: let a local recruiting agent operate the application browser, ask for missing information, preserve the exact resume and answers it submitted, and track the recruiting process afterward.
+
+Rove is not an official Erga project, is not endorsed by its maintainer, and should not be confused with the upstream repository.
 
 ## Erga
 
@@ -12,9 +14,7 @@ Upstream repository:
 
 https://github.com/Adr1an04/erga-mcp
 
-Upstream license:
-
-MIT
+Upstream license: MIT
 
 Original notice:
 
@@ -42,12 +42,31 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-The Erga logo mark and outlined wordmark in this repository come from the upstream Erga asset under the same MIT license. The `AUTOPILOT` label is specific to this project.
+The Rove logo and mark in `docs/assets/` are this project's own. This repository does not ship the Erga logo mark or wordmark.
 
 ## Other dependencies
 
-Erga Autopilot is built to work with independent open-source and third-party projects including Qwen, Hermes Agent, Playwright MCP, MLX/MLX-VLM, Discord, and Zoho APIs.
+Rove is intended to work with independent projects and services including Qwen, Hermes Agent, Playwright/Chromium, optional Playwright MCP tooling, MLX/MLX-VLM, Obsidian, QMD, Discord, and Zoho APIs.
 
-Those projects keep their own names, trademarks, licenses, and terms. Using or integrating with them does not imply endorsement or affiliation.
+Obsidian is used as the reference human interface for the private local Markdown vault. QMD is used as a local retrieval/indexing layer over that vault in the reference full setup.
 
-As implementation lands, this file should be updated whenever a dependency requires explicit attribution or redistribution notices.
+Those projects and services keep their own names, trademarks, licenses, and terms. Using them together does not imply endorsement or affiliation.
+
+Update this file when a dependency's license requires explicit attribution or redistribution notices.
+
+## Patchright
+
+The recruiting browser is driven with [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python), a fork of Microsoft Playwright, both under the Apache License 2.0.
+
+## Unslop
+
+The drafting rules digest and the built-in list of AI-writing tells in `src/rove/unslop.py` derive from [Unslop](https://github.com/theclaymethod/unslop) by Clayton Kim, MIT License. The scanners themselves run from a local clone when one is configured.
+
+## Humanizer
+
+The `HUMANIZER_HARD` and `HUMANIZER_SOFT` tell lists, the shape checks (connector dashes,
+lists of three, repeated sentence openers, questions, curly quotes) and the Humanizer
+rules sentence in `src/rove/unslop.py` are a digest of
+[Humanizer](https://github.com/blader/humanizer) by Siqi Chen, MIT License
+(Copyright (c) 2025 Siqi Chen), which follows Wikipedia's "Signs of AI writing" guide.
+No Humanizer code is copied; the lists restate its pattern catalog.

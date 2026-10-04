@@ -1,0 +1,8 @@
+name: rove_shortcuts
+version: "1.2.0"
+description: "Answers a few exact forms in Rove's agent-control channel (a message that is only job links, status, what's waiting, how many did you send today, pause, resume, help, first, /new, /reset) with Rove's own code before any model turn, and keeps that chat's history short. Everything else goes to the model, which reads it however it is phrased."
+author: "Rove"
+provides_hooks:
+  - pre_gateway_dispatch
+  - post_tool_call
+  - transform_llm_output

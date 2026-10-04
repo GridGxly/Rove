@@ -1,0 +1,34 @@
+{
+  "scope": "synthetic loopback fixture; screenshot instrumentation; not a benchmark",
+  "browser": "Google Chrome",
+  "browser_version": "154.0.8037.97",
+  "model": "fixed test stand-in; Qwen was not started or called",
+  "erga": "approved synthetic base resume; test stand-in",
+  "discord": "test stand-in; no Discord requests",
+  "application_queue": {
+    "rows": 1,
+    "status": "APPLIED"
+  },
+  "submission_attempts": {
+    "rows": 1,
+    "status": "APPLIED"
+  },
+  "submission_outbox": {
+    "pending_rows": 0
+  },
+  "employer_receipt": {
+    "validated_fields": 14,
+    "resume_sha256": "3ab42cae45158de91ec120f64850efc3f8c3ecf53fa12126aad11ddc48662735",
+    "matches_synthetic_fixture": true
+  },
+  "real_submissions_for_seven_selected_jobs": 0,
+  "verified_full_game_completions": 0,
+  "captured_on": "2026-10-04",
+  "source_commit": "1d6b163b0e9e06d885004168e4e601ea1c302da5",
+  "initial_capture_check": "failed assertion: expected a processed outbox row to remain; original run and artifacts preserved privately",
+  "capture_changes": [
+    "launch existing fixture in Google Chrome headless",
+    "capture the unchanged form element before and after preparation",
+    "check committed application and attempt rows and the drained outcome outbox"
+  ]
+}

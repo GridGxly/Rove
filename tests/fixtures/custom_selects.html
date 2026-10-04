@@ -1,0 +1,130 @@
+<!doctype html>
+<!-- Synthetic dropdowns that behave like three custom widgets seen on job boards: an ARIA
+     dropdown with no input element (react-widgets style), a search input covered by the
+     value it shows, with a role-less option list drawn elsewhere on the page, and a toggle
+     button over a hidden select with a menu of items. The markup follows those widgets;
+     the questions, values and script are invented. "Opened" counts how often a widget
+     was opened. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Tidewater Freight - Dispatcher Application</title>
+<style>
+  .rw-popup-container { display: none; }
+  .rw-open .rw-popup-container { display: block; }
+  .shell { position: relative; width: 300px; height: 32px; border: 1px solid #888; }
+  .shell .input-select-input-single-value { position: absolute; left: 0; right: 0; top: 0; bottom: 0; z-index: 2; background: #fff; }
+  .shell input { position: absolute; left: 0; top: 0; width: 100%; height: 100%; border: 0; }
+  .list { border: 1px solid #888; background: #fff; width: 300px; }
+  select.concealed { border: none; height: 0; opacity: 0; overflow: hidden; padding: 0; position: absolute; width: 0; }
+</style></head>
+<body>
+<form id="application-form">
+<div class="form-group form-required">
+  <label>May we text you about this application? <span><em>(required)</em></span></label>
+  <div><div id="texting" role="combobox" aria-expanded="false" aria-haspopup="true" tabindex="0" class="rw-dropdownlist rw-widget">
+    <span tabindex="-1" title="open dropdown" aria-label="open dropdown" class="rw-select rw-btn"><span aria-hidden="true" class="rw-i"></span></span>
+    <div class="rw-input">--</div>
+    <div class="rw-popup-container"><ul id="texting__listbox" role="listbox" tabindex="-1">
+      <li role="option" aria-selected="true">--</li>
+      <li role="option" aria-selected="false">Yes*</li>
+      <li role="option" aria-selected="false">No</li>
+    </ul></div>
+  </div></div>
+</div>
+<div data-automation-id="state-wrapper" type="dropdown-wrapper">
+  <label for="state"><span>State</span>
+    <div><div class="shell pcty-input-select-full-container" id="state-select-wrapper" aria-expanded="false" aria-haspopup="listbox" required="">
+      <div class="pcty-input-select-input-container">
+        <div class="input-select-input-single-value">Select a state</div>
+        <div class="pcty-input-select__input"><input aria-autocomplete="list" id="state" maxlength="250" required="" tabindex="0" type="text" value=""></div>
+      </div>
+    </div></div>
+  </label>
+</div>
+<div class="MuiFormControl-root">
+  <div><label for="country-select">Country<span aria-hidden="true"> *</span></label></div>
+  <div class="fab-Select"><div style="display: inline-block;"><div class="fab-SelectToggle__container">
+    <button aria-expanded="false" aria-haspopup="true" aria-label="Country –Select–" data-menu-id="country-menu" tabindex="0" class="fab-SelectToggle" type="button"><div class="fab-SelectToggle__guts"><div class="fab-SelectToggle__placeholder">–Select–</div></div></button>
+  </div></div>
+  <select aria-hidden="true" class="concealed" id="country-select" name="countryId" required="" tabindex="-1"><option value=""></option></select></div>
+</div>
+<p>Opened: <span id="opened">0</span></p>
+</form>
+<script>
+  let opened = 0;
+  const count = () => { document.getElementById('opened').textContent = String(++opened); };
+
+  const texting = document.getElementById('texting');
+  texting.addEventListener('click', event => {
+    const option = event.target.closest('[role=option]');
+    if (option) {
+      texting.querySelectorAll('[role=option]').forEach(o => o.setAttribute('aria-selected', String(o === option)));
+      texting.querySelector('.rw-input').textContent = option.textContent;
+    } else if (!texting.classList.contains('rw-open')) {
+      count();
+    }
+    texting.classList.toggle('rw-open', !option && !texting.classList.contains('rw-open'));
+    texting.setAttribute('aria-expanded', String(texting.classList.contains('rw-open')));
+  });
+
+  // The list shows three rows at a time, like a long list that is only drawn in part.
+  const STATES = ['Alabama', 'Alaska', 'Arizona', 'Arkansas', 'Kansas'];
+  const shell = document.getElementById('state-select-wrapper');
+  const search = document.getElementById('state');
+  const shownValue = shell.querySelector('.input-select-input-single-value');
+  const closeList = () => {
+    document.getElementById('state-dropdown-list-container')?.remove();
+    shell.setAttribute('aria-expanded', 'false');
+    shell.removeAttribute('aria-owns');
+  };
+  const drawList = () => {
+    closeList();
+    const rows = STATES.filter(s => s.toLowerCase().includes(search.value.toLowerCase())).slice(0, 3);
+    const box = document.createElement('div');
+    box.id = 'state-dropdown-list-container';
+    box.className = 'list';
+    box.innerHTML = '<div class="pcty-input-select__menu-list"><div>' + (rows.length
+      ? rows.map((s, i) => '<div class="ListItem' + (i % 2 ? 'Odd' : 'Even') + '">' + s + '</div>').join('')
+      : '<div class="ListItemEven">No Results Found</div>') + '</div></div>';
+    box.addEventListener('mousedown', event => {
+      const row = event.target.closest('[class^=ListItem]');
+      if (row && STATES.includes(row.textContent)) {
+        shownValue.textContent = row.textContent;
+        search.value = '';
+        closeList();
+      }
+    });
+    document.body.append(box);
+    shell.setAttribute('aria-expanded', 'true');
+    shell.setAttribute('aria-owns', box.id);
+  };
+  // The box sits inside a label, which forwards every click to the input: an open list
+  // stays open on that second click.
+  shell.addEventListener('click', () => {
+    if (shell.getAttribute('aria-expanded') === 'true') return;
+    count(); search.focus(); drawList();
+  });
+  search.addEventListener('input', () => { shownValue.textContent = ''; drawList(); });
+
+  const toggle = document.querySelector('.fab-SelectToggle');
+  const hiddenSelect = document.getElementById('country-select');
+  toggle.addEventListener('click', () => {
+    count();
+    document.getElementById('country-menu')?.remove();
+    const menu = document.createElement('div');
+    menu.id = 'country-menu';
+    menu.setAttribute('role', 'menu');
+    menu.innerHTML = ['Canada', 'United States'].map(c => '<div role="menuitem" tabindex="-1">' + c + '</div>').join('');
+    menu.addEventListener('click', event => {
+      const item = event.target.closest('[role=menuitem]');
+      toggle.querySelector('.fab-SelectToggle__guts').innerHTML = '<div class="fab-SelectToggle__content">' + item.textContent + '</div>';
+      toggle.setAttribute('aria-label', 'Country ' + item.textContent);
+      hiddenSelect.innerHTML = '<option value="' + item.textContent + '" selected>' + item.textContent + '</option>';
+      toggle.setAttribute('aria-expanded', 'false');
+      menu.remove();
+    });
+    document.body.append(menu);
+    toggle.setAttribute('aria-expanded', 'true');
+  });
+</script>
+</body>
+</html>

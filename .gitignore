@@ -26,13 +26,13 @@ blob-report/
 .AppleDouble
 .LSOverride
 
-# IDE and local agent settings
+# IDE / local editor and agent state
 .idea/
 .vscode/*.local.json
 .claude/settings.local.json
 .claude/*.local.json
 
-# Local environment / machine-specific config
+# Local env and machine-specific config
 .env
 .env.*
 !.env.example
@@ -64,10 +64,11 @@ client_secret*.json
 client_secrets*.json
 service-account*.json
 service_account*.json
+auth*.json
 tokens*.json
-oauth*.json
 zoho*.json
 discord*.json
+oauth*.json
 *.credentials.json
 .netrc
 .npmrc
@@ -79,8 +80,8 @@ id_dsa
 secrets/
 mcp-tokens/
 
-# Autopilot live state
-.erga-autopilot/
+# Rove live state
+.rove/
 state/
 runtime/
 private/
@@ -93,17 +94,20 @@ mail-cache/
 tmp/
 temp/
 cache/
+
+# Databases and sidecars
 *.sqlite
 *.sqlite3
 *.db
-*.db-shm
-*.db-wal
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite3-journal
 *.sqlite3-wal
 *.sqlite3-shm
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Candidate profile and personal memory
 profile/
@@ -112,9 +116,7 @@ candidate*.json
 applicant*.json
 answers*.json
 
-# Agent / browser state
-.hermes/
-.playwright/
+# Browser and agent state
 browser-profile/
 browser-state/
 user-data-dir/
@@ -124,6 +126,8 @@ storage-state*.json
 auth-state*.json
 cookies*.json
 session*.json
+.hermes/
+.playwright/
 
 # Application artifacts
 applications/
@@ -144,16 +148,17 @@ email-evidence/
 *.out
 *.synctex.gz
 
-# Keep intentionally synthetic source fixtures
+# Keep intentionally synthetic fixtures
 !tests/fixtures/**/*.pdf
 !tests/fixtures/**/*.docx
 !tests/fixtures/**/*.tex
 !tests/fixtures/**/*.example.json
 !examples/**/*.pdf
+!examples/**/*.docx
 !examples/**/*.tex
 !examples/**/*.example.json
 
-# Local model/cache pointers
+# Local model files and caches
 models/
 model-cache/
 *.safetensors

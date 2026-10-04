@@ -1,0 +1,197 @@
+{
+  "about": "Ceilings for ruff findings per rule and file; the rules are those in [tool.ruff.lint] ignore. Checked by scripts/ratchet.py quality. Lower with --update after fixing; never raise without review.",
+  "counts": {
+    "ARG001": {
+      "src/rove/benchmark.py": 1,
+      "src/rove/questions.py": 1,
+      "src/rove/submission.py": 1,
+      "src/rove/worker.py": 1,
+      "src/rove/workflow.py": 1
+    },
+    "ARG003": {
+      "src/rove/boards/base.py": 2,
+      "src/rove/submission.py": 6
+    },
+    "ARG005": {
+      "src/rove/benchmark.py": 1
+    },
+    "B007": {
+      "src/rove/research.py": 1
+    },
+    "C901": {
+      "scripts/benchmark_hermes.py": 1,
+      "src/rove/benchmark.py": 1,
+      "src/rove/browser.py": 1,
+      "src/rove/cli.py": 1,
+      "src/rove/intake.py": 2,
+      "src/rove/live_browser.py": 3,
+      "src/rove/mail.py": 2,
+      "src/rove/model_client.py": 1,
+      "src/rove/questions.py": 3,
+      "src/rove/reasoning.py": 2,
+      "src/rove/resumes.py": 1,
+      "src/rove/submission.py": 2,
+      "src/rove/vault.py": 1,
+      "src/rove/worker.py": 3,
+      "src/rove/workflow.py": 1
+    },
+    "E501": {
+      "src/rove/browser.py": 7,
+      "src/rove/discord_feed.py": 2,
+      "src/rove/form_reading.py": 80,
+      "src/rove/inbound.py": 2,
+      "src/rove/intake.py": 1,
+      "src/rove/job_index.py": 1,
+      "src/rove/live_browser.py": 50,
+      "src/rove/mail.py": 2,
+      "src/rove/matching.py": 1,
+      "src/rove/memory_channel.py": 1,
+      "src/rove/overlays.py": 11,
+      "src/rove/prompts.py": 1,
+      "src/rove/questions.py": 11,
+      "src/rove/reasoning.py": 2,
+      "src/rove/shortcuts.py": 1,
+      "src/rove/submission.py": 9,
+      "src/rove/vault.py": 2,
+      "src/rove/worker.py": 3,
+      "src/rove/workflow.py": 10,
+      "tests/test_boards.py": 1,
+      "tests/test_browser_app.py": 1,
+      "tests/test_browser_guards.py": 12,
+      "tests/test_education.py": 1,
+      "tests/test_form_reading.py": 4,
+      "tests/test_form_steps.py": 8,
+      "tests/test_frames.py": 5,
+      "tests/test_live_submission.py": 21,
+      "tests/test_live_widgets.py": 4,
+      "tests/test_mail.py": 8,
+      "tests/test_questions.py": 4,
+      "tests/test_security_inbound.py": 3
+    },
+    "E731": {
+      "src/rove/live_browser.py": 1,
+      "src/rove/matching.py": 1,
+      "tests/test_common_questions.py": 1,
+      "tests/test_delivery.py": 1,
+      "tests/test_frames.py": 1,
+      "tests/test_intake.py": 2,
+      "tests/test_live_submission.py": 1,
+      "tests/test_overlays.py": 1,
+      "tests/test_submission.py": 3,
+      "tests/test_workflow.py": 5
+    },
+    "PLR0911": {
+      "src/rove/intake.py": 1,
+      "src/rove/live_browser.py": 1,
+      "src/rove/mail.py": 1,
+      "src/rove/memory_channel.py": 1,
+      "src/rove/questions.py": 6,
+      "src/rove/worker.py": 1,
+      "src/rove/workflow.py": 3,
+      "tests/test_delivery.py": 1,
+      "tests/test_mail.py": 1
+    },
+    "PLR0912": {
+      "src/rove/browser.py": 1,
+      "src/rove/cli.py": 1,
+      "src/rove/intake.py": 2,
+      "src/rove/live_browser.py": 3,
+      "src/rove/mail.py": 2,
+      "src/rove/model_client.py": 1,
+      "src/rove/questions.py": 3,
+      "src/rove/reasoning.py": 2,
+      "src/rove/submission.py": 2,
+      "src/rove/vault.py": 1,
+      "src/rove/worker.py": 2,
+      "src/rove/workflow.py": 1
+    },
+    "PLR0913": {
+      "src/rove/alerts.py": 1,
+      "src/rove/mail.py": 2,
+      "src/rove/timing.py": 1,
+      "src/rove/workflow.py": 2
+    },
+    "PLR0915": {
+      "scripts/benchmark_hermes.py": 1,
+      "src/rove/benchmark.py": 1,
+      "src/rove/cli.py": 1,
+      "src/rove/discord_feed.py": 1,
+      "src/rove/intake.py": 2,
+      "src/rove/live_browser.py": 3,
+      "src/rove/questions.py": 1,
+      "src/rove/reasoning.py": 2,
+      "src/rove/submission.py": 1,
+      "src/rove/worker.py": 2,
+      "src/rove/workflow.py": 1,
+      "tests/test_authority.py": 1
+    },
+    "PTH105": {
+      "src/rove/jobs.py": 1
+    },
+    "PTH115": {
+      "src/rove/browser_app.py": 1
+    },
+    "PTH123": {
+      "scripts/benchmark_kv.py": 1,
+      "src/rove/browser_app.py": 2,
+      "src/rove/erga_session.py": 1,
+      "src/rove/live_browser.py": 1,
+      "src/rove/resumes.py": 1,
+      "src/rove/services.py": 1,
+      "src/rove/worker.py": 1,
+      "tests/test_browser_guards.py": 1,
+      "tests/test_model_path.py": 1,
+      "tests/test_reasoning.py": 1,
+      "tests/test_unattended_failure_modes.py": 1
+    },
+    "S101": {
+      "scripts/benchmark_hermes.py": 2,
+      "src/rove/browser.py": 1,
+      "src/rove/resumes.py": 1
+    },
+    "S311": {
+      "src/rove/live_browser.py": 5
+    },
+    "S603": {
+      "src/rove/browser_app.py": 2,
+      "src/rove/cli.py": 3,
+      "src/rove/evidence.py": 1,
+      "src/rove/live_browser.py": 4,
+      "src/rove/memory.py": 1,
+      "src/rove/reasoning.py": 2,
+      "src/rove/services.py": 3,
+      "src/rove/shortcuts.py": 1,
+      "src/rove/unslop.py": 1,
+      "src/rove/worker.py": 1
+    },
+    "S607": {
+      "src/rove/cli.py": 1,
+      "src/rove/live_browser.py": 5,
+      "src/rove/metrics.py": 5,
+      "src/rove/services.py": 3
+    },
+    "S608": {
+      "src/rove/delivery.py": 11,
+      "src/rove/intake.py": 5,
+      "src/rove/job_index.py": 2,
+      "src/rove/jobs.py": 2,
+      "src/rove/mail.py": 1,
+      "src/rove/submission.py": 1,
+      "src/rove/timing.py": 1,
+      "src/rove/workflow.py": 4
+    },
+    "SIM105": {
+      "src/rove/boards/base.py": 1,
+      "src/rove/live_browser.py": 6,
+      "src/rove/submission.py": 3,
+      "tests/test_form_steps.py": 1
+    },
+    "SIM108": {
+      "tests/test_overlays.py": 1
+    },
+    "T201": {
+      "src/rove/benchmark.py": 1,
+      "src/rove/live_browser.py": 2
+    }
+  }
+}

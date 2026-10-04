@@ -1,0 +1,162 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rove"
+version = "0.1.0"
+description = "Rove: a local-first recruiting autopilot that finds internships, fills and sends applications, and keeps the record"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "httpx>=0.28,<1",
+    "pydantic>=2.12,<3",
+    "mcp>=2,<3",
+    "pyyaml>=6,<7",
+    "psutil>=7,<8",
+    "patchright>=1.63,<2",
+    "cryptography>=45,<60",
+]
+
+[project.scripts]
+rove = "rove.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4,<3",
+    "pillow>=12,<13",
+    "pylint>=4.1,<5",
+    "pytest>=8,<10",
+    "pytest-cov>=7,<8",
+    "pytest-randomly>=3.16,<6",
+    "pytest-timeout>=2.4,<3",
+    "ruff>=0.16,<0.17",
+    "types-psutil",
+    "types-pyyaml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rove"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `smoke` builds the wheel and installs it into a fresh virtualenv, so it runs only when
+# the -m expression names it: `pytest -m smoke`, or `pytest -m "smoke or not smoke"` for
+# everything (tests/ci_marks.py).
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+xfail_strict = true
+# A hang fails the test instead of the job. The slowest browser test takes about 11 s on
+# an M5 Pro; slow CI runners get room on top of that.
+timeout = 120
+markers = [
+    "e2e: drives a fixture Chromium; set automatically on every test that launches one (tests/ci_marks.py)",
+    "performance: the offline fixture application measured against time and call budgets",
+    "smoke: builds the wheel and sdist and runs the installed package from a fresh virtualenv",
+]
+# Problems that tests would otherwise only print: an exception nobody saw in a thread or
+# in a finalizer, a file or socket left open, a coroutine never awaited.
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+    "error::ResourceWarning",
+    "error:coroutine .* was never awaited:RuntimeWarning",
+]
+
+[tool.coverage.run]
+source = ["rove"]
+branch = true
+# Patchright's synchronous API switches greenlets; the worker also uses threads.
+concurrency = ["greenlet", "thread"]
+
+[tool.coverage.paths]
+source = ["src/rove", "*/site-packages/rove"]
+
+[tool.coverage.report]
+# The floor only goes up. After a change that raises total coverage, set this to the new
+# total minus two points (one decimal) in the same pull request; never lower it.
+# 2026-10-04: the full suite measured 87.90 % with branch coverage.
+fail_under = 85.9
+precision = 1
+skip_covered = true
+show_missing = true
+exclude_also = ["if __name__ == .__main__.:"]
+
+[tool.mypy]
+python_version = "3.12"
+# Rove runs on macOS; checking as macOS keeps the counts the same on a Linux CI runner.
+platform = "darwin"
+files = ["src"]
+check_untyped_defs = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+# Existing errors are counted per file and error code in scripts/baselines/types.json;
+# `python scripts/ratchet.py types` fails on any count above it.
+
+[tool.pylint.main]
+# Only the duplicate-code check runs; ruff does the rest of the linting.
+disable = "all"
+enable = "duplicate-code"
+
+[tool.pylint.similarities]
+min-similarity-lines = 8
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",       # pycodestyle errors
+    "W",       # pycodestyle warnings
+    "F",       # pyflakes
+    "I",       # isort
+    "B",       # bugbear
+    "SIM",     # simplify
+    "UP",      # pyupgrade
+    "C4",      # comprehensions
+    "RET",     # return
+    "ARG",     # unused arguments
+    "PTH",     # pathlib
+    "C90",     # mccabe complexity
+    "PLR0911", # too many returns
+    "PLR0912", # too many branches
+    "PLR0913", # too many arguments
+    "PLR0915", # too many statements
+    "S",       # bandit security checks
+    "T20",     # print
+    "ERA",     # commented-out code
+    "BLE",     # blind except; every `noqa: BLE001` carries `-- reason` (scripts/ratchet.py)
+    "RUF100",  # unused noqa
+    "PGH004",  # blanket noqa
+]
+# Rules the existing code breaks in many places. Plain `ruff check` skips them;
+# `python scripts/ratchet.py quality` counts them per file and fails on any count above
+# scripts/baselines/quality.json, so new code cannot add one while old ones burn down.
+# Keep `ignore` and `external` identical (external keeps RUF100 from calling a
+# `noqa` for one of them unused).
+ignore = [
+    "ARG001", "ARG002", "ARG003", "ARG005", "B007", "C901", "E501", "E731", "PLR0911",
+    "PLR0912", "PLR0913", "PLR0915", "PTH105", "PTH115", "PTH123", "S101", "S311", "S603",
+    "S607", "S608", "SIM105", "SIM108", "T201",
+]
+external = [
+    "ARG001", "ARG002", "ARG003", "ARG005", "B007", "C901", "E501", "E731", "PLR0911",
+    "PLR0912", "PLR0913", "PLR0915", "PTH105", "PTH115", "PTH123", "S101", "S311", "S603",
+    "S607", "S608", "SIM105", "SIM108", "T201",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-args = 6
+max-branches = 15
+max-returns = 8
+max-statements = 60
+
+[tool.ruff.lint.per-file-ignores]
+# The CLI and the developer scripts talk to a terminal.
+"src/rove/cli.py" = ["T20"]
+"scripts/*" = ["T20", "S603", "S607"]
+# Tests assert, stand in for functions with fixed signatures, use fixtures for their side
+# effects, and drive synthetic subprocesses, databases and credentials on purpose.
+"tests/*" = ["ARG", "S101", "S105", "S106", "S107", "S108", "S311", "S603", "S607", "S608"]

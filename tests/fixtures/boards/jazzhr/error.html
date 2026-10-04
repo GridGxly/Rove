@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- A JazzHR form its own script refused before anything was sent: the page stays, the
+     offending questions get `has-error`, and the unanswered human check gets
+     "Please verify." The marks are the ones the board's public form script applies.
+     Company, job and question are invented. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Field Technician - Pinecrest Robotics - Career Page</title>
+  <style>.none { display: none; }</style>
+</head>
+<body>
+<main>
+  <div class="job-header"><div class="container"><h2>Field Technician</h2></div></div>
+  <div class="page-body">
+    <div class="container">
+      <div id="resumator-application-form">
+        <div class="resumator-resume-text" id="resumator-resume-upload">
+          <h3 class="resumator-resume-text" id="resumator-resumes-title">Apply for this position</h3>
+          <form action="https://pinecrest.applytojob.com/apply/Zx9Kq2LmNp/Field-Technician" method="POST" data-test="form_submit_new_resume" id="form_submit_new_resume" enctype="multipart/form-data">
+            <input type="hidden" name="resumator-job-value" id="resumator-job-value" value="Zx9Kq2LmNp">
+            <div class="job-form-fields">
+              <div class="form-group">
+                <label id="resumator-firstname-label" for="resumator-firstname-value" class="control-label">First Name<i class="asterisk">*</i></label>
+                <input type="text" id="resumator-firstname-value" name="resumator-firstname-value" value="Avery" class="form-control">
+              </div>
+              <div class="form-group has-error">
+                <label id="resumator-email-label" for="resumator-email-value" class="control-label">Email Address<i class="asterisk">*</i></label>
+                <input type="email" id="resumator-email-value" name="resumator-email-value" value="" class="form-control">
+              </div>
+              <div class="form-group has-error">
+                <label id="resumator-questionnaire-q4100001-label" for="resumator-questionnaire-q4100001" class="control-label">Are you comfortable working on ladders?<i class="asterisk">*</i></label>
+                <select id="resumator-questionnaire-q4100001" name="resumator-questionnaire[4100001]" class="form-control resumator-select-field"><option value="resumator_no_selection">-- No answer --</option><option value="Yes">Yes</option><option value="No">No</option></select>
+              </div>
+              <div class="resumator-field-wrapper resumator-resume-text" id="resumator-recaptcha">
+                <div class="resumator-label resumator-resume-text" id="resumator-recaptcha-label">Human Check<i class="asterisk">*</i></div>
+                <div id="recaptcha-required-error" class="dv_error"><span>Please verify.</span></div>
+                <div class="resumator-input" id="resumator-recaptcha-field">
+                  <div class="g-recaptcha" data-sitekey="synthetic-site-key"><div style="width: 304px; height: 78px;"></div></div>
+                </div>
+              </div>
+              <div id="resumator-submit" class="form-group">
+                <a href="#" id="resumator-submit-resume" class="btn">Submit Application</a>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+</body>
+</html>

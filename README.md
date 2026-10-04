@@ -1,43 +1,55 @@
 <p align="center">
-  <img src="docs/assets/erga-autopilot-logo.svg" width="760" alt="Erga Autopilot" />
+  <img src="docs/assets/rove-logo.png" width="760" alt="Rove" />
 </p>
 
 <p align="center">
-  <strong>A local-first recruiting agent that can research jobs, tailor resumes, fill applications, and keep a complete application history.</strong>
+  <strong>A local-first recruiting assistant for job intake, application preparation, and auditable submission.</strong>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-C8792A.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/Status-Experimental-F2A93B.svg" alt="Experimental" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-C8792A.svg" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/status-pre--alpha-F2A93B.svg" alt="Pre-alpha" />
+  <img src="https://img.shields.io/badge/python-3.12%2B-3776AB.svg" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-171717.svg" alt="macOS Apple Silicon" />
+  <a href="https://github.com/GridGxly/Rove/actions/workflows/ci.yml"><img src="https://github.com/GridGxly/Rove/actions/workflows/ci.yml/badge.svg?branch=docs-initial-setup" alt="CI" /></a>
 </p>
+
+<p align="center">
+  <a href="docs/showcase.md">Visual walkthrough</a> ·
+  <a href="docs/getting-started.md">Set it up</a> ·
+  <a href="docs/visual-benchmark.md">Recorded results</a>
+</p>
+
+> **Pre-alpha.** The real end-to-end acceptance gate remains unmet. The walkthrough shows a synthetic fixture; it does not establish reliable employer submissions or Qwen visual reasoning.
 
 ## Why this exists
 
-I built Erga Autopilot for my own internship search.
+Rove is meant for my personal internship search, but I opened it in case this same workflow is helpful for others.
 
-[Erga](https://github.com/Adr1an04/erga-mcp) already handled a lot of the hard parts I cared about: local application tracking, evidence-backed resume tailoring, Git-backed project evidence, and recruiting-mail reconciliation. I wanted to take that foundation one step further and let a local agent actually work through applications for me.
+It is built on [Erga](https://github.com/Adr1an04/erga-mcp), which already handles application tracking, resume tailoring, project evidence, and recruiting-mail reconciliation. I wanted to automate the part I was still doing by hand: opening each application, filling the form, answering the written questions, sending it, and following what happens afterward.
 
-That means opening the form, filling what it knows, stopping when it needs me, keeping the exact resume and answers it submitted, and tracking what happens afterward.
-
-Erga Autopilot is not an official Erga project and is not affiliated with its maintainer. Adrian and the Erga contributors did the original Erga work. This repo builds on that foundation under the MIT license and adds the browser automation and personal-agent layer I wanted for myself. See [Third-party notices](THIRD_PARTY_NOTICES.md) for the attribution details.
+Rove is not an official Erga project and is not affiliated with its maintainer. Adrian and the Erga contributors did the original Erga work. Rove builds on it under the MIT license and adds browser automation, a Discord control surface, local applicant memory, and application orchestration. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution.
 
 ## What it does
 
-A normal run looks like this:
+1. A feed service reads the [Keryx](https://github.com/GodlyDonuts/keryx) job list every 15 minutes, posts each new matching internship to a Discord channel once, and queues it. A link I paste in Discord is worked before any feed job.
+2. A worker opens the posting in a dedicated Chrome that stays in the background. Local Qwen3.8-27B lists the posting's hard requirements and code compares them with my approved facts. A feed job that conflicts with one of them waits for my decision.
+3. Erga tailors a resume from approved evidence. If the tailored resume fails Erga's checks, the approved base PDF is used and the thread says so.
+4. Code fills the form from a frozen copy of the approved profile and verifies each value. A question the profile does not cover is filled from an answer I gave on an earlier form. What is left goes to Qwen for a draft, or to me when only I know the answer.
+5. Written drafts are scanned against the [Unslop](https://github.com/theclaymethod/unslop) and [Humanizer](https://github.com/blader/humanizer) rules, follow a sample of my own writing when the vault has one, and can use a short summary of the employer's public site.
+6. When the form is complete, Rove sends it once and reads the confirmation. Sending needs my `send it` reply unless I turn on the `auto_submit` policy, which has a daily cap and a minimum gap between sends.
+7. Each application has its own Discord forum thread with the filled values, the drafts, the resume PDF, a screenshot when a run stops, and the result.
+8. An optional mail service reads a Zoho inbox and moves a sent application to OA, Interview, Offer or Rejected.
 
-1. pick up a job from Discord or a direct URL;
-2. check it against your profile and application rules;
-3. use Erga to prepare an evidence-backed resume;
-4. research the company when a written question needs context;
-5. use local Qwen3.8-27B for reasoning;
-6. work through the application in a dedicated Playwright browser;
-7. stop and ask you when something is unknown or needs approval;
-8. submit only after the application package is complete;
-9. keep the exact resume, answers, clicks, screenshots, and receipt;
-10. watch recruiting mail for OAs, interviews, offers, and rejections.
+Rove tries recognised picture checks with a bounded local solver. It asks me when that fails, an account step needs approval, a fact is missing, approved facts conflict, or a submission result is unclear. Supported email codes come from the optional Zoho integration; SMS and authenticator MFA remain manual. An unclear submission is never retried by code.
 
-Discord is the remote interface. The model, databases, resumes, browser state, application history, and credentials stay on your machine.
+Discord is the remote control. The model, the vault, the database, resumes, the browser profile, credentials and the application history stay on my Mac.
+
+## One application, from link to outcome
+
+![Rove workflow: find the role, prepare from evidence, and verify the outcome](docs/assets/rove-workflow.svg)
+
+This is a workflow illustration. The [visual walkthrough](docs/showcase.md) pairs it with actual before-and-after captures from the synthetic browser fixture, the server and database checks, and the current live limitations.
 
 ## Architecture
 
@@ -45,160 +57,108 @@ Discord is the remote interface. The model, databases, resumes, browser state, a
 Discord
   │
   ▼
-Autopilot control plane
+Rove
   │
-  ├── Qwen3.8-27B      reasoning
-  ├── Hermes Agent     agent loop / sessions / MCP
-  ├── Erga             career evidence / resumes / application state
-  ├── Playwright MCP   browser control
-  ├── Zoho Mail        recruiting events and verification mail
-  └── SQLite           local profile and automation state
+  ├── Qwen3.8-27B      local reasoning
+  ├── Hermes Agent     sessions, tools, MCP, hot memory
+  ├── Erga             career evidence, resumes, application state
+  ├── Obsidian         long-term readable memory
+  │     └── QMD        local search over the approved profile
+  ├── SQLite           transactional workflow state
+  ├── Browser daemon   background Chrome driven over a local DevTools port
+  └── Zoho Mail        optional recruiting mail
 ```
 
-The split is deliberate: local state stores the facts, Discord shows the readable history, Qwen handles ambiguity, Hermes runs the agent loop, Playwright operates the browser, and Zoho catches recruiting events afterward.
+Obsidian holds what I want to read and edit: the approved profile, a voice sample, application notes and company research. SQLite holds state that must be exact: the queue, submission attempts, Discord bindings, remembered answers and mail checkpoints. Resumes, receipts and screenshots are private files. Hermes' built-in memory stays small.
 
-Read [How it works](docs/how-it-works.md) for the longer version.
+Qwen handles judgment: job fit, unfamiliar questions, written answers, and mail the rules cannot classify. Code owns permissions, validation, state changes and the Submit click. The model has no submit tool.
 
-## Application archive
+## Documentation
 
-Every application gets its own Discord forum post. I want that thread to be useful months later, not just say "applied."
+- [How it works](docs/how-it-works.md): the components and the path of one application
+- [Application workflow](docs/application-workflow.md): intake, job fit, answers, sending, mail tracking, and current limits
+- [Discord](docs/discord.md): channels, cards, and the replies Rove accepts
+- [Browser automation](docs/browser-automation.md): the recruiting browser and how forms are filled
+- [Memory and storage](docs/memory-and-storage.md): where each kind of data lives
+- [Requirements](docs/requirements.md): the full install checklist and configuration keys
+- [Getting started](docs/getting-started.md): setup in order
+- [Visual walkthrough](docs/showcase.md): a synthetic application and the evidence behind it
+- [Qwen visual benchmark](docs/visual-benchmark.md): recorded failures and the evidence required for the MVP
+- [Security](SECURITY.md) and [Prompt injection](docs/prompt-injection.md): the trust model
 
-It should keep:
-
-- the source job and official application URL;
-- the exact resume file that was uploaded;
-- each form page the agent reached;
-- every field label and value it entered;
-- where each answer came from;
-- every checkbox, selection, and meaningful click;
-- account creation and email verification events;
-- written answers and approval history;
-- browser validation errors and retries;
-- the final submit action;
-- the confirmation page and receipt;
-- later events such as an OA, interview, offer, rejection, or withdrawal.
-
-Tags show the current lifecycle state. Timeline comments show how it got there.
-
-## Memory and onboarding
-
-The model does not get to invent its own memory format.
-
-The candidate profile is a versioned schema in code. Qwen can conduct the onboarding conversation and ask follow-ups, but it only writes into fields, policies, and story slots that already exist. A separate `introduction.md` stores the more human context: motivations, interests, proudest projects, leadership stories, writing style, and similar background.
-
-When the agent needs information, it checks sources in this order:
-
-1. approved candidate profile;
-2. approved Erga evidence;
-3. `introduction.md`;
-4. portfolio and GitHub;
-5. external research.
-
-If a form asks something the profile has never seen, Autopilot pauses and asks. You can save the answer afterward so the next equivalent question does not interrupt you again.
-
-## Browser automation
-
-Browser work goes through [Playwright MCP](https://playwright.dev/mcp/installation) in its own recruiting profile.
-
-Keep your everyday browser separate. The application agent should not inherit unrelated logins, banking sessions, saved passwords, or personal browser state.
-
-The project starts in visible, prepare-only mode so you can watch it work. Submission and unattended autopilot come later.
+The rest is listed in [docs/README.md](docs/README.md).
 
 ## Local model
 
-The target model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), running locally on Apple Silicon with an MLX-compatible quantization.
-
-Qwen is the part that handles judgment calls: job fit, unfamiliar form wording, company research, browser recovery, resume selection, and written-response drafting.
-
-It is not the database and it is not the authorization layer. Exact facts such as contact information, education, work authorization, dates, and saved application answers come from structured local state.
+The reference checkpoint is [OrcaRouter's Qwen3.8-27B MLX conversion](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX) at 4-bit, served on localhost by oMLX as `Qwen3.8-27B-Uncensored-4bit`. The tested revision, settings and a [quick inference check](docs/local-runtime.md#quick-inference-check) are in [Local runtime](docs/local-runtime.md). [Runtime measurements](docs/runtime-benchmarks.md) separates model speed from workflow verification.
 
 ## Hardware
 
-I am developing and testing this on Apple Silicon macOS.
+I develop on a 14-inch MacBook Pro with an M5 Pro (18-core CPU, 20-core GPU), 48GB of unified memory and a 1TB SSD. The stack is tuned for that machine.
 
-My current machine is:
+This Mac has loaded the model and completed local inference. That establishes that 48GB can run the reference configuration, not that every desktop workload has enough headroom. Monitor memory pressure and swap during requests; model weight size alone is insufficient. A 64GB configuration has more capacity, but has not been tested here.
 
-- 14-inch MacBook Pro
-- M5 Pro, 18-core CPU / 20-core GPU
-- 48GB unified memory
-- 1TB SSD
+You do not need the same Mac. On different hardware, expect to change the model or quantization, the context size and the retention settings in your own clone. [Will this run on my machine?](docs/hardware-check.md) has a prompt you can give another model or coding agent so it can read the repo, compare it with your hardware, and suggest a starting configuration without inventing benchmark numbers.
 
-Qwen3.8-27B at 4-bit is still a large local model. The full stack is comfortable on 48GB, which is the hardware I am tuning against.
-
-You do not need the same Mac to experiment with the repo. If your machine has less memory or a different GPU/CPU setup, clone or fork it and tune the model, quantization, context size, concurrency, browser mode, and retention limits for your hardware. Just do not assume settings tested on my machine will behave the same everywhere else.
-
-Other platforms may work later, but I am not testing them right now.
-
-Not sure where your machine lands? [Run the hardware sanity check](docs/hardware-check.md). It includes a prompt you can give to ChatGPT, Claude, Gemini, Grok, or another capable agent so it can read the current repo, inspect your specs, and recommend a starting configuration without guessing benchmark numbers.
+Apple Silicon macOS is the only platform I test.
 
 ## Requirements
 
-The local stack currently expects:
-
 - macOS on Apple Silicon
-- Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/)
-- Git
-- Node.js 20+ for Playwright MCP
-- an MLX / MLX-VLM runtime that supports Qwen3.8
+- Python 3.12 through 3.14, [`uv`](https://docs.astral.sh/uv/), Git
+- oMLX with the Qwen3.8-27B MLX weights
 - Hermes Agent
-- Discord bot credentials
-- optional Zoho Mail OAuth for recruiting-mail tracking
+- Erga, installed from the Rove fork
+- Tectonic for resume compilation
+- a private Obsidian vault
+- QMD and Node.js 22+ for local profile retrieval
+- Google Chrome; `rove browser install` makes a separate copy of it, the Rove Browser, driven with Patchright
+- your own Discord bot in a private server you own
+- optional: Zoho Mail API access for mail tracking
 
-See [Getting started](docs/getting-started.md) before wiring it up to real data.
-
-## Status
-
-This is experimental software and it is being built in stages.
-
-The rough order is:
-
-- local runtime and model certification
-- candidate onboarding and memory
-- Discord control plane
-- job ingestion and shortlist
-- resume and company research
-- Playwright prepare-only automation
-- controlled submission
-- recruiting-mail tracking
-- restricted autopilot
-
-Working code is not the same thing as safe unattended submission. Irreversible steps stay behind test gates until the earlier pieces have been proven against real application flows.
+[Requirements](docs/requirements.md) is the full checklist, including how to create the Discord bot and every configuration key.
 
 ## Security and privacy
 
-This project handles resumes, contact details, browser sessions, employment history, recruiting email, and employer-account credentials.
+Rove handles personal recruiting data and can send applications. Treat anything committed to this repository as public.
 
-Keep real runtime state out of Git. Do not commit databases, resumes, application receipts, cookies, OAuth tokens, screenshots, private profile data, generated passwords, or logs with personal information.
+Real profiles, the vault, resumes, browser sessions, credentials, receipts, recruiting mail, screenshots, logs and databases live outside the Git checkout, under `~/.config/rove` by default. Examples and tests use synthetic people, companies and credentials.
 
-Read [SECURITY.md](SECURITY.md) before connecting Discord, Playwright, Zoho, or real application data.
+Read [SECURITY.md](SECURITY.md), [Browser automation](docs/browser-automation.md) and [Prompt injection](docs/prompt-injection.md) before connecting Discord, the browser, Zoho or real application data.
 
 ## Getting started
 
-This is not a one-command consumer app yet. If you want to try it, start with synthetic data:
+Rove is pre-alpha and has no one-command installer.
 
 ```bash
-git clone https://github.com/GridGxly/erga-autopilot.git
-cd erga-autopilot
-uv sync
+git clone --branch docs-initial-setup https://github.com/GridGxly/Rove.git
+cd Rove
+uv sync --frozen --python 3.12
 ```
 
-Then follow [docs/getting-started.md](docs/getting-started.md).
+`docs-initial-setup` contains the current pre-alpha implementation; `main` may lag while changes are under review. Then follow [Getting started](docs/getting-started.md). Start with synthetic data and leave submission off until preparation works on your machine.
 
-If you want the original local-first recruiting assistant without browser auto-application behavior, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
+If you want the original recruiting assistant without browser auto-application, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
+
+## Status
+
+Rove runs my own search on one Mac. The pieces above are implemented and covered by an offline test suite. These limits matter most:
+
+The MVP acceptance gate is still unmet: zero verified full-game completions and zero confirmed submissions for the seven selected validation jobs. The latest Oracle test retrieved and accepted an email verification code, then stopped on form controls. It did not submit. Offline fixture success and local inference checks do not establish real application completion.
+
+- Forms are filled only on a fixed list of applicant-tracking hosts, and only when the form belongs to the same job as the queued link.
+- Public Greenhouse, public Lever and generic page-confirmation adapters are available, with additional board modules enabled separately in local configuration. Their fixtures establish specific behavior, not broad live success rates. Where no enabled adapter matches, Rove fills the form and I press Submit.
+- The local CAPTCHA solver is experimental; visual recognition has failed in recorded trials. Set `captcha_solver` to `manual` to leave picture checks to yourself. SMS/authenticator MFA remains manual, and Rove uses no proxies.
+- The `Accepted` and `Withdrawn` states are not set by code, and there are no reminders.
+
+[Application workflow](docs/application-workflow.md#limits) has the full list. The definition of done is in the [product requirements](docs/prd.md).
+
+Sending an application cannot be undone. Submission is off until you enable it in private configuration.
 
 ## Contributing
 
-This started as a personal tool, so I care more about correctness and traceability than clever automation.
-
-Issues and focused pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing application state, browser permissions, profile memory, resume evidence, or security boundaries.
+Focused issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing application state, browser permissions, profile memory, resume evidence, or security boundaries.
 
 ## Author
 
-Built by [Ralph Clavens Love Noel](https://github.com/GridGxly) for personal use, then opened up in case the same workflow is useful to someone else.
-
-## License
-
-Erga Autopilot is licensed under the [MIT License](LICENSE).
-
-Parts of the project and some design decisions come from Erga and remain subject to Erga's MIT license and attribution requirements. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Built by [Ralph Clavens Love Noel](https://github.com/GridGxly).

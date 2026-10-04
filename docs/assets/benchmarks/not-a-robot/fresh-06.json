@@ -1,0 +1,673 @@
+{
+  "url": "https://neal.fun/not-a-robot/",
+  "started_at": "2026-10-04T14:19:44.520613+00:00",
+  "model": "Qwen3.8-27B-Uncensored-4bit",
+  "model_revision": "14963e70f886455cf93090ac95bdbf4c8730cbe1",
+  "temperature": 0,
+  "thinking": false,
+  "max_tokens": 768,
+  "response_format": {
+    "type": "json_object"
+  },
+  "decision_schema": "visible observation and one action",
+  "viewport": {
+    "width": 1000,
+    "height": 900
+  },
+  "runner_sha256": "8dd539fb13c658c3ba28618fd7247cb19f51460ba82a07ca60826b81840b4aee",
+  "prompt_sha256": "12a6ea073721ed441620f9a709cd00de6b9b2b47417fe4ee1f878dfd786847de",
+  "verified_complete": false,
+  "actions": [
+    {
+      "step": 0,
+      "level": "Level 1: Checkbox",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 8.212,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            368,
+            192
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 10.528,
+      "feedback": "The displayed level changed."
+    },
+    {
+      "step": 1,
+      "level": "Level 2: Stop Signs",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 14.749,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            562,
+            262
+          ],
+          [
+            656,
+            262
+          ],
+          [
+            562,
+            380
+          ],
+          [
+            656,
+            380
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 28.006,
+      "feedback": "Still on the same level after 1 actions."
+    },
+    {
+      "step": 2,
+      "level": "Level 2: Stop Signs",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 10.431,
+      "action": {
+        "action": "control",
+        "ref": 0
+      },
+      "outcome": "clicked Verify",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 40.587,
+      "feedback": "The displayed level changed."
+    },
+    {
+      "step": 3,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 12.798,
+      "action": {
+        "action": "type",
+        "ref": 0,
+        "text": "FNZSSO"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 55.5,
+      "feedback": "Still on the same level after 1 actions."
+    },
+    {
+      "step": 4,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 12.409,
+      "action": {
+        "action": "control",
+        "ref": 1
+      },
+      "outcome": "clicked Submit",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 70.039,
+      "feedback": "Still on the same level after 2 actions. Submission did not advance the game. Re-evaluate the current answer."
+    },
+    {
+      "step": 5,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 16.019,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          140,
+          720,
+          300
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 88.158,
+      "feedback": "Still on the same level after 3 actions."
+    },
+    {
+      "step": 6,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 14.872,
+      "action": {
+        "action": "unzoom"
+      },
+      "outcome": "full-page observation restored",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 105.132,
+      "feedback": "Still on the same level after 4 actions."
+    },
+    {
+      "step": 7,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 19.766,
+      "action": {
+        "action": "type",
+        "ref": 0,
+        "text": "FNZ5SO"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 127.029,
+      "feedback": "Still on the same level after 5 actions."
+    },
+    {
+      "step": 8,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 16.626,
+      "action": {
+        "action": "control",
+        "ref": 1
+      },
+      "outcome": "clicked Submit",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 145.776,
+      "feedback": "Still on the same level after 6 actions. Submission did not advance the game. Re-evaluate the current answer."
+    },
+    {
+      "step": 9,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 19.148,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          140,
+          720,
+          300
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 167.02,
+      "feedback": "Still on the same level after 7 actions."
+    },
+    {
+      "step": 10,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 18.961,
+      "action": {
+        "action": "unzoom"
+      },
+      "outcome": "full-page observation restored",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 188.1,
+      "feedback": "Still on the same level after 8 actions."
+    },
+    {
+      "step": 11,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 21.607,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          140,
+          720,
+          300
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 211.819,
+      "feedback": "Still on the same level after 9 actions."
+    },
+    {
+      "step": 12,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 17.03,
+      "action": {
+        "action": "type",
+        "ref": 0,
+        "text": "FNZZSO"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 230.998,
+      "feedback": "Still on the same level after 10 actions."
+    },
+    {
+      "step": 13,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 17.024,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          140,
+          720,
+          300
+        ]
+      },
+      "outcome": "Invalid action: ValueError: Zoom is smaller than 50 pixels",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 250.134,
+      "feedback": "Still on the same level after 11 actions."
+    },
+    {
+      "step": 14,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 26.514,
+      "action": {
+        "action": "type",
+        "ref": 0,
+        "text": "FNZZ50"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 278.806,
+      "feedback": "Still on the same level after 12 actions."
+    },
+    {
+      "step": 15,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 21.28,
+      "action": {
+        "action": "type",
+        "ref": 0,
+        "text": "FNZZSO"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 302.239,
+      "feedback": "Still on the same level after 13 actions."
+    },
+    {
+      "step": 16,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 22.546,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          140,
+          720,
+          300
+        ]
+      },
+      "outcome": "Invalid action: ValueError: Zoom is smaller than 50 pixels",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 326.9,
+      "feedback": "Still on the same level after 14 actions."
+    },
+    {
+      "step": 17,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 18.659,
+      "action": {
+        "action": "type",
+        "ref": 0,
+        "text": "FNZZSS"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 347.706,
+      "feedback": "Still on the same level after 15 actions."
+    },
+    {
+      "step": 18,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 28.269,
+      "action": {
+        "action": "control",
+        "ref": 1
+      },
+      "outcome": "clicked Submit",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 378.131,
+      "feedback": "Still on the same level after 16 actions. Submission did not advance the game. Re-evaluate the current answer."
+    },
+    {
+      "step": 19,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 32.747,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          0,
+          0,
+          1000,
+          400
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 413.014,
+      "feedback": "Still on the same level after 17 actions."
+    },
+    {
+      "step": 20,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 57.6
+      },
+      "decision_seconds": 42.667,
+      "action": {
+        "action": "unzoom"
+      },
+      "outcome": "full-page observation restored",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 457.831,
+      "feedback": "Still on the same level after 18 actions."
+    },
+    {
+      "step": 21,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 38.53,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          140,
+          720,
+          300
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 498.515,
+      "feedback": "Still on the same level after 19 actions."
+    },
+    {
+      "step": 22,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 58.514,
+      "action": {
+        "action": "unzoom",
+        "points": [],
+        "text": null,
+        "ref": null,
+        "key": null,
+        "dy": null,
+        "rect": null,
+        "start": null,
+        "end": null
+      },
+      "outcome": "full-page observation restored",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 559.16,
+      "feedback": "Still on the same level after 20 actions."
+    },
+    {
+      "step": 23,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 103.756,
+      "action": {
+        "action": "type",
+        "ref": 0,
+        "text": "FNZZSO"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 665.112,
+      "feedback": "Still on the same level after 21 actions."
+    },
+    {
+      "step": 24,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 63.621,
+      "action": {
+        "action": "control",
+        "ref": 1
+      },
+      "outcome": "clicked Submit",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 730.906,
+      "feedback": "Still on the same level after 22 actions. Submission did not advance the game. Re-evaluate the current answer."
+    },
+    {
+      "step": 25,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 70.565,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          140,
+          720,
+          300
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 803.608,
+      "feedback": "Still on the same level after 23 actions."
+    },
+    {
+      "step": 26,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 144.0
+      },
+      "decision_seconds": 47.884,
+      "action": {
+        "time": 1772613600000,
+        "type": "other",
+        "data": "action=zoom rect=[280,140,720,300]"
+      },
+      "outcome": "Invalid action: ValueError: Unsupported action",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 853.635,
+      "feedback": "Still on the same level after 24 actions."
+    }
+  ],
+  "elapsed_seconds": 853.635,
+  "stop_reason": "no level progress after 24 actions",
+  "final_text": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+  "independent_review": {
+    "verified_complete": false,
+    "verified_final_level": "Level 3: Wiggles",
+    "evidence": "Final screenshot independently inspected; it displays the unresolved third level.",
+    "human_puzzle_inputs": false,
+    "notes": "Observed control references and keyboard typing worked. Unsuccessful text submissions, repeated zooming, invalid actions, and all timings are retained. Local development and tests ran concurrently."
+  }
+}

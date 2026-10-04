@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Synthetic: an application form with a newsletter modal in front of it. The modal has
+     a × control, a "No thanks" button and a "Subscribe" button; the backdrop is a sibling. -->
+<html lang="en"><head><meta charset="utf-8"><title>Harborview Logistics - Apply</title>
+<style>
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); }
+  .modal { position: fixed; top: 20%; left: 30%; width: 40%; background: #fff; padding: 24px; }
+</style></head>
+<body>
+<form id="application-form">
+  <div><label for="first">First name</label><input id="first" name="first" required></div>
+  <div><label for="email">Email</label><input id="email" name="email" required></div>
+  <button type="submit">Submit application</button>
+</form>
+<div class="modal-backdrop" id="backdrop"></div>
+<div class="modal" role="dialog" aria-modal="true" aria-labelledby="nt" id="newsletter">
+  <button class="close" aria-label="Close" type="button">×</button>
+  <h2 id="nt">Join our newsletter</h2>
+  <p>Hiring tips every week, straight to your inbox.</p>
+  <input type="email" id="nl-email" placeholder="you@example.com">
+  <button type="button" id="subscribe">Subscribe</button>
+  <button type="button" id="nothanks">No thanks</button>
+</div>
+<script>
+  const gone = () => { document.getElementById('newsletter').remove(); document.getElementById('backdrop').remove(); };
+  document.querySelector('.close').addEventListener('click', gone);
+  document.getElementById('nothanks').addEventListener('click', gone);
+  document.getElementById('subscribe').addEventListener('click', () => { document.body.dataset.subscribed = '1'; gone(); });
+</script>
+</body></html>

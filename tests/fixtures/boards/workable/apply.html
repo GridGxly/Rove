@@ -1,0 +1,138 @@
+<!doctype html>
+<!-- Reduced from a rendered public Workable application form
+     (apply.workable.com/{account}/j/{code}/apply/). Company, job and the employer's own
+     questions are invented; structure, data-ui hooks, roles and ARIA attributes are the
+     board's. The style block stands in for the board's rules that hide helper inputs. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Platform Engineer - Larkspur Labs - Application</title>
+  <style>
+    .visually-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+  </style>
+</head>
+<body style="min-width: 320px">
+  <div id="app" style="height: 100%">
+    <div data-ui="careers-page-content">
+      <header role="banner">
+        <h1 data-ui="job-title">Platform Engineer</h1>
+      </header>
+      <nav role="navigation">
+        <a data-ui="role-overview-tab" href="/larkspur-labs/j/A1B2C3D4E5/">Overview</a>
+        <a data-ui="application-form-tab" href="/larkspur-labs/j/A1B2C3D4E5/apply/">Application</a>
+      </nav>
+      <main role="main">
+        <form data-ui="application-form">
+          <div>
+            <div><strong>Autofill application</strong><p>Save time by importing your resume in one of the following formats: .pdf, .doc, .docx, .odt, or .rtf.</p></div>
+            <div data-ui="autofill-button">
+              <button aria-haspopup="true" aria-expanded="false" type="button"><span>Import resume from</span></button>
+            </div>
+          </div>
+          <span><span>*</span><span>Required fields</span></span>
+
+          <section data-ui="section">
+            <h2 id="section-0_section_name">Personal information</h2>
+            <div data-ui="section-fields">
+              <div>
+                <label>
+                  <span><span><strong>*</strong></span><span><span id="firstname_label"><strong>First name</strong></span></span></span>
+                  <div data-role="illustrated-input"><input aria-required="true" id="firstname" maxlength="127" data-ui="firstname" name="firstname" aria-labelledby="firstname_label" required="" type="text" value=""></div>
+                </label>
+              </div>
+              <div>
+                <label>
+                  <span><span><strong>*</strong></span><span><span id="lastname_label"><strong>Last name</strong></span></span></span>
+                  <div data-role="illustrated-input"><input aria-required="true" id="lastname" maxlength="127" data-ui="lastname" name="lastname" aria-labelledby="lastname_label" required="" type="text" value=""></div>
+                </label>
+              </div>
+              <div>
+                <label>
+                  <span><span><strong>*</strong></span><span><span id="email_label"><strong>Email</strong></span></span></span>
+                  <div data-role="illustrated-input"><input aria-required="true" id="email" maxlength="255" data-ui="email" name="email" aria-labelledby="email_label" required="" type="email" value=""></div>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section data-ui="section">
+            <h2 id="section-1_section_name">Profile</h2>
+            <div data-ui="section-fields">
+              <div>
+                <div>
+                  <span><span><strong>*</strong></span><span><span id="rsm0Example_label"><strong>Resume</strong></span></span></span>
+                  <div data-role="dropzone">
+                    <div><div data-role="preview"><label for="input_files_input_rsm0Example"></label></div></div>
+                    <div>
+                      <label tabindex="0" role="button" for="input_files_input_rsm0Example" id="description_input_rsm0Example" aria-describedby="rsm0Example_label">Choose file</label>
+                      <span>or drag and drop here</span>
+                    </div>
+                    <input data-ui="resume" tabindex="-1" id="input_files_input_rsm0Example" type="file" aria-labelledby="rsm0Example_label description_input_rsm0Example" accept=".pdf,.doc,.docx,.odt,.rtf" class="visually-hidden" required="">
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label>
+                  <span><span><strong>*</strong></span><span><span id="CA_20001_label"><strong>Code sample or repository link</strong></span></span></span>
+                  <div data-role="illustrated-input"><textarea aria-required="true" id="CA_20001" data-ui="CA_20001" name="CA_20001" aria-labelledby="CA_20001_label" required=""></textarea></div>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section data-ui="section">
+            <h2 id="section-2_section_name">Details</h2>
+            <div data-ui="section-fields">
+              <div>
+                <div>
+                  <span><span><span id="CA_20002_label"><strong>Notice period</strong></span><span>(Optional)</span></span></span>
+                  <div data-ui="CA_20002">
+                    <label>
+                      <div data-role="illustrated-input">
+                        <input role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="input_CA_20002_listbox" aria-autocomplete="list" autocomplete="off" id="input_CA_20002_input" aria-labelledby="CA_20002_label" placeholder="Select an option…" type="text" value="">
+                      </div>
+                    </label>
+                    <input name="CA_20002" class="visually-hidden" tabindex="-1" aria-hidden="true" value="">
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div>
+                  <span><span><strong>*</strong></span><span><span id="q1Example_label"><strong>Have you maintained a production service before?</strong></span></span></span>
+                  <div style="--items-count: 2;">
+                    <fieldset role="radiogroup" data-ui="QA_30001" aria-labelledby="q1Example_label">
+                      <div data-ui="option" aria-labelledby="q1Example_label radio_label_q1yes" id="wrapper_q1yes" role="radio" aria-checked="false" aria-required="true" tabindex="0">
+                        <label>
+                          <input aria-required="true" required="" id="q1yes" tabindex="-1" aria-hidden="true" type="radio" name="QA_30001" class="visually-hidden" value="true">
+                          <div><span id="radio_label_q1yes">YES</span></div>
+                        </label>
+                      </div>
+                      <div data-ui="option" aria-labelledby="q1Example_label radio_label_q1no" id="wrapper_q1no" role="radio" aria-checked="false" aria-required="true" tabindex="-1">
+                        <label>
+                          <input aria-required="true" required="" id="q1no" tabindex="-1" aria-hidden="true" type="radio" name="QA_30001" class="visually-hidden" value="false">
+                          <div><span id="radio_label_q1no">NO</span></div>
+                        </label>
+                      </div>
+                    </fieldset>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label>
+                  <span><span><strong>*</strong></span><span><span id="QA_30002_label"><strong>Tell us about a garden, real or imagined, you would schedule first.</strong></span></span></span>
+                  <div data-role="illustrated-input"><textarea aria-required="true" id="QA_30002" data-ui="QA_30002" name="QA_30002" aria-labelledby="QA_30002_label" required=""></textarea></div>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <div>
+            <button type="submit" data-ui="apply-button" class="button--2de5X button--14TuV primary--25RCR">Submit application</button>
+          </div>
+        </form>
+      </main>
+      <div data-ui="footer-powered-by"><span>Powered by <a href="https://jobs.workable.com/" target="_blank">Workable</a></span></div>
+    </div>
+  </div>
+</body>
+</html>

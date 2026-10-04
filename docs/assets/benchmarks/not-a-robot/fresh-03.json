@@ -1,0 +1,705 @@
+{
+  "url": "https://neal.fun/not-a-robot/",
+  "started_at": "2026-10-04T13:30:52.690659+00:00",
+  "model": "Qwen3.8-27B-Uncensored-4bit",
+  "model_revision": "14963e70f886455cf93090ac95bdbf4c8730cbe1",
+  "temperature": 0,
+  "thinking": false,
+  "max_tokens": 768,
+  "viewport": {
+    "width": 1000,
+    "height": 900
+  },
+  "runner_sha256": "7a1022fe621e30c40af7358f22f1c9e31b15a720346ca381d5225907de4b90e6",
+  "prompt_sha256": "defdaf49fbffad964a9abdd6b650397abbb76b854795303cf6399cde6c09388e",
+  "verified_complete": false,
+  "actions": [
+    {
+      "step": 0,
+      "level": "Level 1: Checkbox",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 15.794,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            369,
+            193
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 18.111,
+      "feedback": "The displayed level changed."
+    },
+    {
+      "step": 1,
+      "level": "Level 2: Stop Signs",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 11.091,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            562,
+            319
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 31.461,
+      "feedback": "Still on the same level after 1 actions."
+    },
+    {
+      "step": 2,
+      "level": "Level 2: Stop Signs",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 12.152,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            667,
+            319
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 45.895,
+      "feedback": "Still on the same level after 2 actions."
+    },
+    {
+      "step": 3,
+      "level": "Level 2: Stop Signs",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 15.088,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            562,
+            385
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 63.245,
+      "feedback": "Still on the same level after 3 actions."
+    },
+    {
+      "step": 4,
+      "level": "Level 2: Stop Signs",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 13.229,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            667,
+            385
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 78.729,
+      "feedback": "Still on the same level after 4 actions."
+    },
+    {
+      "step": 5,
+      "level": "Level 2: Stop Signs",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 12.257,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            678,
+            728
+          ]
+        ]
+      },
+      "outcome": "clicked BUTTON: Verify",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 93.299,
+      "feedback": "The displayed level changed."
+    },
+    {
+      "step": 6,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 15.192,
+      "action": {
+        "action": "type",
+        "text": "YHRCCO"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 110.584,
+      "feedback": "Still on the same level after 1 actions."
+    },
+    {
+      "step": 7,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 13.981,
+      "outcome": "Invalid action: JSONDecodeError",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 126.647,
+      "feedback": "Still on the same level after 2 actions."
+    },
+    {
+      "step": 8,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 14.836,
+      "outcome": "Invalid action: JSONDecodeError",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 143.559,
+      "feedback": "Still on the same level after 3 actions."
+    },
+    {
+      "step": 9,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 14.819,
+      "outcome": "Invalid action: JSONDecodeError",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 160.462,
+      "feedback": "Still on the same level after 4 actions."
+    },
+    {
+      "step": 10,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 15.773,
+      "outcome": "Invalid action: JSONDecodeError",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 178.324,
+      "feedback": "Still on the same level after 5 actions."
+    },
+    {
+      "step": 11,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 15.333,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            662,
+            364
+          ]
+        ]
+      },
+      "outcome": "clicked BUTTON: Submit",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 195.925,
+      "feedback": "Still on the same level after 6 actions."
+    },
+    {
+      "step": 12,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 16.714,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          140,
+          720,
+          330
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 214.734,
+      "feedback": "Still on the same level after 7 actions."
+    },
+    {
+      "step": 13,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 171.0
+      },
+      "decision_seconds": 8.879,
+      "action": {
+        "action": "type",
+        "text": "YKRGCO"
+      },
+      "outcome": "Invalid action: ValueError",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 225.689,
+      "feedback": "Still on the same level after 8 actions."
+    },
+    {
+      "step": 14,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 171.0
+      },
+      "decision_seconds": 11.782,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            312,
+            364
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 239.697,
+      "feedback": "Still on the same level after 9 actions."
+    },
+    {
+      "step": 15,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 171.0
+      },
+      "decision_seconds": 10.445,
+      "action": {
+        "action": "type",
+        "text": "YKRGCO"
+      },
+      "outcome": "Invalid action: ValueError",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 252.224,
+      "feedback": "Still on the same level after 10 actions."
+    },
+    {
+      "step": 16,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 126.00000000000001,
+        "width": 440.0,
+        "height": 171.0
+      },
+      "decision_seconds": 8.868,
+      "action": {
+        "action": "unzoom"
+      },
+      "outcome": "full-page observation restored",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 263.176,
+      "feedback": "Still on the same level after 11 actions."
+    },
+    {
+      "step": 17,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 17.434,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            444,
+            364
+          ]
+        ]
+      },
+      "outcome": "clicked INPUT: text",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 282.868,
+      "feedback": "Still on the same level after 12 actions."
+    },
+    {
+      "step": 18,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 34.46,
+      "action": {
+        "action": "type",
+        "text": "YHRCCO"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 319.477,
+      "feedback": "Still on the same level after 13 actions."
+    },
+    {
+      "step": 19,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 36.49,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            662,
+            364
+          ]
+        ]
+      },
+      "outcome": "clicked BUTTON: Submit",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 358.243,
+      "feedback": "Still on the same level after 14 actions."
+    },
+    {
+      "step": 20,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 32.461,
+      "action": {
+        "action": "wait"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 392.82,
+      "feedback": "Still on the same level after 15 actions."
+    },
+    {
+      "step": 21,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 36.177,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          280,
+          126,
+          720,
+          300
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 431.107,
+      "feedback": "Still on the same level after 16 actions."
+    },
+    {
+      "step": 22,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 280.0,
+        "y": 113.4,
+        "width": 440.0,
+        "height": 156.6
+      },
+      "decision_seconds": 21.113,
+      "action": {
+        "action": "unzoom"
+      },
+      "outcome": "full-page observation restored",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 454.303,
+      "feedback": "Still on the same level after 17 actions."
+    },
+    {
+      "step": 23,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 13.797,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            694,
+            311
+          ]
+        ]
+      },
+      "outcome": "clicked ",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 470.349,
+      "feedback": "Still on the same level after 18 actions."
+    },
+    {
+      "step": 24,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 14.761,
+      "action": {
+        "action": "zoom",
+        "rect": [
+          285,
+          150,
+          715,
+          300
+        ]
+      },
+      "outcome": "zoomed observation; page unchanged",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 487.195,
+      "feedback": "Still on the same level after 19 actions."
+    },
+    {
+      "step": 25,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 285.0,
+        "y": 135.0,
+        "width": 430.0,
+        "height": 135.0
+      },
+      "decision_seconds": 7.344,
+      "action": {
+        "action": "unzoom"
+      },
+      "outcome": "full-page observation restored",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 496.617,
+      "feedback": "Still on the same level after 20 actions."
+    },
+    {
+      "step": 26,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 12.742,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            444,
+            363
+          ]
+        ]
+      },
+      "outcome": "clicked INPUT: text",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 511.609,
+      "feedback": "Still on the same level after 21 actions."
+    },
+    {
+      "step": 27,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 14.234,
+      "action": {
+        "action": "type",
+        "text": "ENZZSO"
+      },
+      "outcome": "executed",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 527.958,
+      "feedback": "Still on the same level after 22 actions."
+    },
+    {
+      "step": 28,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 31.254,
+      "outcome": "Invalid action: JSONDecodeError",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 561.301,
+      "feedback": "Still on the same level after 23 actions."
+    },
+    {
+      "step": 29,
+      "level": "Level 3: Wiggles",
+      "frames": 1,
+      "view": {
+        "x": 0,
+        "y": 0,
+        "width": 1000,
+        "height": 900
+      },
+      "decision_seconds": 31.033,
+      "outcome": "Invalid action: JSONDecodeError",
+      "level_after": "Level 3: Wiggles",
+      "page_text_after": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 594.424,
+      "feedback": "Still on the same level after 24 actions."
+    }
+  ],
+  "elapsed_seconds": 594.424,
+  "stop_reason": "no level progress after 24 actions",
+  "final_text": "Level 3: Wiggles\nEnter the text below\n> \nSubmit\nReset\nMade by Neal (human) ",
+  "independent_review": {
+    "reviewed_at": "2026-10-04T13:41:58.417611+00:00",
+    "verified_complete": false,
+    "observed_final_level": "Level 3: Wiggles",
+    "evidence": "final.png and 30 recorded action outcomes",
+    "outcome": "Stopped at the configured 24-action no-progress limit; no operator puzzle inputs or answers were supplied."
+  }
+}

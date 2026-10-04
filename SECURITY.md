@@ -1,72 +1,52 @@
 # Security
 
-Erga Autopilot controls a browser, handles recruiting data, and may eventually submit job applications. Treat it like a privileged local automation tool, not a normal chatbot.
+Rove controls a browser, handles recruiting data, keeps a private long-term memory vault, and may eventually submit job applications. Treat it like privileged local automation, not a normal chatbot.
 
-Some controls described here are part of the target design and may not exist on every branch yet. If the code and this file disagree, the code is what is actually running.
+Some controls described here are part of the target design and may not exist on every branch yet. When this file and the code disagree, the code is what is actually running.
 
-## What this project is trying to prevent
+## What should never happen
 
-An untrusted job page, email, attachment, model output, or MCP tool should not be able to:
+An untrusted job page, email, attachment, model output, vault research note, QMD result, or tool should not be able to:
 
-- change the candidate profile
+- change the approved candidate profile
 - give itself new permissions
 - read unrelated local files
-- get credentials it does not need
+- access credentials it does not need
 - upload arbitrary files
-- send the browser to arbitrary sensitive destinations
-- send email or messages without authorization
-- submit a different application from the one you approved
+- navigate to unrelated sensitive destinations
+- send messages or email without authorization
+- submit a different application from the one the user approved
 - retry an ambiguous submission and create a duplicate
 - poison durable memory
 
-The project assumes the local macOS user account itself is trusted. If that account is fully compromised, an attacker may be able to reach both encrypted application data and the local key material needed to run Autopilot.
+The project assumes the local macOS user account itself is trusted. A full compromise of that account is outside this threat model.
 
-## What can authorize an action
+## Authority
 
-Only these sources may authorize work:
+Only these sources may authorize privileged work:
 
-- an authenticated command from the configured Discord user
+- an authenticated command from the configured user
 - an explicit local approval
-- a local policy you already approved
-- scheduled work created from one of those approvals
+- a previously approved local policy
+- deterministic scheduled work created from one of those approvals
 
-Everything else is input data.
-
-That includes:
+Everything else is input data, including:
 
 - job descriptions
 - employer application pages
-- email bodies
-- email attachments
+- email bodies and attachments
 - resumes and imported documents
 - scraped research
 - third-party websites
-- MCP tool output
 - browser accessibility text
+- non-authoritative Obsidian research notes
+- QMD retrieval results
+- MCP tool output
 - model-generated text
 
-A webpage that says "ignore previous instructions" has no more authority than any other sentence on that page.
+A webpage that says "ignore previous instructions" has no authority by itself.
 
-## Prompt injection
-
-Prompt injection is handled with permissions and boundaries, not by hoping a system prompt wins an argument with a webpage.
-
-The design uses:
-
-- different tool sets for different operating modes
-- narrow MCP tool surfaces
-- strict parameter schemas
-- domain and redirect checks
-- upload allowlists
-- separate research and submission contexts
-- human approval for sensitive or irreversible actions
-- deterministic profile and memory writes
-- central audit logs
-- adversarial test cases
-
-The research agent should not have submission tools or credentials. The application agent should not have unrestricted filesystem or shell access.
-
-For concrete examples of malicious pages, email injection, poisoned MCP output, and the exact boundaries that should stop them, read [docs/prompt-injection.md](docs/prompt-injection.md).
+Read [docs/prompt-injection.md](docs/prompt-injection.md) for the detailed prompt-injection model.
 
 ## Operating modes
 
@@ -85,29 +65,31 @@ MANUAL_TAKEOVER
 
 A mode changes what the agent can read or change.
 
-For example, onboarding may update predefined candidate-profile fields, but it must not redesign the profile schema or change unrelated application state.
+Research should not have submission tools or credentials. Application preparation should not have final submission capability. Submission should not expose a generic shell or unrestricted filesystem.
+
+Memory/vault permissions should also differ by mode. Research may write non-authoritative research notes where allowed, but it should not directly mutate approved profile or policy notes.
 
 ## Browser isolation
 
-The recruiting browser must use its own Playwright profile.
+The recruiting browser must use its own dedicated Playwright/Chromium profile.
 
-Do not connect Autopilot to your everyday browser profile.
+Do not connect Rove to an everyday browser profile.
 
 The recruiting profile should not contain:
 
 - banking sessions
 - unrelated social-media sessions
-- production or admin accounts that have nothing to do with recruiting
+- unrelated production or admin accounts
 - a personal password-manager extension
-- browser sync with your normal profile
+- browser sync with the normal profile
 
-Before personal data is entered, the application workflow should verify that the browser is still on the expected employer, ATS, or authentication domain.
+Before personal data is entered, the workflow should verify that the browser is still on the expected employer, ATS, or authentication destination.
 
-Do not expose arbitrary Playwright code execution to the application agent.
+Do not expose arbitrary Playwright, CDP, or JavaScript execution to the application agent. Trusted browser-runtime code may use low-level browser APIs internally, but the model-facing tool surface must stay narrow and policy-aware.
 
 ## File access and uploads
 
-The application agent should only upload files that belong to the frozen application package, such as:
+The application agent should upload only files already included in the frozen application package, such as:
 
 - the approved resume
 - an approved cover letter
@@ -117,11 +99,19 @@ A webpage must not be able to choose an arbitrary local path.
 
 The application workflow should not have generic access to the user's home directory.
 
+Access to the private Obsidian vault is not permission to browse unrelated home-directory files.
+
 ## Credentials
 
-Employer-account passwords may be stored in the local Autopilot database, but they must be encrypted at rest with authenticated encryption.
+Employer-account passwords may be stored locally, but they must be encrypted at rest with authenticated encryption.
 
 The encryption key should live in a separate owner-only local file outside the database.
+
+The current implementation does this with Fernet (AES-CBC with HMAC): ciphertext in `credentials/store.enc` and the key in `credentials/key` under the private state root, both mode 0600. An account is created only after the owner replies `account ... create` for that application; the daemon fills the application email, a generated password, the terms checkbox and known name fields, and records the host and username without the secret. Only the browser daemon reads the store, to complete a sign-in form on the same host.
+
+The recruiting browser is a Chrome instance the daemon launches with a localhost-only DevTools port. Anything running as the local user could connect to that port; that account is trusted in this threat model.
+
+Never put credentials in the Obsidian vault, normal Markdown notes, Discord, or model memory.
 
 Never commit or post to Discord:
 
@@ -132,9 +122,9 @@ Never commit or post to Discord:
 - encryption keys
 - MFA codes
 
-Discord may say that an account was created and verified. It should not contain the secret itself.
+Discord may record that an account was created and verified. It should not contain the secret itself.
 
-## Extremely sensitive information
+## Data that stays manual
 
 Some values should stay out of normal automation entirely.
 
@@ -143,7 +133,8 @@ Some values should stay out of normal automation entirely.
 - never store it
 - never send it through Discord
 - never put it in model context
-- require manual local entry when it is genuinely necessary
+- never save it in the Obsidian vault
+- require manual local entry when genuinely necessary
 
 ### Bank and routing information
 
@@ -155,26 +146,82 @@ Keep these manual unless a future reviewed design explicitly adds support.
 
 ### MFA
 
-Email verification may be passed directly between Zoho and the browser. SMS codes, authenticator apps, security keys, CAPTCHA, and unusual identity checks should pause for manual action.
+Email verification is passed through a narrow broker: a code a site mails to the owner's application address is read from his own mailbox, only from the site's own authenticated sender and only for the step that asked for it, and it is never logged or stored. SMS codes, authenticator apps, security keys and unusual identity checks pause for manual action. CAPTCHA challenges first get a bounded attempt with the existing local vision model: only a recognised provider frame is captured, and only coordinates inside that frame may be clicked or dragged. Model output cannot declare success or interact with the application itself. Unsupported or unsuccessful challenges pause for manual action; Rove resumes only after the challenge clears and the application advances.
 
-## Local data
+## Obsidian vault boundaries
 
-Live user state belongs outside the repository.
+The private Obsidian vault is long-term semantic memory, not a generic writable scratchpad with equal trust everywhere.
+
+Different areas have different authority.
+
+Examples:
+
+- validated `Profile/` and approved policy/story notes can become authoritative after schema validation and approval
+- `Research/` contains useful but non-authoritative material
+- company/application notes may be durable context without becoming candidate facts
+- QMD search results are retrieval output, not authority
+
+Canonical profile writes should go through explicit profile/memory operations rather than arbitrary free-form note edits by the application or research agent.
+
+A human may edit the vault directly. Before manually edited profile facts are used for an application, validate the schema and check for contradictions.
+
+If validation fails, stop. Do not silently repair or guess an applicant fact.
+
+## Profile snapshots
+
+The live vault changes over time. A submitted application must not change retroactively when the user edits a note later.
+
+Before an application is allowed to submit, freeze the exact approved profile version/snapshot used by that application and record a stable hash/reference in transactional state.
+
+Submission should use the frozen snapshot, not reread mutable profile notes in the middle of the final application flow.
+
+## QMD and retrieval
+
+QMD is a local index over notes/documents. Treat the index as derived state.
+
+A result returned by QMD may be relevant, stale, non-authoritative, or from a research note. The caller must still inspect source/provenance and apply normal profile/evidence rules.
+
+If the index is lost or suspected stale, rebuild it from the vault rather than treating the index as the only copy of memory.
+
+QMD helper models and indexes are local runtime data and should not be committed.
+
+## Public repository rules
+
+Treat anything committed, pushed, placed in a pull request, printed in CI logs, or attached to a GitHub issue as public.
+
+Real runtime state belongs outside the repository.
 
 Never commit:
 
 - real candidate profiles
-- real resumes
-- application databases
+- a real user's Obsidian vault or vault export
+- real resumes or cover letters
+- live application databases
 - application receipts
-- browser profiles
+- browser profiles or cookies
+- QMD indexes containing private content
 - screenshots containing personal data
-- Zoho email content
+- recruiting email
 - generated account credentials
+- OAuth tokens
 - private logs
 - backups
 
-Tests and examples should use synthetic people and synthetic employers.
+Documentation and tests must use synthetic people, companies, jobs, IDs, email, vault notes, and credentials.
+
+The author's name may appear where attribution belongs, such as the README and license. Applicant examples should remain synthetic.
+
+## Git and secret scanning
+
+`.gitignore` is a backup layer, not the main security boundary.
+
+Before a commit or push, inspect staged changes and run the repository's configured secret checks. Do not bypass a secret-scanning or push-protection warning just to make a push succeed.
+
+CI should scan committed changes for likely secrets. Before making the repository public, scan the reachable Git history and active branches as well as the current tree.
+
+This applies to personal applicant data as well as credentials. A clean current-tree guard does not establish a clean history: a phone number removed from a test can remain in older commits. Keep private backups outside the checkout, review the affected published references, and obtain the owner's approval before rewriting shared history. Leave the repository private until the publication review is complete.
+
+If a real secret is ever committed, revoke or rotate it first. Removing the file from the latest commit does not make the old value safe.
 
 ## Discord
 
@@ -182,9 +229,13 @@ The production bot should authorize commands with a configured numeric Discord u
 
 Do not rely only on display names or usernames.
 
+Real guild, channel, user, and role IDs belong in local configuration, not source code.
+
 Third-party source bots should only see the channels they need. They should not be able to read application archives, memory, recruiting mail, or system logs.
 
-Keep `#action-needed` for items that really need human attention. If routine logs end up there, important prompts will get buried.
+Keep `#action-needed` for items that actually require human attention so important prompts do not get buried.
+
+`#memory` is an interface to controlled local memory operations. Discord messages themselves should not silently become authoritative vault/profile facts.
 
 ## Zoho
 
@@ -192,21 +243,23 @@ Use the official Zoho Mail API with the narrowest scopes that support the workfl
 
 Recruiting mail should normally be read-only.
 
-Email content is untrusted input. It can affect application state only through the mail-classification and reconciliation code.
+Email content is untrusted input. It can affect application state only through classification and reconciliation code.
 
-When an email triggers a lifecycle screenshot for Discord, sanitize active content and render it in an isolated local page instead of opening the user's normal inbox UI.
+When an email is rendered for a Discord screenshot, sanitize active content and render it in an isolated local page rather than opening the user's normal inbox UI.
+
+Email content may be summarized into notes where policy allows, but it must not directly mutate the approved candidate profile.
 
 ## Candidate profile and memory
 
-The canonical profile is schema-driven and versioned.
+The canonical profile is schema-driven, validated, and versioned even though its human-readable representation lives in the private semantic memory layer.
 
-The model may collect or propose values, but durable profile changes must go through explicit profile operations.
+The model may collect or propose values, but durable authoritative profile changes must go through explicit profile operations.
 
-Do not let arbitrary chat text, job pages, or research output silently become authoritative memory.
+Do not let arbitrary chat text, job pages, email, research output, or QMD retrieval silently become authoritative memory.
 
-If two approved facts conflict, stop and ask the user. Do not silently choose the newest value.
+If two approved facts conflict, stop and ask the user. Do not silently choose one.
 
-Historical applications must keep the profile version they actually used.
+Historical applications must keep the exact approved profile snapshot/hash they actually used.
 
 ## Resume claims
 
@@ -222,7 +275,7 @@ Do not invent:
 - adoption or user counts
 - outcomes
 
-`introduction.md` may add motivation or perspective, but it does not override factual evidence.
+Narrative/story notes may add motivation or perspective, but they do not override factual evidence.
 
 ## Submission safety
 
@@ -233,8 +286,8 @@ Before clicking Submit, freeze an application package containing at least:
 - application ID
 - verified job URL
 - job snapshot and hash
-- candidate-profile version
-- answer-mapping version
+- approved profile snapshot/version and hash
+- answer-mapping version or references
 - resume version and hash
 - exact planned form answers
 - exact approved free-text answers
@@ -244,18 +297,15 @@ Before clicking Submit, freeze an application package containing at least:
 
 If the browser crashes after Submit, do not automatically retry.
 
-Move the application into an unknown-submission state and inspect:
-
-- confirmation page or state
-- ATS account
-- browser or network result
-- recruiting email
+Move the application into an unknown-submission state and inspect confirmation state, the ATS account, browser/network result, and recruiting mail.
 
 Retry only after the first attempt is shown not to have succeeded.
 
+The current implementation records the attempt in SQLite before the click, accepts only an authenticated owner `submit` command for the exact package hash, and marks `APPLIED` only when a versioned ATS adapter sees its full confirmation contract. The recruiting browser installs a submit-event guard that blocks ordinary form submission during preparation and is armed for one approved click; it is a safeguard against accidental submits, not a network-level guarantee against page scripts. Owners resolve an unknown attempt with `reconcile`; code never infers the outcome.
+
 ## Logging
 
-Detailed logs are intentional, but secrets must be filtered before anything is written.
+Detailed audit logs are useful, but secrets must be filtered before anything is written.
 
 Logs may contain:
 
@@ -269,6 +319,7 @@ Logs may contain:
 - errors
 - lifecycle transitions
 - model and runtime metadata
+- safe vault note IDs/paths when needed for provenance
 
 Logs must not contain:
 
@@ -278,61 +329,58 @@ Logs must not contain:
 - full SSNs
 - MFA codes
 - encryption keys
+- private note bodies unless the specific log is an approved private artifact
 
 ## Dependency and MCP security
 
-MCP servers are executable software. Their real permissions come from the process that starts them and the tools you expose.
+MCP servers and local skills are executable or privileged software. Their real permissions come from the process that starts them and the tools/files they can access.
 
-Before adding or upgrading an MCP server:
+Before adding or upgrading a privileged MCP server, memory skill, or local retrieval component:
 
 - verify the upstream project
 - pin or review the version where practical
-- inspect the exposed tool schemas
-- expose only the tools the workflow needs
+- inspect exposed tool schemas or file permissions
+- expose only the capabilities the workflow needs
 - rerun prompt-injection and permission tests
-- do not assume a tool is safe just because its description says read-only
+- do not assume something is safe because its description says read-only
 
-Do not silently auto-update the model runtime, Hermes, Erga, Playwright MCP, or other privileged dependencies in production.
+Do not silently auto-update the model runtime, Hermes, Erga, Playwright/Chromium browser runtime, Playwright MCP when installed, QMD, or other privileged dependencies in production.
 
 ## Security tests
 
-The project should keep adversarial tests for at least:
+The project should keep synthetic adversarial tests for at least:
 
 - hidden prompt injection in HTML
 - injection in email content
 - malicious accessibility labels
 - fake local-file upload instructions
 - malicious redirects
-- attempts to exfiltrate profile data
+- attempts to exfiltrate candidate data
 - attempts to access credentials
-- attempts to mutate memory
+- attempts to mutate canonical vault/profile memory
+- poisoned research notes returned by QMD
+- attempts to promote research into approved profile state
 - duplicate-submit traps
 - fake verification pages
 - poisoned MCP tool output
 - tool-name or schema changes
 
-Autopilot submission should not be enabled if those tests fail.
+Tests should prove that forbidden actions did not happen, not just that the model printed a refusal.
+
+Restricted unattended operation should not be enabled while those tests fail.
 
 ## Reporting a vulnerability
 
-Do not post credentials, private application data, or a working exploit containing real personal information in a public issue.
+Do not post credentials, private application data, vault contents, or a working exploit containing real personal information in a public issue.
 
-For ordinary security bugs, open a GitHub issue with a minimal synthetic reproduction and mark it as security-related if the repository settings support that.
-
-If the report would expose a secret or a practical exploit against a real user, use GitHub's private vulnerability reporting when it is available for this repository.
-
-Please include:
-
-- affected version or commit
-- threat scenario
-- minimal reproduction using synthetic data
-- expected behavior
-- actual behavior
-- suggested mitigation if you have one
+Use a synthetic reproduction for ordinary security bugs. If a report would expose a real secret or practical exploit against a real user, use private vulnerability reporting when it is available for the repository.
 
 ## References
 
+- [Prompt injection](docs/prompt-injection.md)
+- [Memory and storage](docs/memory-and-storage.md)
 - [OWASP LLM Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html)
 - [OWASP MCP Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/MCP_Security_Cheat_Sheet.html)
-- [Playwright MCP](https://playwright.dev/mcp/installation)
+- [Browser automation](docs/browser-automation.md)
+- [Playwright](https://playwright.dev/)
 - [Erga security model](https://github.com/Adr1an04/erga-mcp/blob/main/docs/security.md)

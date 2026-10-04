@@ -1,0 +1,56 @@
+{
+  "url": "https://neal.fun/not-a-robot/",
+  "started_at": "2026-10-04T13:06:14.574250+00:00",
+  "model": "Qwen3.8-27B-Uncensored-4bit",
+  "model_revision": "14963e70f886455cf93090ac95bdbf4c8730cbe1",
+  "temperature": 0,
+  "thinking": true,
+  "max_tokens": 3072,
+  "viewport": {
+    "width": 1000,
+    "height": 900
+  },
+  "runner_sha256": "59a7729e7a2521a96125a1a42ce94243062886b2924f4ccaeb08bd0183f80477",
+  "prompt_sha256": "aa0ef731bfd96cfc3415d570b0c5a451c6dae94c2633ece0df07f1df7fa70cfb",
+  "verified_complete": false,
+  "actions": [
+    {
+      "step": 0,
+      "level": "Level 1: Checkbox",
+      "frames": 1,
+      "decision_seconds": 20.761,
+      "action": {
+        "action": "click",
+        "points": [
+          [
+            369,
+            192
+          ]
+        ]
+      },
+      "outcome": "executed",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 23.787,
+      "feedback": "The displayed level changed."
+    },
+    {
+      "step": 1,
+      "level": "Level 2: Stop Signs",
+      "frames": 1,
+      "outcome": "Invalid action: JSONDecodeError",
+      "level_after": "Level 2: Stop Signs",
+      "page_text_after": "Level 2: Stop Signs\nSelect all the squares with a\nStop Sign\nVerify\nReset\nMade by Neal (human) ",
+      "elapsed_seconds": 286.278,
+      "feedback": "Still on the same level after 1 actions."
+    }
+  ],
+  "elapsed_seconds": 286.278,
+  "independent_review": {
+    "verified_complete": false,
+    "last_verified_level": "Level 2: Stop Signs",
+    "stop": "Operator interrupted after a 262-second decision returned invalid JSON, before another decision completed.",
+    "intervention": "Runner interrupted; no puzzle input or answer supplied by operator.",
+    "reported_at": "2026-10-04"
+  }
+}
