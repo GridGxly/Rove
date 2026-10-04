@@ -177,6 +177,7 @@ The last command restarts the browser daemon so it runs the new code. The Rove B
 
 ## Where to look when something is wrong
 
+- `uv run rove doctor`: one plain line per check (services loaded and running the current code, the browser service, the model server, the approved profile, config keys, undelivered Discord posts, applications stuck in preparation, disk space). It changes nothing and exits 1 when a check finds a problem. Run it after every update
 - the application's thread and `system-log` in Discord
 - `uv run rove workflow status`, `uv run rove browser status` and `uv run rove mail status`
 - `logs/` in the state root, including `delivery-failures.log`

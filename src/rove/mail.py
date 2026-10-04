@@ -19,6 +19,7 @@ Automatic replies are dropped before any of this.
 """
 
 import asyncio
+import fcntl
 import html
 import json
 import re
@@ -2087,6 +2088,19 @@ def tick() -> dict:
             if not settings.get("enabled")
             else "the Zoho values are not in the private env",
         }
+    # One reader at a time: the scheduled run and the look right after a send never
+    # handle the same mail twice.
+    lock_path = state_root() / "mail/tick.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"enabled": True, "busy": True}
+        return read_mailbox(settings, creds)
+
+
+def read_mailbox(settings: dict, creds: dict) -> dict:
     workflow.ensure_recruiting_channel()
     post_cards()
     result = {"enabled": True, "seen": 0, "applied": 0, "held": 0, "ignored": 0, "events": []}
@@ -2113,6 +2127,46 @@ def tick() -> dict:
     result["finished_at"] = workflow.now()
     write_private(state_root() / "mail/service.json", result)
     return result
+
+
+# After a send, its receipt is looked for early instead of at the next scheduled run.
+RECEIPT_WATCH = timedelta(minutes=12)  # how long after the click
+RECEIPT_WAIT = timedelta(seconds=45)  # the first look
+RECEIPT_EVERY = timedelta(seconds=75)  # between looks
+
+
+def receipt_due(now: datetime | None = None) -> bool:
+    """Whether a send of the last minutes has no mail on record yet and the mailbox was
+    not read in the last minute. The employer's receipt usually arrives within a minute
+    or two of the click."""
+    now = now or datetime.now(UTC)
+    with workflow.db() as conn:
+        rows = conn.execute(
+            "SELECT a.application_id FROM live_submission_attempts a JOIN application_queue q "
+            "ON q.id=a.application_id WHERE q.status IN ('APPLIED','UNKNOWN_SUBMISSION') AND "
+            "NOT EXISTS (SELECT 1 FROM application_events e WHERE "
+            "e.application_id=a.application_id AND e.kind='recruiting_mail')"
+        ).fetchall()
+    waiting = False
+    for row in rows:
+        clicked = attempt_time(row["application_id"])
+        waiting = waiting or (
+            clicked is not None and RECEIPT_WAIT <= now - clicked <= RECEIPT_WATCH
+        )
+    if not waiting:
+        return False
+    try:
+        last = datetime.fromisoformat(
+            json.loads((state_root() / "mail/service.json").read_text())["finished_at"]
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+    return now - last >= RECEIPT_EVERY
+
+
+def follow_up() -> dict | None:
+    """The worker's look for a receipt right after a send; None when none is due."""
+    return tick() if receipt_due() else None
 
 
 def recheck(days: int = 7) -> dict:

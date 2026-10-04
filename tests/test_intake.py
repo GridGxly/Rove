@@ -735,6 +735,8 @@ def test_digest_numbers_and_card_words_do_not_cross_in_the_shortlist(state, monk
     with workflow.db() as conn:
         for channel in ("action", "short", "sys"):
             conn.execute("INSERT INTO workflow_checkpoints VALUES(?,?)", (channel, "100"))
+        # The cards came an hour ago, and other messages were posted under them since.
+        conn.execute("UPDATE owner_notices SET created_at='2026-01-01T00:00:00+00:00'")
     said = []
     inbox = [
         {"id": "101", "author": {"id": "owner"}, "content": "3 yes"},
@@ -761,7 +763,7 @@ def test_digest_numbers_and_card_words_do_not_cross_in_the_shortlist(state, monk
     # reader gets it. A bare word for a card still asks which card.
     assert [decisions()[name] for name in ("job_ml", "job_it", "job_fw")] == ["offered"] * 3
     assert said[0] == worker.HELP_LINE
-    assert said[1].startswith("Which one? Company 1 — Intern · Company 2 — Intern.")
+    assert said[1].startswith("Which one?\nCompany 2 — Intern\nCompany 1 — Intern\n")
     assert len(said) == 2
 
 

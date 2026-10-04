@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
 from urllib.parse import parse_qsl
 
@@ -1710,3 +1710,58 @@ def test_the_card_shows_mail_words_as_inert_text():
     )
     assert mail.plain_text(hidden, visible_only=True) == "Hello\nBye"
     assert "zebra" in mail.plain_text(hidden)  # the rules and the model's excerpt read it all
+
+
+def test_a_send_gets_its_receipt_looked_for_within_minutes(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    now = datetime.fromtimestamp(NOW_MS / 1000, UTC)
+    assert mail.receipt_due(now) is False  # nothing was sent
+    app = sent_application(
+        "https://jobs.ashbyhq.com/examplelabs/194eec78-26db-4d8e-850f-a99ea2733e9f",
+        "Example Labs — Software Engineering Intern",
+    )
+    attempt(app, minutes_before_now_ms=0.5, status="APPLIED")
+    assert mail.receipt_due(now) is False  # the click was half a minute ago: too early
+    assert mail.receipt_due(now + timedelta(seconds=30)) is True
+    assert mail.receipt_due(now + timedelta(minutes=13)) is False  # the scheduled run has it
+    # The look itself: the receipt is recorded, and with it on record no more looks.
+    sender = "no-reply@ashbyhq.com"
+    listing = [message("3201", sender, "Thank you for applying to Example Labs", NOW_MS + 5)]
+    fake_zoho(monkeypatch, listing, {"3201": THANKS}, {"3201": zoho_stored_headers(sender)})
+    assert mail.tick()["applied"] == 1
+    assert len(events(app, "recruiting_mail")) == 1
+    assert mail.receipt_due(now + timedelta(minutes=2)) is False
+    assert any("Application received" in c["content"] for c in cards(posted))
+
+
+def test_two_mail_readers_never_run_at_once(state, monkeypatch):
+    import fcntl
+
+    configure(state)
+    recorder(monkeypatch)
+    fake_zoho(monkeypatch, [], {})
+    lock_path = state / "mail/tick.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert mail.tick() == {"enabled": True, "busy": True}
+    assert mail.tick()["seen"] == 0
+
+
+def test_a_recent_look_is_not_repeated_within_the_minute(state, monkeypatch):
+    configure(state)
+    recorder(monkeypatch)
+    app = sent_application("https://jobs.example.com/intern", "Example Labs — Software Intern")
+    with workflow.db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO live_submission_attempts"
+            "(application_id,package_hash,owner_message_id,status,created_at) VALUES(?,?,?,?,?)",
+            (app, "a" * 64, "o", "APPLIED", (datetime.now(UTC) - timedelta(minutes=2)).isoformat()),
+        )
+    assert mail.receipt_due() is True
+    fake_zoho(monkeypatch, [], {})
+    assert mail.follow_up()["seen"] == 0  # read just now, nothing there yet
+    assert mail.receipt_due() is False and mail.follow_up() is None
+    assert mail.receipt_due(datetime.now(UTC) + timedelta(seconds=80)) is True

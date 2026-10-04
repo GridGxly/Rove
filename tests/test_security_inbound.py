@@ -552,13 +552,21 @@ def test_a_bare_word_acts_on_the_one_live_card(state, monkeypatch):
     assert command_rows() == [(app, "resume")] and workflow.get(app)["status"] == "QUEUED"
 
 
+def cards_came_long_ago():
+    """The live cards are an hour old, with other messages under them since."""
+    with workflow.db() as conn:
+        conn.execute("UPDATE owner_notices SET created_at='2026-01-01T00:00:00+00:00'")
+
+
 def test_with_several_live_cards_a_bare_word_asks_which_one_by_company_and_role(state, monkeypatch):
     discord_recorder(monkeypatch)
     labs = held_application("labs", title="Example Labs — Software Intern")
     other = held_application("other", title="Other Co — Data Intern")
+    cards_came_long_ago()
+    # One name per line, the newest card first: readable on a phone.
     which = (
-        "Which one? Example Labs — Software Intern · Other Co — Data Intern. Answer with "
-        "the company name, or use Discord's reply on its card."
+        "Which one?\nOther Co — Data Intern\nExample Labs — Software Intern\n"
+        "Answer with the company name, or use Discord's reply on its card."
     )
     # A word, then the company: the word is applied to that application and no other.
     said = [{"author": {"id": OWNER}, "content": text} for text in ("go", "other co")]
@@ -582,6 +590,7 @@ def test_which_one_takes_a_role_when_the_company_has_two_cards_and_forgets_after
     discord_recorder(monkeypatch)
     software = held_application("a", title="Example Labs — Software Intern")
     data = held_application("b", title="Example Labs — Data Intern")
+    cards_came_long_ago()
     channels = {"action", "short"}
 
     def parse(content):
@@ -603,6 +612,7 @@ def test_which_one_takes_a_role_when_the_company_has_two_cards_and_forgets_after
     assert say("software") is None
     # A word nobody followed up on within the hour is forgotten.
     held_application("c", title="Other Co — Data Intern")
+    cards_came_long_ago()
     with pytest.raises(ValueError, match="Which one"):
         parse("go")
     with inbound.waiting_db() as conn:
@@ -936,3 +946,30 @@ def test_the_mail_prompt_loads_where_yaml_is_not_installed():
     from rove import mail, mail_prompt
 
     assert mail.MAIL_PROMPT is mail_prompt.MAIL_PROMPT
+
+
+def test_a_bare_word_right_after_a_card_is_about_that_card(state, monkeypatch):
+    # What he does on his phone: a card arrives, he types `go` under it.
+    discord_recorder(monkeypatch)
+    older = held_application("older", title="Example Labs — Software Intern")
+    cards_came_long_ago()
+    newest = held_application("newest", title="Other Co — Data Intern")
+    posted = poll(monkeypatch, {"action": [{"author": {"id": OWNER}, "content": "go"}]})
+    assert posted == []
+    assert command_rows() == [(newest, "resume")]
+    assert workflow.get(newest)["status"] == "QUEUED"
+    assert workflow.get(older)["status"] == "NEEDS_USER"
+
+
+def test_six_live_cards_are_listed_as_five_names_and_a_count(state, monkeypatch):
+    discord_recorder(monkeypatch)
+    for n in range(6):
+        held_application(f"job{n}", title=f"Company {n} — Intern")
+    cards_came_long_ago()
+    ((_, line),) = poll(monkeypatch, {"action": [{"author": {"id": OWNER}, "content": "go"}]})
+    assert line.splitlines() == [
+        "Which one?",
+        *(f"Company {n} — Intern" for n in (5, 4, 3, 2, 1)),
+        "…and 1 more",
+        "Answer with the company name, or use Discord's reply on its card.",
+    ]

@@ -34,6 +34,7 @@ from . import (
     form_reading,
     overlays,
     questions,
+    recovery,
     timing,
     workflow,
 )
@@ -116,6 +117,15 @@ def owner_words(detail: str) -> str | None:
     """The plain-word reason carried by a browser error, or None for any other error."""
     text = str(detail)
     return text[len(PLAIN_STOP) :] if text.startswith(PLAIN_STOP) else None
+
+
+class BrowserError(RuntimeError):
+    """A failure the browser service reported. `error_type` is the service's own name for
+    it, kept for the system log; the owner reads plain words built from the message."""
+
+    def __init__(self, text: str, error_type: str = ""):
+        super().__init__(text)
+        self.error_type = error_type
 
 
 def same_job(approved: str, form: str) -> bool:
@@ -1239,6 +1249,7 @@ class RecruitingBrowser:
 
     def click(self, locator, timeout: int = 12000):
         """Move to the element first, like a person would, then click."""
+        self.beat()
         if pacing_enabled():
             try:
                 locator.hover(timeout=3000)
@@ -1248,6 +1259,7 @@ class RecruitingBrowser:
         locator.click(timeout=timeout)
 
     def type_value(self, locator, value: str):
+        self.beat()
         if pacing_enabled() and len(value) <= 80:
             locator.click()
             locator.fill("")
@@ -1340,6 +1352,12 @@ class RecruitingBrowser:
 
     def save(self):
         write_private(state_root() / f"applications/{self.run['id']}/run.json", self.run)
+        self.beat()
+
+    def beat(self):
+        """A sign of life for the worker while this application is observed and filled."""
+        if self.run and self.run.get("id"):
+            recovery.beat(self.run["id"])
 
     def settle(self, timeout: int = 10000):
         """Bounded wait for a rendered page.
@@ -3274,7 +3292,8 @@ def checked_run_id(request: dict) -> str | None:
 def handle_request(browser, request: dict):
     action = request["action"]
     if action == "status":
-        browser.attach_if_running()
+        if not request.get("peek"):  # a peek never reaches for the browser
+            browser.attach_if_running()
         return status_report(browser)
     if action == "close":
         # Closing a tab touches no path: the id only names an entry to drop.
@@ -3397,14 +3416,154 @@ def serve():
             print(rebuilt, file=sys.stderr, flush=True)
             workflow.system_line("browser", rebuilt)
 
+    service = Service(browser)
+
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
-            response = respond(browser, self.rfile.readline(32769))
+            response = service.answer(self.rfile.readline(32769))
             self.wfile.write((json.dumps(response) + "\n").encode())
 
-    with socketserver.UnixStreamServer(str(socket_path()), Handler) as server:
+    class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
+
+    with Server(str(socket_path()), Handler) as server:
         socket_path().chmod(0o600)
-        server.serve_forever()
+        threading.Thread(target=server.serve_forever, name="rove-socket", daemon=True).start()
+        service.run()  # the browser is driven from this thread only
+
+
+class Service:
+    """The browser daemon's requests: one thread drives the browser, the others answer.
+
+    Patchright's sync API belongs to the thread that started it, so every request that
+    touches the browser runs on the service's own thread, one at a time, in arrival order.
+    Each connection is read on a thread of its own, so a `status` or a `close` asked while a
+    long `prepare` runs does not wait behind it: status answers from the report taken after
+    the last request, with what is running now; close is done the moment the running
+    request ends, before anything queued after it, and answers at once. `peek` is a status
+    that never waits and never reaches the browser, for `rove doctor`.
+    """
+
+    WAIT = 0.5  # seconds a status or close waits for an idle browser first
+
+    def __init__(self, browser):
+        import queue
+
+        self.browser = browser
+        self.jobs: queue.Queue = queue.Queue()
+        self.lock = threading.Lock()
+        self.busy: dict | None = None
+        self.report: dict = {}
+        self.closing: list[str] = []
+
+    @staticmethod
+    def parsed(raw: bytes) -> dict:
+        try:
+            request = json.loads(raw) if raw and len(raw) <= 32768 else None
+        except ValueError:
+            return {}
+        return request if isinstance(request, dict) else {}
+
+    def answer(self, raw: bytes) -> dict:
+        """One request from a connection thread; the browser work happens on `run`."""
+        from concurrent.futures import Future
+
+        request = self.parsed(raw)
+        action = request.get("action")
+        if action == "status" and request.get("peek"):
+            return {"result": self.snapshot()}
+        job: Future = Future()
+        self.jobs.put((raw, job))
+        if action in {"status", "close"}:
+            try:
+                return job.result(timeout=self.WAIT)
+            except TimeoutError:
+                if job.cancel():  # still waiting behind a long request: answer around it
+                    return self.around(action, request)
+        return job.result()
+
+    def around(self, action: str, request: dict) -> dict:
+        if action == "status":
+            return {"result": self.snapshot()}
+        try:
+            run_id = checked_run_id(request)
+        except ValueError as error:
+            return {"error": str(error), "error_type": type(error).__name__}
+        if run_id is None:
+            return {
+                "error": "This browser action needs an application id",
+                "error_type": "ValueError",
+            }
+        from concurrent.futures import Future
+
+        with self.lock:
+            self.closing.append(run_id)
+            after = (self.busy or {}).get("action")
+        self.jobs.put((None, Future()))  # the browser thread closes it as soon as it is free
+        return {"result": {"closed": run_id, "after": after}}
+
+    def snapshot(self) -> dict:
+        """The last report, the running request, and the app as configured now. Nothing
+        here touches the browser itself."""
+        with self.lock:
+            report, busy = dict(self.report), dict(self.busy or {})
+        app = browser_app.status(workflow.config())
+        try:
+            running = self.browser.launcher.running_app()
+        except Exception:  # noqa: BLE001 -- unknown is reported as not running
+            running = None
+        report.update(
+            daemon_running=True,
+            browser_running=running is not None,
+            app={**app, "running": running is not None and running == app["path"]},
+        )
+        report.setdefault("browser_connected", None)
+        report.setdefault("open_tabs", [])
+        report.setdefault("run_id", None)
+        if busy:
+            report["busy"] = {
+                "action": busy.get("action"),
+                "seconds": round(time.monotonic() - busy.get("since", time.monotonic()), 1),
+            }
+        return report
+
+    def run(self):
+        while True:
+            self.step()
+
+    def step(self):
+        """Take one request off the queue and serve it on this thread."""
+        raw, job = self.jobs.get()
+        if not job.set_running_or_notify_cancel():
+            return
+        response: dict = {"result": None}
+        if raw is not None:
+            request = self.parsed(raw)
+            with self.lock:
+                self.busy = {"action": request.get("action"), "since": time.monotonic()}
+            try:
+                response = respond(self.browser, raw)
+            except Exception as error:  # noqa: BLE001 -- the caller gets an answer, always
+                response = {
+                    "error": "The browser service failed",
+                    "error_type": type(error).__name__,
+                }
+        self.settle()
+        job.set_result(response)
+
+    def settle(self):
+        """After each request: the closes asked meanwhile, then a fresh report."""
+        with self.lock:
+            closing, self.closing = self.closing, []
+        for run_id in closing:
+            with contextlib.suppress(Exception):
+                self.browser.close_run(run_id)
+        try:
+            report = status_report(self.browser)
+        except Exception:  # noqa: BLE001 -- a report is for status only
+            report = {}
+        with self.lock:
+            self.report, self.busy = report, None
 
 
 # How long a caller waits for the daemon's reply, per action, in seconds. Long enough for
@@ -3477,5 +3636,5 @@ def browser_call(action: str, **kwargs) -> dict:
         client.sendall((json.dumps({"action": action, **kwargs}) + "\n").encode())
         result = json.loads(read_reply(client, CALL_SECONDS.get(action, 240)))
     if "error" in result:
-        raise RuntimeError(result["error"])
+        raise BrowserError(result["error"], str(result.get("error_type") or ""))
     return result["result"]

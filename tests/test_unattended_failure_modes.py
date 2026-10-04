@@ -585,9 +585,9 @@ def test_a_form_the_site_rejected_after_the_click_asks_for_go_in_plain_words(sta
     assert "nothing was sent" in card["description"]
     assert "Email address is invalid" in card["description"]
     assert reply_block(card) == workflow.command_block(["go", "park it"])
-    thread = workflow.event_embeds(app, "needs_action", workflow.latest_hold(app))[0]
+    thread = workflow.event_embeds(app, "needs_action", workflow.latest_hold(app))
     no_ids(thread)
-    assert reply_block(thread) == workflow.command_block(["go", "park it"])
+    assert len(thread) == 1 and thread[0].startswith("→ Stopped: ")
     apply_command(thread_command("go", app), "m-go")
     assert workflow.get(app)["status"] == "QUEUED"
 

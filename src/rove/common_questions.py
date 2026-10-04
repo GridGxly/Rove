@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from . import education, questions
+from .dates import MONTHS
 
 SHORT_TEXT, NUMBER, DATE, MONTH, YES_NO, CHOICE = (
     "short text",
@@ -277,20 +278,6 @@ def open_questions(profile: dict | None, recall) -> list[CommonQuestion]:
 # --- answers as the owner types them -------------------------------------------------
 YES_WORDS = frozenset({"yes", "y", "yeah", "yep", "yup", "true", "sure", "correct", "ok"})
 NO_WORDS = frozenset({"no", "n", "nope", "false", "never"})
-MONTH_NAMES = (
-    "january",
-    "february",
-    "march",
-    "april",
-    "may",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
-)
 NUMERIC_DATE = re.compile(
     r"(\d{4})-(\d{1,2})(?:-(\d{1,2}))?|(\d{1,2})/(\d{1,2})/(\d{2,4})|(\d{1,2})/(\d{4})"
 )
@@ -308,7 +295,7 @@ def month_number(word: str) -> int | None:
     """January, Jan or Janu is month 1; "mart" is nothing."""
     if len(word) < 3:
         return None
-    return next((n for n, name in enumerate(MONTH_NAMES, start=1) if name.startswith(word)), None)
+    return next((n for n, name in enumerate(MONTHS, start=1) if name.startswith(word)), None)
 
 
 def parse_date(text: str, *, need_day: bool) -> tuple[int, int, int | None]:

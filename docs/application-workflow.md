@@ -21,8 +21,12 @@ The worker, `rove workflow tick`, runs every 30 seconds under a file lock and ha
 1. reads the owner's new replies in Discord
 2. retries Discord posts that failed earlier
 3. parks queued feed jobs that now match an approved exclusion, with the reason in the queue record
-4. hands back a preparation that has been running for more than fifteen minutes, as a crashed run
+4. finds preparations whose worker died: a pass the worker started whose heartbeat (the browser's observing and filling) has been quiet for two minutes goes back to the queue once without a card, and to the owner the second time; a preparation no worker pass marked is handed back after fifteen minutes
 5. runs approved submissions, and ends the tick if any ran
+
+After its pass, the worker reads the mailbox early when an application was sent in the last twelve minutes and has no mail on record yet, so the employer's receipt reaches the recruiting channel within a minute or two instead of at the next scheduled mail run.
+
+No new application starts while less than `min_free_disk_gb` (default 2) of disk is free. One card says so, and it leaves once there is room.
 
 Nothing new starts while an application is being prepared, is being submitted, or has an unclear submission. An unclear submission holds the whole queue until the owner settles it.
 
@@ -154,8 +158,8 @@ Every stop is one card in the thread and one in an owner channel, with the repli
 | First application to this employer | Only with `first_send_hold: all`: the first form for an employer on a board. | `go`, `park it` |
 | This site cannot take the application | The form is on a host that never takes applicant data: an address instead of a name, a private network, rented hosting or a form builder, a link shortener, or a name that is not a public site. | `applied` after applying by hand, `park it` |
 | Browser needs a look | Anything else, including a form for another job than the queued link, and a job already sent through another link. | `go`, `park it` |
-| Preparation stopped | A step raised an error. The card names the step. | `go`, `park it` |
-| Preparation interrupted | The worker found a preparation older than fifteen minutes. | `go`, `park it` |
+| Preparation stopped | A step failed twice in a row, or failed in a way a second try cannot fix. The card says what Rove was doing and why it could not, in plain words; the exception and the step are in the system log and the application's `error.json`. | `go`, `park it` |
+| Preparation interrupted | A preparation went quiet a second time, or one no worker pass marked is older than fifteen minutes. | `go`, `park it` |
 | Ready to submit | The form is complete and an adapter is enabled. Not posted when `auto_submit` is on. | `send it`, `go` |
 | Ready · send it yourself | The form is complete, and either submission is off or no enabled adapter matches the site. | `applied`, `park it` |
 | Submission not attempted | The check before the click failed. Nothing was sent. | `go` |
@@ -270,6 +274,10 @@ Unattended sending is an owner policy in private `config/workflow.json`. It is o
 Two keys pace it. `max_submissions_per_day` (default 10) counts the submission attempts recorded on the current UTC date. `min_minutes_between_submissions` (default 8) is the gap since the last attempt. While either limit applies, the worker starts no new feed job. An application the owner resumed and a link the owner pasted are worked anyway.
 
 Everything in [When Rove stops for the owner](#when-rove-stops-for-the-owner) still stops an unattended run, except the ready-to-submit card.
+
+### A step that fails
+
+A step that sent nothing (opening the posting, the fit review, the resume, filling the form) is tried once more on the next tick, first in line and without a card. Only its second failure reaches the owner. A stop that is the owner's call is never retried: an unsafe redirect, a site he has not let in, a pop-up Rove will not guess on, a value the site changed, a full disk. An account creation is not retried either, because the first try may have reached the site. Nothing at or after the submit click is ever retried.
 
 ## Recruiting mail
 

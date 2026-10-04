@@ -236,7 +236,8 @@ def test_a_stage_is_delivered_as_one_message_with_a_stable_nonce(fake):
     workflow.flush_events(app)
     posts = fake.posts(THREAD)
     assert len(posts) == 1
-    assert posts[0]["content"].count("→ Opened") == 4 and len(posts[0]["embeds"]) == 1
+    assert posts[0]["content"].count("→ Opened") == 4 and not posts[0].get("embeds")
+    assert posts[0]["content"].endswith("→ Qwen did not finish writing answers")
     assert posts[0]["enforce_nonce"] and len(posts[0]["nonce"]) <= 25
     assert {d for _, d in deliveries(app)} == {"sent"}
     workflow.flush_events(app)
@@ -256,8 +257,9 @@ def test_inside_the_window_only_the_hold_card_and_status_go_out(fake):
         posted = [p for m, p, _ in fake.requests if m == "POST"]
         assert posted[:2] == ["/channels/1001/messages", f"/channels/{THREAD}/messages"]
         thread = fake.posts(THREAD)[0]
-        assert thread["content"] == "→ Opened · Posting"
-        assert thread["embeds"][0]["title"] == "Answers needed"
+        # The thread's record of the stop is one line; its status card has the reason.
+        assert thread["content"] == "→ Opened · Posting\n→ Stopped: answers needed"
+        assert not thread.get("embeds")
         workflow.record(app, "opened", {"title": "After the hold"})
         workflow.flush_events(app)
         assert len(fake.posts(THREAD)) == 1 and fake.posts("1004") == []

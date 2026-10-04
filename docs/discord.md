@@ -65,7 +65,7 @@ Files over 8 MiB are skipped. A screenshot shows the form as filled, including c
 
 `action-needed` and `shortlist` are to-do lists. An application has at most one live card in each. A new card replaces the previous one, and the cards are deleted as soon as the application stops waiting on the owner.
 
-A card shows the job title as a link to the thread, a headline, the reason, the numbered questions, and the replies in a code block. `shortlist` gets job-fit decisions and nothing else. `action-needed` gets every other stop. The stops are listed in [Application workflow](application-workflow.md#when-rove-stops-for-the-owner).
+A card shows the job title as a link to the thread, a headline, the reason, the numbered questions, and the replies in a code block. The thread shows the same stop once: on its status card at the top. The thread's record below gets one line for it ("→ Stopped: …") and, when the stop asks something, the questions with their numbered replies. `shortlist` gets job-fit decisions and nothing else. `action-needed` gets every other stop. The stops are listed in [Application workflow](application-workflow.md#when-rove-stops-for-the-owner).
 
 With the `auto_submit` policy on, a package that completes is sent without a card. The thread is where the owner reviews it afterward.
 
@@ -75,7 +75,7 @@ A reply works in three places:
 
 - in the application's own thread, where the application is implied
 - as a Discord reply to the application's card in `action-needed` or `shortlist`
-- as a plain message in one of those two channels, when exactly one card is live there
+- as a plain message in one of those two channels, when exactly one card is live there. With several live, the message is about the newest card when that card came in the last ten minutes or is the message right above it; otherwise Rove asks "Which one?" and lists up to five cards, newest first, one per line
 
 The whole message must be the reply. Case, surrounding backticks and a trailing period, exclamation mark or question mark are ignored.
 

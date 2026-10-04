@@ -568,7 +568,11 @@ def test_cards_are_posted_without_the_suppress_embeds_flag(state, monkeypatch):
     application_id = workflow.enqueue("https://jobs.example.com/flags")["application_id"]
     workflow.set_state(application_id, "NEEDS_USER", thread_id="thread")
     workflow.action_needed(application_id, "look", commands=["resume x"])
-    assert sent and all("flags" not in p and p.get("embeds") for p in sent)
+    # The owner's card and the thread's status card are embeds; the thread's record of
+    # the stop is one line. None of them carries the flag that would hide an embed.
+    assert sent and all("flags" not in p for p in sent)
+    assert len([p for p in sent if p.get("embeds")]) >= 2
+    assert [p["content"] for p in sent if not p.get("embeds")] == ["→ Stopped: needs you"]
 
 
 def test_owner_cards_are_durable_and_retried_on_the_next_tick(state, monkeypatch):
@@ -1520,14 +1524,20 @@ def test_owner_cards_and_lines_carry_no_identifiers(state):
     assert unknown["Reply"] == workflow.command_block(["applied", "not sent"])
     confirmed = {f["name"]: f["value"] for f in rendered["submission_confirmed"][0]["fields"]}
     assert list(confirmed) == ["Confirmation page", "Confirmed by"]
-    hold = {f["name"]: f["value"] for f in rendered["needs_action"][0]["fields"]}
-    # The open question carries its own `1:`; the block keeps the word replies.
-    assert hold["Reply"] == workflow.command_block(["applied", "not sent", "send it"])
+    # The thread's record of a stop is one line and, when it asks something, the
+    # questions with their `N:` replies. The reason and the word replies are on the
+    # status card at the top of the thread and on the owner's card.
+    stop, answers = rendered["needs_action"]
+    assert stop == "→ Stopped: needs your answer to 1 question"
+    assert answers["title"] == "Your answers"
+    assert {f["name"]: f["value"] for f in answers["fields"]} == {"Only you can answer": "`1:` GPA"}
     assert rendered["resume_prepared"] == ["→ Resume ready · tailored from your evidence"]
-    # Cards the owner channels and the forum's first post get say the same words.
+    assert rendered["discord_tag_failed"] == []  # cosmetic: the system log has it
     notice = workflow.notice_embed(app, "action", samples["needs_action"])
     no_ids(notice)
-    assert {f["name"]: f["value"] for f in notice["fields"]}["Reply"] == hold["Reply"]
+    assert {f["name"]: f["value"] for f in notice["fields"]}["Reply"] == (
+        workflow.command_block(["applied", "not sent", "send it"])
+    )
 
 
 def test_source_words_speak_to_the_owner():
@@ -1722,12 +1732,20 @@ def test_a_reply_on_a_card_in_action_needed_names_its_application(state, monkeyp
     )["application_id"]
     workflow.set_state(other, "NEEDS_USER")
     workflow.action_needed(other, "Needs you", commands=["go"], headline="Answers needed")
+    # Right after a card came, a bare word is about that card.
+    newest = worker.parse_command(
+        {"author": {"id": "owner"}, "content": "go"}, "owner", "action", {"action"}, {}
+    )
+    assert newest["application_id"] == other and newest["kind"] == "resume"
+    # Long after, with other messages under the cards, it asks which one.
+    with workflow.db() as conn:
+        conn.execute("UPDATE owner_notices SET created_at='2026-01-01T00:00:00+00:00'")
     with pytest.raises(ValueError, match="Which one") as asked:
         worker.parse_command(
             {"author": {"id": "owner"}, "content": "go"}, "owner", "action", {"action"}, {}
         )
     # With two cards live the line names both by company and role, never by an id.
-    assert "Which one? Example — Intern · Other — Intern." in str(asked.value)
+    assert str(asked.value).startswith("Which one?\nOther — Intern\nExample — Intern\n")
     assert "Answer with the company name" in str(asked.value)
     no_ids(str(asked.value))
     chatter = {"author": {"id": "owner"}, "content": "what is this"}

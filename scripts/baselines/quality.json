@@ -121,7 +121,7 @@
       "src/rove/questions.py": 1,
       "src/rove/reasoning.py": 2,
       "src/rove/submission.py": 1,
-      "src/rove/worker.py": 3,
+      "src/rove/worker.py": 2,
       "src/rove/workflow.py": 1,
       "tests/test_authority.py": 1
     },

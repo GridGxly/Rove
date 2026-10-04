@@ -131,7 +131,16 @@ def where_it_stands(application_id: str, *, many: bool = False, offer: bool = Fa
     """Where one of his queued links stands among his own choices, in one plain sentence."""
     with workflow.db() as conn:
         line = line_of_mine(conn)
+        busy = conn.execute(
+            "SELECT * FROM application_queue WHERE status IN ('PREPARING','SUBMITTING') AND "
+            "id!=? ORDER BY updated_at DESC LIMIT 1",
+            (application_id,),
+        ).fetchone()
     ahead = line.index(application_id) if application_id in line else len(line)
+    if not ahead and busy:
+        # One application runs at a time: say which one he is waiting behind.
+        running = workflow.clip(workflow.display_title(dict(busy)), 70)
+        return f"{running} is running now; {'the first goes' if many else 'it goes'} right after."
     if not ahead:
         return "The first goes next." if many else "It goes next."
     them = "them" if many else "it"
@@ -338,8 +347,12 @@ def could_answer(content: str, cards: list[dict]) -> bool:
     return False
 
 
+WHICH_ONE_NAMES = 5
+
+
 def which_one(channel: str, message: dict, cards: list[dict]) -> str:
-    """Keep the owner's word and return the line that asks which card it was for."""
+    """Keep the owner's word and return the lines that ask which card it was for: at most
+    five names, one per line, the newest card first, then how many more there are."""
     with waiting_db() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO owner_waiting_words VALUES(?,?,?,?)",
@@ -350,10 +363,12 @@ def which_one(channel: str, message: dict, cards: list[dict]) -> str:
                 workflow.now(),
             ),
         )
-    return (
-        f"Which one? {listed(cards)}. Answer with the company name, or use Discord's "
-        "reply on its card."
-    )
+    newest = list(reversed(cards))  # `live_cards` lists the oldest card first
+    lines = ["Which one?", *(shown_title(item) for item in newest[:WHICH_ONE_NAMES])]
+    if len(newest) > WHICH_ONE_NAMES:
+        lines.append(f"…and {len(newest) - WHICH_ONE_NAMES} more")
+    lines.append("Answer with the company name, or use Discord's reply on its card.")
+    return "\n".join(lines)
 
 
 def named_cards(content: str, cards: list[dict]) -> list[dict]:

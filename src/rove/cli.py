@@ -89,7 +89,12 @@ def main():
     mail = sub.add_parser("mail")
     mail.add_argument("action", choices=["tick", "status", "recheck"])
     mail.add_argument("--days", type=int, default=7, help="recheck: how far back to read again")
+    sub.add_parser("doctor", help="read-only health check, one line per check")
     args = parser.parse_args()
+    if args.command == "doctor":
+        from .doctor import main as doctor
+
+        raise SystemExit(doctor())
     if args.command == "workflow":
         from . import worker, workflow
 

@@ -14,6 +14,7 @@ import hashlib
 import json
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -2392,16 +2393,20 @@ def running_chrome(runtime, tmp_path):
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-background-networking",
+            # A CI runner's kernel refuses the browser's own sandbox, as it does for the
+            # fixture browser Patchright launches itself.
+            *(["--no-sandbox"] if sys.platform.startswith("linux") else []),
             "about:blank",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     try:
-        for _ in range(100):
+        for _ in range(150):
             if live_browser.devtools_alive(port):
                 break
             time.sleep(0.1)
+        assert live_browser.devtools_alive(port), "the fixture browser did not start"
 
         class Running:
             def ensure_running(self):

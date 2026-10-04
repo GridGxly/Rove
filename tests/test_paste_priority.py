@@ -90,6 +90,21 @@ def test_each_paste_says_where_it_stands(state):
     assert paste(link(1)) == "Already tracked: applied."
 
 
+def test_a_paste_behind_a_running_application_names_what_it_waits_for(state):
+    # What he saw live: "It goes next" while another application held the browser.
+    running = workflow.enqueue(
+        "https://jobs.example.com/running", source="owner_link", title="Northwind — Intern"
+    )["application_id"]
+    workflow.set_state(running, "PREPARING")
+    assert paste(link(1)) == "Queued. Northwind — Intern is running now; it goes right after."
+    assert paste(link(1)) == (
+        "Already queued. Northwind — Intern is running now; it goes right after."
+    )
+    assert paste(link(2)) == "Queued. 1 of your links is ahead of it; say `first` to move it up."
+    workflow.set_state(running, "NEEDS_USER")
+    assert paste(link(1)) == "Already queued. It goes next."
+
+
 def test_only_a_message_of_nothing_but_links_is_the_fast_lane(state):
     assert inbound.pasted_links(f"{link(1)}\n{link(2)}  {link(1)}.") == [link(1), link(2)]
     assert inbound.pasted_links(f"<{link(1)}>, <{link(2)}>") == [link(1), link(2)]

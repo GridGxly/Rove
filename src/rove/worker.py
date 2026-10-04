@@ -16,7 +16,7 @@ from . import (
     intake,
     matching,
     memory_channel,
-    overlays,
+    recovery,
     timing,
     workflow,
 )
@@ -26,7 +26,10 @@ from .reasoning import GATE_KINDS
 from .resumes import one_erga_pass, prepare_resume, start_preparation
 from .runtime import state_root, write_private
 
+# A preparation no worker pass marked (the agent's own browsing) is handed back after this.
 INTERRUPTED_AFTER = timedelta(minutes=15)
+# A worker pass whose heartbeat stopped this long ago crashed.
+SILENT_AFTER = timedelta(minutes=2)
 
 
 class PhaseError(Exception):
@@ -375,6 +378,71 @@ def skip_optional(application_id: str, questions: list):
     workflow.flush_events(application_id)
 
 
+# Why a resume could not be used, in the owner's words.
+RESUME_WORDS = {
+    "No validated generated or approved base PDF": (
+        "I have no resume I can upload: Erga's tailored PDF did not pass its check and there "
+        "is no approved base PDF"
+    ),
+    "Generated PDF has no matching source for independent validation": (
+        "Erga's tailored PDF came without its source file, so I could not check it"
+    ),
+    "Erga render validation failed": "Erga's tailored PDF failed its layout check",
+}
+
+
+def resume_words(reason) -> str:
+    text = RESUME_WORDS.get(str(reason or ""), str(reason or ""))
+    if not recovery.plain_text(text):
+        text = "The resume for this one could not be prepared"
+    return text.rstrip(".") + ". The resume needs review before upload."
+
+
+# The browser's preparation stopped before filling: the card's headline and words.
+PREPARE_STOPS = {
+    "MANUAL_LOGIN_REQUIRED": (
+        "Manual step in the browser",
+        (
+            "The form asks for a sign-in or an identity step only you can do. Finish it in "
+            "the recruiting browser, then reply `go`."
+        ),
+    ),
+    "APPLICATION_FORM_NOT_OPEN": (
+        "Browser needs a look",
+        (
+            "The application form was not open when I went to fill it. Open it in the "
+            "recruiting browser, then reply `go`."
+        ),
+    ),
+    "NEEDS_EMPLOYER_LINK": (
+        "Browser needs a look",
+        (
+            "This form is not on the employer's site or a job board I know for this job, so "
+            "I typed nothing into it. Check the recruiting browser, then reply `go`, or "
+            "`park it`."
+        ),
+    ),
+}
+LOOK_AGAIN = (
+    "The browser needs a look before I go on. Nothing was sent. Check the recruiting browser, "
+    "then reply `go`, or `park it`."
+)
+
+
+def prepare_stop(page: dict, headline: str) -> tuple[str, str]:
+    """A preparation that stopped before filling, in plain words: the browser's own words
+    when it wrote them for the owner, never a state name or a technical sentence."""
+    status = str(page.get("status") or "")
+    given = str(page.get("reason") or "")
+    if status == "NEEDS_EMPLOYER_LINK" and given.startswith("The form must match"):
+        given = ""  # the browser's technical fallback; the card says it plainly instead
+    if status in {"NEEDS_EMPLOYER_LINK", "ALREADY_SENT_ELSEWHERE"} and given:
+        return headline, given  # the browser wrote these for the owner
+    if status in PREPARE_STOPS:
+        return PREPARE_STOPS[status]
+    return headline, given if recovery.plain_text(given) else LOOK_AGAIN
+
+
 @timing.stage(None, "pass")
 @one_erga_pass
 def process(application_id: str) -> dict:
@@ -602,7 +670,7 @@ def process(application_id: str) -> dict:
                 # The first fill uploads the resume, so the background intake joins here.
                 resume = ready_resume(application_id, item["url"], preparing)
                 if not resume["ready"]:
-                    reason = resume["reason"] + ". The resume needs review before upload."
+                    reason = resume_words(resume.get("reason"))
                     headline = "Resume needs review"
                     break
                 phase = "prepare"
@@ -738,7 +806,7 @@ def process(application_id: str) -> dict:
                         commands = ["send it", "go"]
                         headline = "Ready to submit"
                 else:
-                    reason = page.get("reason", page.get("status", "Browser requires review"))
+                    headline, reason = prepare_stop(page, headline)
                 break
             links = page.get("application_links", [])
             if not links:
@@ -1000,8 +1068,10 @@ def card_application(message: dict, channel: str) -> str | None:
     cards in that channel; a reply on anything else (a look-alike card, a card already
     withdrawn) names none, however few cards are live. A message that is not a reply is
     about the one live card when there is exactly one. With several live, a word or a
-    plain answer gets a "Which one?" line that lists them by company and role; the owner
-    then names the company or replies on the card.
+    plain answer is about the newest card when it sits right under it (nothing else was
+    posted in the channel in between) or that card came in the last ten minutes;
+    otherwise a "Which one?" line lists them by company and role, and the owner names the
+    company or replies on the card.
     """
     settings = workflow.config()
     names = {settings.get(key): name for name, key in workflow.NOTICE_CHANNELS.items()}
@@ -1034,10 +1104,66 @@ def card_application(message: dict, channel: str) -> str | None:
     if len(live) == 1:
         return live[0]["id"]
     if len(live) > 1 and (is_command or inbound.could_answer(content, live)):
+        newest = newest_card(names[channel])
+        if newest and right_under(newest, message, channel):
+            mine = [item for item in live if item["id"] == newest["application_id"]]
+            if mine and (is_command or inbound.could_answer(content, mine)):
+                return newest["application_id"]
         raise ValueError(inbound.which_one(channel, message, live))
     if is_command:
         raise ValueError("No card is waiting here. Answer in the application's thread.")
     return None
+
+
+# A word under several cards means the newest one when that card came this recently.
+RECENT_CARD = timedelta(minutes=10)
+DISCORD_EPOCH_MS = 1420070400000
+
+
+def snowflake_time(message_id) -> datetime | None:
+    """When Discord made a message, from its id; None for an id that is not one."""
+    try:
+        stamp = datetime.fromtimestamp(((int(message_id) >> 22) + DISCORD_EPOCH_MS) / 1000, UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return stamp if stamp.year >= 2016 else None
+
+
+def newest_card(channel_name: str) -> dict | None:
+    """The newest live card in an owner channel: its application, message and time."""
+    with workflow.db() as conn:
+        row = conn.execute(
+            "SELECT application_id,message_id,created_at FROM owner_notices WHERE channel=? "
+            "AND delivery='sent' ORDER BY id DESC LIMIT 1",
+            (channel_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def right_under(card: dict, message: dict, channel: str) -> bool:
+    """Whether the owner's message sits under this card: the card came in the ten minutes
+    before it, or the card is the message right before his in the channel."""
+    posted = snowflake_time(card.get("message_id"))
+    if posted is None:
+        with contextlib.suppress(TypeError, ValueError):
+            posted = datetime.fromisoformat(str(card.get("created_at")))
+    said = snowflake_time(message.get("id")) or datetime.now(UTC)
+    if posted is not None and timedelta(0) <= said - posted <= RECENT_CARD:
+        return True
+    if not message.get("id") or not card.get("message_id"):
+        return False
+    try:
+        before = workflow.discord(
+            "GET", f"/channels/{channel}/messages?before={message['id']}&limit=1"
+        )
+    except (httpx.HTTPError, OSError):
+        return False  # unknown: asking which one is the safe answer
+    return (
+        isinstance(before, list)
+        and bool(before)
+        and isinstance(before[0], dict)
+        and str(before[0].get("id")) == str(card["message_id"])
+    )
 
 
 def explicit_command(text: str) -> dict | None:
@@ -1140,11 +1266,8 @@ def apply_command(command: dict, message_id: str):
         if command["kind"] in {"answer", "use"}:
             from . import questions
 
-            observation_path = state_root() / f"applications/{application_id}/observation.json"
-            observation = json.loads(observation_path.read_text())
-            field = next(
-                (f for f in observation["fields"] if f["key"] == command["field_key"]), None
-            )
+            # The last observation, else the package's form state; neither: a plain reply.
+            field = recovery.answer_field(application_id, command["field_key"])
             if (
                 field is None
                 or field["kind"] in {"password", "file", "hidden"}
@@ -1402,21 +1525,46 @@ def poll_commands() -> bool:
 
 
 def recover_interrupted():
-    """The worker holds the only lock, so an old PREPARING row is a crashed run."""
-    cutoff = (datetime.now(UTC) - INTERRUPTED_AFTER).isoformat()
+    """The worker holds the only lock, so a preparation still running here crashed.
+
+    A pass the worker marked whose heartbeat (the browser service's observations and
+    fills) stopped two minutes ago goes back to the queue once without a card; the second
+    time it is handed back to the owner. A preparation no worker pass marked (the agent's
+    own browsing) is handed back after fifteen minutes, as before.
+    """
+    now = datetime.now(UTC)
+    for application_id in recovery.silent_passes(now - SILENT_AFTER):
+        recovery.pass_ended(application_id)
+        if recovery.failed(application_id, "interrupted", "no heartbeat for two minutes") == 1:
+            recovery.retry_later(application_id, "interrupted")
+            workflow.set_state(application_id, "QUEUED", error="retrying_interrupted")
+            workflow.system_line(
+                application_id,
+                "preparation went quiet for two minutes · back in the queue · trying once more",
+            )
+            continue
+        recovery.forget(application_id, "interrupted")
+        hand_back(application_id)
+    cutoff = (now - INTERRUPTED_AFTER).isoformat()
+    marked = recovery.marked_passes()
     with workflow.db() as conn:
         rows = conn.execute(
             "SELECT id FROM application_queue WHERE status='PREPARING' AND updated_at<?", (cutoff,)
         ).fetchall()
     for row in rows:
-        workflow.set_state(row[0], "NEEDS_USER", error="preparation_interrupted")
-        workflow.action_needed(
-            row[0],
-            "Preparation was interrupted before it finished. Nothing was submitted. Inspect the "
-            "recruiting browser, then reply `go` to prepare again.",
-            commands=["go", "park it"],
-            headline="Preparation interrupted",
-        )
+        if row[0] not in marked:
+            hand_back(row[0])
+
+
+def hand_back(application_id: str):
+    workflow.set_state(application_id, "NEEDS_USER", error="preparation_interrupted")
+    workflow.action_needed(
+        application_id,
+        "Preparation was interrupted before it finished. Nothing was submitted. Inspect the "
+        "recruiting browser, then reply `go` to prepare again.",
+        commands=["go", "park it"],
+        headline="Preparation interrupted",
+    )
 
 
 def run_approved_submissions() -> list[dict]:
@@ -1444,17 +1592,13 @@ def run_approved_submissions() -> list[dict]:
             outcome = "failed"
             workflow.system_line(
                 application_id,
-                f"submission not attempted · package {package_hash} · {str(error)[:300]}",
+                f"submission not attempted · package {package_hash} · "
+                + recovery.technical("send", error),
             )
             if workflow.get(application_id)["status"] == "READY_FOR_REVIEW":
                 workflow.action_needed(
                     application_id,
-                    # The browser's own plain words (an unsafe redirect, a first send to
-                    # a new employer) are the reason as they stand.
-                    owner_words(str(error))
-                    or "Submission was not attempted: "
-                    + str(error)[:600]
-                    + ". Nothing was sent. Reply `go` to prepare it again.",
+                    send_refusal(error),
                     commands=["go"],
                     headline="Submission not attempted",
                 )
@@ -1466,6 +1610,28 @@ def run_approved_submissions() -> list[dict]:
         write_private(state_root() / f"applications/{application_id}/submit-result.json", result)
         results.append({**result, "outcome": outcome})
     return results
+
+
+def send_refusal(error: Exception) -> str:
+    """Why a send was not attempted, for the owner. The browser's own plain words (an
+    unsafe redirect, a first send to a new employer) stand as they are; a check's refusal
+    is quoted when it is a plain sentence; anything else is said without its internals."""
+    plain = owner_words(str(error))
+    if plain:
+        return plain
+    refused = isinstance(error, PermissionError | ValueError) or getattr(
+        error, "error_type", ""
+    ) in {"PermissionError", "ValueError"}
+    text = recovery.first_line(error).rstrip(".")
+    if refused and recovery.plain_text(text):
+        return (
+            f"Submission was not attempted: {text}. Nothing was sent. Reply `go` to prepare "
+            "it again."
+        )
+    return (
+        "The check before sending could not finish, so I did not click Submit. Nothing was "
+        "sent. Reply `go` to prepare it again."
+    )
 
 
 def prune_excluded() -> int:
@@ -1639,9 +1805,22 @@ def tick() -> dict:
             # The pass and its send come first; the thread record, files and system-log
             # lines are delivered when the window closes, at the end of this tick.
             with workflow.delivery_window():
-                return work(settings, reachable)
+                result = work(settings, reachable)
         finally:
             attach_deferred_drafts()
+        receipt_follow_up()
+        return result
+
+
+def receipt_follow_up():
+    """Right after a send, read the mailbox for its receipt instead of waiting for the
+    scheduled run. Mail trouble never stops the worker; its own health check reports it."""
+    try:
+        from . import mail
+
+        mail.follow_up()
+    except Exception as error:  # noqa: BLE001 -- the scheduled mail run reports a failure
+        workflow.system_line("mail", f"receipt check failed · {type(error).__name__}")
 
 
 def release_stale_tabs():
@@ -1684,75 +1863,80 @@ def work(settings: dict, reachable: bool = True) -> dict:
         return {"waiting_on": dict(active)}
     if not reachable:
         return {"idle": True, "discord": "unreachable"}
-    queued = next_queued(intake.number(settings, "max_waiting_applications", 1))
+    if not recovery.disk_ok(settings):
+        return {"idle": True, "disk": "low"}  # one owner card says why; it clears by itself
+    # A step that failed once is tried again first, before anything new starts.
+    queued = recovery.due_retry() or next_queued(
+        intake.number(settings, "max_waiting_applications", 1)
+    )
     if not queued:
         from .prereview import idle  # background fit reviews and the model keepalive
 
         idle(settings)
         return {"idle": True}
+    recovery.retrying(queued)
+    recovery.pass_started(queued)  # a crash from here on is found by its silent heartbeat
     try:
         result = process(queued)
+    except PhaseError as failure:
+        result = stopped(queued, failure)
+    except Exception as error:  # noqa: BLE001 -- outside every step: still plain words
+        result = stopped(queued, PhaseError("start", error))
+    else:
+        recovery.forget(queued)  # the pass went through: a later failure counts afresh
+        recovery.pass_ended(queued)
         if result.get("auto_submit"):
             submitted = run_approved_submissions()
             if submitted:
                 result = {**result, "submissions": submitted}
-    except PhaseError as failure:
-        from .reasoning import ModelUnavailable
-
-        if failure.phase == "forum" and isinstance(failure.error, httpx.TransportError):
-            # Discord went away before the thread existed: try again next tick, no card.
-            workflow.set_state(queued, "QUEUED", error="discord_unreachable")
-            workflow.delivery_failed("forum", queued, failure.error, announce=False)
-            result = {"application_id": queued, "status": "QUEUED", "waiting": "discord"}
-            write_private(state_root() / "workflow-status.json", result)
-            return result
-        if isinstance(failure.error, ModelUnavailable):
-            # An outage of the local model is not the application's problem: wait.
-            workflow.set_state(queued, "QUEUED", error="model_unavailable")
-            workflow.record(queued, "model_unavailable", {"phase": failure.phase})
-            result = {"application_id": queued, "status": "QUEUED", "waiting": "model"}
-            write_private(state_root() / "workflow-status.json", result)
-            return result
-        workflow.set_state(queued, "NEEDS_USER", error=str(failure))
-        write_private(
-            state_root() / f"applications/{queued}/error.json",
-            {
-                "phase": failure.phase,
-                "type": type(failure.error).__name__,
-                "detail": str(failure.error)[:1500],
-            },
-        )
-        workflow.system_line(
-            queued, f"preparation stopped · {failure.phase} · {type(failure.error).__name__}"
-        )
-        detail = str(failure.error)
-        if detail.startswith("Field verification failed"):
-            label = detail.partition(":")[2].strip() or "a field"
-            reason = (
-                f"The site changed the value I typed for “{label}”. Check it in the "
-                "recruiting browser, then reply `go`."
-            )
-        elif detail.startswith(overlays.HOLD_WORDS):
-            reason = overlays.HOLD_WORDS  # a pop-up code would not guess on
-        elif owner_words(detail):
-            reason = owner_words(detail)  # the browser already said it in plain words
-        else:
-            reason = (
-                f"Preparation stopped during {failure.phase.replace('_', ' ')}: "
-                + type(failure.error).__name__
-                + ". Details are saved locally; nothing was submitted."
-            )
-        workflow.action_needed(
-            queued,
-            reason,
-            commands=["go", "park it"],
-            headline="Preparation stopped",
-        )
-        attach_stop_screenshot(queued)
-        result = {
-            "application_id": queued,
-            "status": "NEEDS_USER",
-            "error": str(failure),
-        }
+    recovery.pass_ended(queued)
     write_private(state_root() / "workflow-status.json", result)
     return result
+
+
+def stopped(application_id: str, failure: PhaseError) -> dict:
+    """A step of the pass failed. An outage of Discord or the model waits without a card.
+    A step that sent nothing is tried once more on the next tick, without a card; its
+    second failure, and any stop that is the owner's call, is one card in plain words.
+    The exception, the step and the message's first line go to the system log and
+    `error.json`, never to the card."""
+    from .reasoning import ModelUnavailable
+
+    error = failure.error
+    if failure.phase == "forum" and isinstance(error, httpx.TransportError):
+        # Discord went away before the thread existed: try again next tick, no card.
+        workflow.set_state(application_id, "QUEUED", error="discord_unreachable")
+        workflow.delivery_failed("forum", application_id, error, announce=False)
+        return {"application_id": application_id, "status": "QUEUED", "waiting": "discord"}
+    if isinstance(error, ModelUnavailable):
+        # An outage of the local model is not the application's problem: wait.
+        workflow.set_state(application_id, "QUEUED", error="model_unavailable")
+        workflow.record(application_id, "model_unavailable", {"phase": failure.phase})
+        return {"application_id": application_id, "status": "QUEUED", "waiting": "model"}
+    stop = recovery.classify(failure.phase, error)
+    write_private(
+        state_root() / f"applications/{application_id}/error.json",
+        {
+            "phase": failure.phase,
+            "type": getattr(error, "error_type", "") or type(error).__name__,
+            "detail": recovery.first_line(error),
+        },
+    )
+    if stop.retry and recovery.failed(application_id, failure.phase, stop.technical) == 1:
+        recovery.retry_later(application_id, failure.phase)
+        workflow.set_state(application_id, "QUEUED", error=f"retrying_{failure.phase}")
+        workflow.system_line(
+            application_id, f"preparation failed · {stop.technical} · trying once more"
+        )
+        return {"application_id": application_id, "status": "QUEUED", "retry": failure.phase}
+    recovery.forget(application_id, failure.phase)
+    workflow.set_state(application_id, "NEEDS_USER", error=str(failure))
+    workflow.system_line(application_id, f"preparation stopped · {stop.technical}")
+    workflow.action_needed(
+        application_id,
+        stop.reason,
+        commands=["go", "park it"],
+        headline="Preparation stopped",
+    )
+    attach_stop_screenshot(application_id)
+    return {"application_id": application_id, "status": "NEEDS_USER", "error": str(failure)}

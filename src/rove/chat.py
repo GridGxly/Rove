@@ -644,7 +644,11 @@ def answer_application(name: str, answer: str, question: str | None = None) -> d
     }
     try:
         worker.apply_command(command, command_id())
-    except PermissionError:
+    except PermissionError as error:
+        from .recovery import LOST_FORM
+
+        if str(error) == LOST_FORM:
+            return {"say": LOST_FORM, "outcome": "question not on the saved form, nothing saved"}
         return {
             "say": f"“{clip(label, 60)}” has to be answered by you in the browser, not here.",
             "outcome": "question is manual only, nothing saved",

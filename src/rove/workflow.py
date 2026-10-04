@@ -536,6 +536,8 @@ def system_note(kind: str, data: dict) -> str | None:
         return f"qwen failure · {data.get('phase', '')} · {reason}"
     if kind == "model_unavailable":
         return f"model unavailable · {data.get('phase', '')}"
+    if kind == "discord_tag_failed":
+        return f"forum tag not set · {', '.join(data.get('tags') or [])} · {data.get('error', '')}"
     if kind == "browser_access_blocked":
         return f"blocked · {data.get('url', '')} · {data.get('marker', '')}"
     if kind == "overlay":
@@ -637,7 +639,7 @@ def recruiting_line(application_id: str, text: str, mail: dict | None = None):
         return
     link = forum_url(application_id)
     content = text + (f" · <{link}>" if link else "")
-    payload = {"content": clip(content, 1900), "allowed_mentions": {"parse": []}}
+    payload: dict = {"content": clip(content, 1900), "allowed_mentions": {"parse": []}}
     if mail:
         card = mail_card(mail)
         if isinstance(card, dict):
@@ -922,7 +924,15 @@ def migrate_answer_memory(conn):
         "SELECT * FROM answer_memory WHERE canonical_id IS NULL ORDER BY created_at"
     ).fetchall()
     for row in legacy:
-        question = questions.classify(row["label"], "", json.loads(row["options"]))
+        try:
+            options_list = json.loads(row["options"])
+            if not isinstance(row["value"], str) or not isinstance(options_list, list):
+                raise TypeError("value or options of the wrong kind")
+            question = questions.classify(row["label"], "", options_list)
+        except (TypeError, ValueError, AttributeError) as error:
+            # One unreadable row is skipped and said once; it never stops a pass.
+            skipped_memory(row["fingerprint"], error)
+            continue
         # Old answers were never tied to an employer: they stay the owner's general answer.
         key = questions.memory_key(question) or row["fingerprint"]
         options = row["options"]
@@ -952,6 +962,22 @@ def migrate_answer_memory(conn):
                 "owner",
             ),
         )
+
+
+_skipped_memory: set = set()
+
+
+def skipped_memory(fingerprint, error: Exception):
+    """One system-log line per unreadable remembered answer and process."""
+    key = str(fingerprint)
+    if key in _skipped_memory:
+        return
+    _skipped_memory.add(key)
+    system_line(
+        "memory",
+        f"remembered answer skipped · row {clip(key, 40)} · unreadable "
+        f"({type(error).__name__}) · fix or remove it in the memory channel",
+    )
 
 
 def _memory_scope(question, employer: str) -> str:
@@ -1108,24 +1134,37 @@ def recall_answer(
     with db() as conn:
         migrate_answer_memory(conn)
         rows = [
-            conn.execute("SELECT value FROM answer_memory WHERE fingerprint=?", (key,)).fetchone()
+            (
+                key,
+                conn.execute(
+                    "SELECT value FROM answer_memory WHERE fingerprint=?", (key,)
+                ).fetchone(),
+            )
             for key in keys
         ]
-    for position, row in enumerate(rows):
+    for position, (key, row) in enumerate(rows):
         if row is None:
             continue
         if position and contradicted_by_history(question.canonical_id, employer):
             continue  # his general "no" is not true here: Rove's own record says otherwise
-        if not choices:
-            return row["value"]
-        if kind == "checkbox_group":
-            ticked = questions.match_many(choices, row["value"])
-            if ticked is not None:
-                return ", ".join(ticked)
+        value = row["value"]
+        if not isinstance(value, str) or not value.strip():
+            skipped_memory(key, TypeError("empty or not text"))
             continue
-        fitting = questions.match_option(
-            choices, row["value"], loose=question.sensitivity == questions.PLAIN
-        )
+        try:
+            if not choices:
+                return value
+            if kind == "checkbox_group":
+                ticked = questions.match_many(choices, value)
+                if ticked is not None:
+                    return ", ".join(ticked)
+                continue
+            fitting = questions.match_option(
+                choices, value, loose=question.sensitivity == questions.PLAIN
+            )
+        except (TypeError, ValueError, AttributeError) as error:
+            skipped_memory(key, error)
+            continue
         if fitting is not None:
             return fitting
     return None
@@ -1411,14 +1450,13 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
     if kind == "submit_attempt":
         return ["→ Sending it once"]
     if kind == "needs_action":
-        return [
-            embed(
-                data.get("headline") or "Needs you",
-                clip(data.get("reason", ""), 600),
-                color="needs",
-                fields=hold_fields(data),
-            )
-        ]
+        # The status card at the top of the thread shows the stop, its reason and its
+        # replies; the record gets one line, and the questions when there are some.
+        entries: list = [stop_line(data)]
+        card = question_card(data)
+        if card:
+            entries.append(card)
+        return entries
     if kind == "shortlisted":
         fields = []
         if data.get("items"):
@@ -1446,13 +1484,12 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
     if kind == "company_research":
         return [research_line(data)]
     if kind == "qwen_failure":
-        return [
-            embed(
-                "Qwen run failed · " + str(data.get("phase", "")).replace("_", " "),
-                clip(data.get("reason", ""), 500),
-                color="problem",
-            )
-        ]
+        # The exception and its message are in the system log; the stop, if any, follows.
+        from .recovery import doing
+
+        return [f"→ Qwen did not finish {doing(str(data.get('phase') or ''))}"]
+    if kind in {"model_unavailable", "discord_tag_failed"}:
+        return []  # a wait or a cosmetic miss: the system log has it, the thread does not
     if kind == "owner_answer":
         label = clip(data.get("label") or "the question", 90)
         if data.get("proposal_hash"):
@@ -1897,9 +1934,18 @@ def notice(application_id: str, channel: str, payload: dict):
 
 
 def withdraw_notices(application_id: str, channels=None):
-    """Remove the application's cards from the owner channels; the thread keeps the record."""
+    """Remove the application's cards from the owner channels; the thread keeps the record.
+
+    A card still waiting for Discord is dropped before it is ever posted: a stop the
+    owner already left behind never arrives late as a second card."""
     settings = config()
     with db() as conn:
+        for name in channels or NOTICE_CHANNELS:
+            conn.execute(
+                "UPDATE owner_notices SET delivery='withdrawn' WHERE application_id=? "
+                "AND channel=? AND delivery IN ('pending','skipped','failed')",
+                (application_id, name),
+            )
         rows = conn.execute(
             "SELECT id,channel,message_id FROM owner_notices WHERE application_id=? "
             "AND delivery='sent'",
@@ -1998,6 +2044,56 @@ def hold_fields(payload: dict, budget: int | None = None) -> list:
     return fields + rest
 
 
+# How a stop reads after "Stopped:" when its headline alone would read oddly there.
+STOP_WORDS = {
+    "Preparation stopped": "a step did not finish",
+    "Preparation interrupted": "the preparation was interrupted",
+    "Submission unclear": "the send is unclear",
+    "Submission not attempted": "the check before sending failed",
+}
+
+
+def stop_line(payload: dict) -> str:
+    """The thread's one line for a stop: what it waits for, in a few words. The status
+    card at the top holds the reason and the replies."""
+    headline = str(payload.get("headline") or "Needs you")
+    questions = list(payload.get("questions") or [])
+    asked = sum(1 for q in questions if q.get("state", "open") == "open")
+    drafted = sum(1 for q in questions if q.get("state") == "drafted")
+    if asked or drafted:
+        parts = []
+        if asked:
+            parts.append(f"needs your answer to {asked} question{'s' if asked != 1 else ''}")
+        if drafted:
+            parts.append(f"{drafted} draft{'s' if drafted != 1 else ''} to approve")
+        return "→ Stopped: " + " and ".join(parts)
+    if headline.startswith("Ready"):
+        return f"→ {headline} · waiting for your reply"
+    words = STOP_WORDS.get(headline) or headline[:1].lower() + headline[1:]
+    return f"→ Stopped: {clip(words, 160)}"
+
+
+def question_card(payload: dict) -> dict | None:
+    """The questions of a stop with their `N:` replies and Qwen's drafts: the one part of a
+    stop the status card cannot hold. None when the stop asks no question."""
+    pairs = numbered(payload.get("questions"))
+    open_pairs = [(n, q) for n, q in pairs if q.get("state", "open") == "open"]
+    draft_pairs = [(n, q) for n, q in pairs if q.get("state") in {"drafted", "used"}]
+    fields = list(question_fields(open_pairs)) if open_pairs else []
+    if draft_pairs:
+        fields.append(("Qwen drafted", draft_lines(draft_pairs), False))
+    if not fields:
+        return None
+    return embed(
+        "Your answers",
+        "Reply with the number and your answer, like `1: your answer`."
+        if open_pairs
+        else "Each draft says the reply that approves it.",
+        color="needs",
+        fields=fields,
+    )
+
+
 def notice_embed(application_id: str, channel: str, payload: dict) -> dict:
     """The channel card carries the decision; its title links to the thread for the record.
 
@@ -2064,14 +2160,25 @@ def flush_notices():
             continue
         with db() as conn:
             conn.execute(
-                "UPDATE owner_notices SET delivery='sent', message_id=? WHERE id=?",
+                "UPDATE owner_notices SET delivery='sent', message_id=? WHERE id=? "
+                "AND delivery='pending'",
                 (str(sent.get("id", "")), row["id"]),
             )
+            now_row = conn.execute(
+                "SELECT delivery FROM owner_notices WHERE id=?", (row["id"],)
+            ).fetchone()
+        if now_row and now_row["delivery"] == "withdrawn" and sent.get("id"):
+            # Withdrawn while it was on its way: it leaves the channel at once.
+            with contextlib.suppress(httpx.HTTPError, OSError):
+                discord("DELETE", f"/channels/{channel}/messages/{sent['id']}")
 
 
 STATUS_LINES = {
     "QUEUED": "Queued · waits for its turn in the recruiting browser",
     "PREPARING": "Preparing in the recruiting browser",
+    "NEEDS_USER": "Needs you",
+    "MANUAL_TAKEOVER": "Needs you in the recruiting browser",
+    "UNKNOWN_SUBMISSION": "Submission unclear · do not click Submit again",
     "SUBMITTING": "Submitting once",
     "READY_FOR_REVIEW": "Ready to send",
     "APPLIED": "Applied ✅",
@@ -2114,22 +2221,29 @@ def refresh_status(application_id: str):
     status = item["status"]
     payload = None
     if status in WAITING:
+        # The stop the owner channel shows, delivered or not: the thread's own record
+        # carries only a line for it, so this card holds its reason, why and replies.
         with db() as conn:
             row = conn.execute(
-                "SELECT data FROM owner_notices WHERE application_id=? AND delivery='sent' "
+                "SELECT data FROM owner_notices WHERE application_id=? AND delivery!='withdrawn' "
                 "ORDER BY id DESC LIMIT 1",
                 (application_id,),
             ).fetchone()
         payload = json.loads(row["data"]) if row else None
+    items: list = []
     if payload:
         headline = payload.get("headline") or "Needs you"
-        line = clip(payload.get("reason", ""), 300)
+        line = clip(payload.get("reason", ""), 1200)
         commands = status_replies(payload)
+        items = list(payload.get("items") or [])
     else:
-        headline = STATUS_LINES.get(status, status.replace("_", " ").title())
+        headline = STATUS_LINES.get(status) or STATE_WORDS.get(status, "Update")
         line = "Reply `go` to pick it up again." if status == "DEFERRED" else ""
         commands = []
-    fields = [("Posting", clip(item["source_url"], 200), False)]
+    fields = []
+    if items:
+        fields.append(("Why", "\n".join("• " + clip(i, 140) for i in items[:4]), False))
+    fields.append(("Posting", clip(item["source_url"], 200), False))
     if commands:
         fields.append(("Reply", command_block(commands), False))
     card = embed(
@@ -2217,9 +2331,14 @@ def action_needed(
         "items": list(items or []),
     }
     record(application_id, "needs_action", payload)
-    # The owner's card first: the thread may have a pass worth of entries to post.
+    # The owner's card first: the thread may have a pass worth of entries to post. The
+    # card also becomes the thread's status card; the thread itself gets one line.
     notice(application_id, channel, payload)
-    flush_events(application_id)
+    try:
+        flush_events(application_id)
+    except (RuntimeError, httpx.HTTPError, OSError) as error:
+        # The thread could not be reached; its record waits for a later pass.
+        delivery_failed("event", application_id, error, application_id, announce=False)
     apply_tags(application_id, STATE_TAGS.get(item["status"], ["Preparing", "Needs Action"]))
     sync_note(application_id)
 

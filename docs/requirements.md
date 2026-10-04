@@ -124,6 +124,7 @@ Configuration is a handful of private JSON files and one env file under `config/
 | `model_keepalive` | `true` | Sends a one-token request while jobs are queued and the model has been idle for eight minutes, so the weights stay loaded. |
 | `timing` | `true` | Records stage timings for `rove bench report`. |
 | `erga_failure_limit` | `3` | Identical Erga intake failures in a row before intake is paused. |
+| `min_free_disk_gb` | `2` | Below this much free disk space no new application starts, and one card in `action-needed` says so until there is room again. |
 | `erga_pause_minutes` | `60` | How long Erga intake stays paused after that; the approved base PDF is used meanwhile. |
 | `control_help_message_id` | set by Rove | The "What you can ask Rove" message in `agent-control`, so it is edited in place and never posted twice. |
 | `control_help_hash` | set by Rove | A hash of that message's text, so it is only edited when the text changes. |
