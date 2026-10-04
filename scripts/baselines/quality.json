@@ -8,9 +8,6 @@
       "src/rove/worker.py": 1,
       "src/rove/workflow.py": 1
     },
-    "ARG002": {
-      "src/rove/mail.py": 1
-    },
     "ARG003": {
       "src/rove/boards/base.py": 2,
       "src/rove/submission.py": 6

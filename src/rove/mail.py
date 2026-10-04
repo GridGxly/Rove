@@ -23,7 +23,7 @@ import html
 import json
 import re
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from email.parser import HeaderParser
 from email.utils import getaddresses
 from html.parser import HTMLParser
@@ -356,32 +356,60 @@ BLOCK_TAGS = frozenset(
 SKIPPED_TAGS = frozenset({"script", "style", "head", "title"})
 
 
+VOID_TAGS = frozenset({"br", "hr", "img", "input", "meta", "link", "area", "base", "col", "wbr"})
+# Inline styles that keep an element's words off the reader's screen.
+HIDDEN_STYLE = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?:\.0+)?\s*(?:;|$)"
+    r"|font-size\s*:\s*0(?:px|pt|em|rem|%)?\s*(?:;|$)|max-height\s*:\s*0(?:px)?\s*(?:;|$)",
+    re.IGNORECASE,
+)
+
+
 class _Text(HTMLParser):
-    def __init__(self):
+    def __init__(self, visible_only: bool = False):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.skip = 0
+        self.visible_only = visible_only
+        self.hidden_tag = ""  # the element whose words the reader never sees
+        self.hidden_depth = 0
+
+    def hides(self, attrs) -> bool:
+        found = dict(attrs)
+        return "hidden" in found or bool(HIDDEN_STYLE.search(str(found.get("style") or "")))
 
     def handle_starttag(self, tag, attrs):
+        if self.hidden_depth:
+            self.hidden_depth += tag == self.hidden_tag
+            return
+        if self.visible_only and self.hides(attrs):
+            if tag not in VOID_TAGS:
+                self.hidden_tag, self.hidden_depth = tag, 1
+            return
         if tag in SKIPPED_TAGS:
             self.skip += 1
         elif tag in BLOCK_TAGS:
             self.parts.append("\n" if tag != "td" else " ")
 
     def handle_endtag(self, tag):
+        if self.hidden_depth:
+            self.hidden_depth -= tag == self.hidden_tag
+            return
         if tag in SKIPPED_TAGS:
             self.skip = max(0, self.skip - 1)
         elif tag in BLOCK_TAGS:
             self.parts.append("\n" if tag != "td" else " ")
 
     def handle_data(self, data):
-        if not self.skip:
+        if not self.skip and not self.hidden_depth:
             self.parts.append(data)
 
 
-def plain_text(content: str) -> str:
-    """The readable text of an HTML or plain mail body; markup, scripts and styles dropped."""
-    parser = _Text()
+def plain_text(content: str, visible_only: bool = False) -> str:
+    """The readable text of an HTML or plain mail body; markup, scripts and styles dropped.
+    With `visible_only`, words inside an element styled to stay off the screen are
+    dropped too: that is the text shown to the owner."""
+    parser = _Text(visible_only)
     parser.feed(str(content or ""))
     parser.close()
     lines = [" ".join(line.split()) for line in "".join(parser.parts).splitlines()]
@@ -412,6 +440,8 @@ def sender_domain(value) -> str:
 
 # The receiving servers whose verdict is believed: Zoho's own mail exchangers. A private
 # `authserv_ids` list in config/mail.json adds exact names for other Zoho regions.
+# Where the receiving server writes its verdict: the plain header, or the copy it seals.
+VERDICT_HEADERS = ("authentication-results", "arc-authentication-results")
 ZOHO_AUTHSERV = re.compile(r"mx\.zoho(?:mail)?\.(?:com|eu|in|jp|sa|ca|com\.au|com\.cn)")
 
 
@@ -440,8 +470,9 @@ def authentication(raw_headers, address: str, extra_ids=()) -> dict:
     """Whether Zoho's own check says the From domain really sent this mail.
 
     Only the receiving server's verdict counts: the topmost Authentication-Results
-    header, written above the server's own Received line and carrying its name. A header
-    of that name further down, or text of that shape in the body, is the sender's and
+    header, or the topmost ARC-Authentication-Results (the copy Zoho seals on receipt),
+    written above the first Received line and carrying the server's name. A header of
+    either name further down, or text of that shape in the body, may be the sender's and
     proves nothing. A pass is DMARC for the From domain, or a DKIM signature whose
     domain is the From domain's.
     """
@@ -457,14 +488,16 @@ def authentication(raw_headers, address: str, extra_ids=()) -> dict:
     if len(senders) != 1 or sender_address(senders[0]) != address:
         return verdict(False, "the From line is missing, repeated or different")
     names = [name for name, _ in headers]
-    if "received" not in names or "authentication-results" not in names:
+    if "received" not in names or not set(names) & set(VERDICT_HEADERS):
         return verdict(False, "the mail server recorded no check")
-    index = names.index("authentication-results")
-    if index > names.index("received"):
+    on_top = [i for i in range(names.index("received")) if names[i] in VERDICT_HEADERS]
+    if not on_top:
         return verdict(False, "the only check on record was written by the sender")
-    value = headers[index][1]
+    value = headers[on_top[0]][1]
     while re.search(r"\([^()]*\)", value):
         value = re.sub(r"\([^()]*\)", " ", value)
+    if names[on_top[0]] == "arc-authentication-results":
+        value = re.sub(r"^\s*i=\d+\s*;", "", value)  # the seal's number comes first
     server, _, results = value.partition(";")
     server = (server.split() or [""])[0].lower()
     trusted = {str(name).strip().lower() for name in extra_ids or ()}
@@ -552,7 +585,7 @@ def split_title(item: dict) -> tuple[str, str]:
     company, sep, role = title.partition(" — ")
     if not sep:
         shown = workflow.display_title(item)
-        match = re.search(r"^(.*?)\s+at\s+([^|–—]+?)\s*(?:[|–—].*)?$", shown)
+        match = re.search(r"^(.*?)\s+(?:at|@)\s+([^|–—]+?)\s*(?:[|–—].*)?$", shown)
         company, role = (match[2], match[1]) if match else ("", shown)
     return COMPANY_SUFFIXES.sub("", company.strip()), role.strip()
 
@@ -560,6 +593,20 @@ def split_title(item: dict) -> tuple[str, str]:
 def company_name(item: dict) -> str:
     name = normalize(split_title(item)[0])
     return name if len(name) >= 3 else ""
+
+
+def board_name(item: dict) -> str:
+    """The employer's own name on its job board, which its mail is written under:
+    "example" for a posting at jobs.board.example/example/…; "" off the boards."""
+    from .destinations import board_for
+
+    for url in (item.get("url"), item.get("source_url")):
+        board = board_for(str(url or ""))
+        tenant = board.tenant(str(url)) if board and board.tenant else None
+        name = normalize(tenant[-1]) if tenant else ""
+        if len(name) >= 3 and name not in VENDOR_NAMES:
+            return name
+    return ""
 
 
 def role_hits(item: dict, body: str) -> int:
@@ -626,7 +673,8 @@ def match_application(
     """Which application a mail concerns, and how surely.
 
     Strong: the employer's own domain, or a known recruiting sender that names the
-    company (or a brand learned for it) or the posting's id or link. Weak: the company
+    company (its name in the title, its name on its job board, or a brand learned for
+    it) or the posting's id or link. Weak: the company
     named in the subject, or the posting's id or link, from anyone else; a weak match
     counts only when the rules recognise the mail. The strongest kind of match wins,
     then the posting's id or link, then the role's own words. Applications still level
@@ -645,7 +693,7 @@ def match_application(
     for item in apps:
         employer = employer_domain(item["url"])
         known = sorted(brands.get(company_name(item) or item["id"], ()))
-        names = [n for n in (company_name(item), *known) if n]
+        names = list(dict.fromkeys(n for n in (company_name(item), board_name(item), *known) if n))
         in_subject = any(f" {n} " in f" {head} " for n in names)
         named = in_subject or any(f" {n} " in f" {body} " for n in names)
         hit = link_hit(item, links, text)
@@ -1233,10 +1281,7 @@ def erga_status(application_id: str, label: str) -> dict:
 
 def recruiting_text(item: dict, data: dict) -> str:
     word = workflow.MAIL_LABEL_WORDS.get(data["label"], "Recruiting mail")
-    line = (
-        f"→ **{word}** · {workflow.clip(workflow.display_title(item), 120)} · "
-        f"from {data['sender_domain']} · “{workflow.clip(data['subject'], 120)}”"
-    )
+    line = f"→ **{word}** · {workflow.clip(workflow.display_title(item), 120)}"
     if data.get("deadline"):
         line += f" · {data['deadline']}"
     if data.get("interview_time"):
@@ -1361,7 +1406,7 @@ def apply_mail(
     else:
         workflow.flush_events(application_id)
         workflow.sync_note(application_id)
-    workflow.recruiting_line(application_id, recruiting_text(item, data))
+    workflow.recruiting_line(application_id, recruiting_text(item, data), mail=data)
     return data
 
 
@@ -1697,11 +1742,82 @@ def sender_trust(raw_headers: str, address: str, strength: str, settings: dict) 
 SPAM_WHY = "it landed in your spam folder"
 
 
-def display_name(item: dict) -> str:
-    """The sender's display name, read only to learn the brand a confirmed mail used."""
-    pairs = getaddresses([html.unescape(str(item.get("fromAddress") or ""))])
-    named = pairs[0][0] if pairs else ""
+def display_name(item: dict, raw_headers="") -> str:
+    """The sender's display name, read only to learn the brand a confirmed mail used.
+    Zoho's message list carries the bare address; the name is in the From header."""
+    written = [value for name, value in header_block(raw_headers) if name == "from"]
+    pairs = getaddresses([html.unescape(str(item.get("fromAddress") or "")), *written[:1]])
+    named = next((name for name, _ in pairs if name.strip()), "")
     return squash(named or (item.get("sender") if "@" not in str(item.get("sender")) else ""))
+
+
+# An acknowledgement belongs to a send for this long after its click.
+RECEIPT_WINDOW = timedelta(days=2)
+# A board's acknowledgement that names no company this record knows is about the one
+# application sent through that board this shortly before it arrived.
+JUST_SENT = timedelta(minutes=30)
+# Boards whose mail comes from a second domain of theirs.
+BOARD_MAIL = {"greenhouse-mail.io": "greenhouse.io"}
+
+
+def after_click(application_id: str, received_at: str, window: timedelta) -> bool:
+    """Whether a mail arrived within `window` after this application's one submit click."""
+    clicked = attempt_time(application_id)
+    try:
+        arrived = datetime.fromisoformat(str(received_at))
+    except ValueError:
+        return False
+    return clicked is not None and timedelta(0) <= arrived - clicked <= window
+
+
+def sent_just_before(apps: list[dict], sender: str, received_at: str) -> dict | None:
+    """The one application sent through the sender's own job board in the half hour
+    before its acknowledgement arrived; None when none or several were. This is how a
+    board's mail under a brand the record does not know yet still finds its application."""
+    from . import job_index
+
+    board = registrable(sender)
+    board = BOARD_MAIL.get(board, board)
+    if board not in ATS_DOMAINS:
+        return None
+    found = []
+    for item in apps:
+        links = (item.get("url"), item.get("source_url"), job_index.form_url(item["id"]))
+        hosts = {registrable(urlsplit(str(link or "")).hostname or "") for link in links}
+        if board in hosts and after_click(item["id"], received_at, JUST_SENT):
+            found.append(item)
+    if len(found) != 1:
+        return None
+    return {"candidates": found, "strength": "strong", "id_hit": False, "timed": True}
+
+
+def is_receipt(application: dict, mail: dict, label: str, classifier: str, checked: dict) -> bool:
+    """A plain "thank you for applying" that changes nothing may be recorded from a
+    sender that is not the employer's known domain or board: the rules read it as an
+    acknowledgement, the mail server verified the sender's own domain, and it arrived in
+    the two days after this application's one submit click."""
+    return (
+        label == "acknowledgement"
+        and classifier == "rule"
+        and not mail.get("incomplete")
+        and mail.get("folder") != "spam"
+        and bool(checked.get("passed"))
+        and after_click(application["id"], mail["received_at"], RECEIPT_WINDOW)
+    )
+
+
+def model_label(message_id: str, context: dict) -> tuple[str, str | None, str]:
+    """(label, deadline, classifier) from the local model for a mail the rules could not
+    settle; `other` when its answer is unusable. An outage of the model is raised."""
+    try:
+        label, deadline = classify_with_qwen(message_directory(message_id), context)
+    except (RuntimeError, ValueError, TypeError) as error:
+        from .reasoning import ModelUnavailable
+
+        if isinstance(error, ModelUnavailable):
+            raise
+        return "other", None, "qwen_failed"
+    return label, deadline, "qwen"
 
 
 def handle_message(
@@ -1728,12 +1844,15 @@ def handle_message(
         return outcome
     content = zoho.content(folder_id, message_id)
     text = plain_text(content)
+    received_at = datetime.fromtimestamp(received(item) / 1000, UTC).isoformat()
+    label, classifier, deadline = classify(subject, text), "rule", None
     match = match_application(apps, domain, subject, text, mail_links(content), aliases_for(apps))
+    if not match and label == "acknowledgement":
+        match = sent_just_before(apps, domain, received_at)
     if not match:
         return outcome
     candidates, strength = match["candidates"], match["strength"]
     application = candidates[0]
-    label, classifier, deadline = classify(subject, text), "rule", None
     if label is None and strength != "strong":
         return outcome
     raw = "" if AUTO_SUBJECT.search(subject) else read_headers(zoho, folder_id, message_id)
@@ -1749,22 +1868,14 @@ def handle_message(
             "excerpt": sanitize_for_model(text),
             "application": {"company": company, "role": role if len(candidates) == 1 else ""},
         }
-        try:
-            label, deadline = classify_with_qwen(message_directory(message_id), context)
-            classifier = "qwen"
-        except (RuntimeError, ValueError, TypeError) as error:
-            from .reasoning import ModelUnavailable
-
-            if isinstance(error, ModelUnavailable):
-                raise
-            label, classifier = "other", "qwen_failed"
+        label, deadline, classifier = model_label(message_id, context)
     deadline = stated_deadline(subject + "\n" + text) or deadline
     mail = {
         "message_id": message_id,
         "sender_domain": domain,
-        "sender_name": display_name(item),
+        "sender_name": display_name(item, raw),
         "subject": subject,
-        "received_at": datetime.fromtimestamp(received(item) / 1000, UTC).isoformat(),
+        "received_at": received_at,
         "incomplete": incomplete_notice(subject + "\n" + text),
         "folder": folder,
     }
@@ -1779,6 +1890,11 @@ def handle_message(
         trust = sender_trust(raw, address, strength, settings)
     at_stake = [c for c in candidates if would_change(c, mail, label)]
     ambiguous = len(candidates) > 1
+    if not trust["trusted"] and not ambiguous and not at_stake and folder != "spam":
+        # A receipt changes nothing, so a verified sender that names the company is enough.
+        checked = authentication(raw, address, settings.get("authserv_ids") or ())
+        if is_receipt(application, mail, label, classifier, checked):
+            trust = {"trusted": True, "why": "", "method": checked["method"], "receipt": True}
     if (ambiguous or not trust["trusted"]) and not at_stake:
         # Nothing at stake, or no one application to record it on: not worth a card.
         return outcome
@@ -1790,6 +1906,7 @@ def handle_message(
             "evidence_path": str(mail["evidence_path"]),
             "from": address,
             "text": redact_codes(text),
+            "shown": redact_codes(plain_text(content, visible_only=True)),
             "label": label,
             "classifier": classifier,
             "application_id": None if ambiguous else application["id"],
@@ -1811,11 +1928,13 @@ def handle_message(
         hold_for_owner(application, mail, label, classifier, deadline, trust["why"])
         return {**result, "outcome": "held", "to_state": None}
     data = apply_mail(application["id"], mail, label, classifier, deadline)
-    if match["id_hit"] and strength == "strong":
-        # A verified sender named this posting's own id or link: its brand is kept.
-        brand = learn_alias(application, mail, "job link")
+    if strength == "strong" and (match["id_hit"] or match.get("timed")):
+        # A verified sender named this posting's own id or link, or its board answered
+        # the send within minutes: the brand it writes under is kept.
+        how = "job link" if match["id_hit"] else "sent just before"
+        brand = learn_alias(application, mail, how)
         if brand:
-            workflow.system_line(application["id"], f"mail brand learned · {brand} · job link")
+            workflow.system_line(application["id"], f"mail brand learned · {brand} · {how}")
     return {**result, "outcome": "applied", "to_state": data.get("to_state")}
 
 
@@ -1994,6 +2113,28 @@ def tick() -> dict:
     result["finished_at"] = workflow.now()
     write_private(state_root() / "mail/service.json", result)
     return result
+
+
+def recheck(days: int = 7) -> dict:
+    """Read the last `days` of mail again, for mail that was passed over before its
+    application was on record or before the matching knew its sender. Only mail that
+    left no trace is read again; mail already recorded or shown on a card never is."""
+    days = max(1, min(int(days), 30))
+    cutoff = int((datetime.now(UTC) - timedelta(days=days)).timestamp() * 1000)
+    db = mail_db()
+    try:
+        with db:
+            forgotten = db.execute(
+                "DELETE FROM mail_messages WHERE outcome='ignored' AND received_time>=?",
+                (cutoff,),
+            ).rowcount
+            db.execute(
+                "UPDATE mail_checkpoints SET received_time=? WHERE received_time>?",
+                (cutoff, cutoff),
+            )
+    finally:
+        db.close()
+    return {**tick(), "read_again": forgotten}
 
 
 def status() -> dict:

@@ -94,6 +94,8 @@ REVIEWED_EMAILS = {
     "someone@gmail.com": "a placeholder sender in mail tests, no person",
     "friend@gmail.com": "a placeholder sender in mail tests, no person",
     "no-reply@us.greenhouse-mail.io": "Greenhouse's role sender, as recruiting mail shows it",
+    "no-reply@ashbyhq.com": "Ashby's role sender, as recruiting mail shows it",
+    "no-reply@lever.co": "a job board's role sender in a mail test, no person",
     "hr@evil.pages.dev": "a lookalike sender the mail tests must refuse",
 }
 

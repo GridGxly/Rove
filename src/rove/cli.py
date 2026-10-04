@@ -87,7 +87,8 @@ def main():
     # The owner types this in his own terminal, so the link is his unless he says otherwise.
     workflow.add_argument("--source", default="owner_link")
     mail = sub.add_parser("mail")
-    mail.add_argument("action", choices=["tick", "status"])
+    mail.add_argument("action", choices=["tick", "status", "recheck"])
+    mail.add_argument("--days", type=int, default=7, help="recheck: how far back to read again")
     args = parser.parse_args()
     if args.command == "workflow":
         from . import worker, workflow
@@ -141,7 +142,10 @@ def main():
     elif args.command == "mail":
         from . import mail as recruiting_mail
 
-        result = recruiting_mail.tick() if args.action == "tick" else recruiting_mail.status()
+        if args.action == "recheck":
+            result = recruiting_mail.recheck(args.days)
+        else:
+            result = recruiting_mail.tick() if args.action == "tick" else recruiting_mail.status()
         print(json.dumps(result, indent=2))
     elif args.command == "model":
         if args.action == "status":

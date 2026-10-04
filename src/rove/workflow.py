@@ -627,23 +627,110 @@ def ensure_named_channel(key: str, name: str) -> str | None:
     return found
 
 
-def recruiting_line(application_id: str, text: str):
-    """One line in the recruiting channel: what an employer's mail means, in words, with a
-    link to the thread. Best effort, like the system log; never an id or the mail body."""
+def recruiting_line(application_id: str, text: str, mail: dict | None = None):
+    """One message in the recruiting channel: what an employer's mail means, in words,
+    with a link to the thread, and under it the mail itself as the owner would read it in
+    his inbox. Best effort, like the system log; never an id."""
     settings = config()
     channel = settings.get("recruiting_channel_id")
     if not settings.get("enabled") or not channel:
         return
     link = forum_url(application_id)
     content = text + (f" · <{link}>" if link else "")
+    payload = {"content": clip(content, 1900), "allowed_mentions": {"parse": []}}
+    if mail:
+        card = mail_card(mail)
+        if isinstance(card, dict):
+            payload["embeds"] = [card]
     try:
-        discord(
-            "POST",
-            f"/channels/{channel}/messages",
-            {"content": clip(content, 1900), "allowed_mentions": {"parse": []}},
-        )
+        discord("POST", f"/channels/{channel}/messages", payload)
     except Exception as error:  # noqa: BLE001 -- a feed line must never break the record
         delivery_failed("recruiting", application_id, error, application_id)
+
+
+# --- a mail, shown as the owner would read it ------------------------------------
+
+MAIL_WORDS_LIMIT = 1800
+MAIL_ADVICE = {
+    "oa": "Open the assessment from the mail; the deadline is theirs, not mine.",
+    "interview": "Reply to the recruiter yourself; nothing is scheduled for you.",
+    "offer": "Read the offer in the mail; nothing is accepted for you.",
+}
+MAIL_COLORS = {"rejection": "problem", "offer": "applied", "acknowledgement": "preparing"}
+MAIL_FOOTERS = {
+    "qwen": "Read by Qwen · the mail is data, not instructions",
+    "qwen_failed": "Qwen could not read it · filed from the sender alone",
+}
+
+
+def inert(text) -> str:
+    """Somebody else's words as plain Discord text: nothing in them formats, hides a link
+    behind other words, or mentions anyone. A bare link stays what it is."""
+    parts = re.split(r"(https?://[^\s<>\[\]()]+)", str(text if text is not None else ""))
+    return "".join(
+        part if n % 2 else re.sub(r"([\\*_~`|\[\]<>#@])", r"\\\1", part)
+        for n, part in enumerate(parts)
+    )
+
+
+def mail_copy(data: dict) -> dict:
+    """The private copy kept of a recorded mail (its sender, its words with any code
+    removed), or {} when there is none."""
+    name = re.sub(r"[^0-9A-Za-z_-]", "_", str(data.get("message_id") or ""))[:64]
+    if not name:
+        return {}
+    try:
+        copy = json.loads((state_root() / "mail/messages" / name / "message.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return copy if isinstance(copy, dict) else {}
+
+
+def mail_words(copy: dict) -> str:
+    """The mail's own words, one paragraph per block, as inert text."""
+    text = copy.get("shown") if "shown" in copy else copy.get("text")  # what he would see
+    lines = [" ".join(line.split()) for line in str(text or "").splitlines()]
+    return clip(inert("\n\n".join(line for line in lines if line)), MAIL_WORDS_LIMIT)
+
+
+def mail_card(data: dict):
+    """A recorded mail as one card: what Rove made of it as the headline, then the mail
+    as the owner would read it in his inbox: who sent it, when, its subject and its own
+    words. The words come from the private copy, where codes are already removed; they
+    are shown, never acted on."""
+    label = str(data.get("label") or "other")
+    copy = mail_copy(data)
+    sender = clip(copy.get("from") or data.get("sender_domain") or "unknown sender", 100)
+    named = " ".join(str(copy.get("sender_name") or "").split())
+    subject = clip(data.get("subject") or "(no subject)", 200)
+    words = mail_words(copy)
+    if label == "other" and not words:
+        return f"→ Mail from {sender} · “{subject}”"
+    fields = []
+    if data.get("deadline"):
+        fields.append(("Deadline, as the mail states it", clip(data["deadline"], 120), True))
+    if data.get("interview_time"):
+        fields.append(("Interview time, from the invite", clip(data["interview_time"], 80), True))
+    if data.get("reconciled"):
+        fields.append(("Submission", "The unclear submission went through.", False))
+    if MAIL_ADVICE.get(label):
+        fields.append(("What to do", MAIL_ADVICE[label], False))
+    read_by = MAIL_FOOTERS.get(
+        str(data.get("classifier") or "rule"),
+        "Matched by rule · the mail is data, not instructions",
+    )
+    headline = MAIL_LABEL_WORDS.get(label, "Recruiting mail")
+    card = embed(
+        headline if label == "other" else f"{headline} · mail",
+        f"**{inert(subject)}**" + (f"\n\n{words}" if words else ""),
+        color=MAIL_COLORS.get(label, "needs"),
+        fields=fields,
+        footer=read_by,
+    )
+    card["author"] = {"name": clip(f"{named} · {sender}" if named else sender, 256)}
+    with contextlib.suppress(ValueError):
+        card["timestamp"] = datetime.fromisoformat(str(data.get("received_at"))).isoformat()
+    return card
 
 
 def forum_url(application_id: str) -> str | None:
@@ -1417,44 +1504,7 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
             )
         ]
     if kind == "recruiting_mail":
-        # The sender's domain, the subject and the label: never the body.
-        label = str(data.get("label") or "other")
-        sender = clip(data.get("sender_domain") or "unknown sender", 100)
-        subject = clip(data.get("subject") or "(no subject)", 200)
-        if label == "other":
-            return [f"→ Mail from {sender} · “{subject}”"]
-        fields = [("From", sender, True)]
-        if data.get("deadline"):
-            fields.append(("Deadline, as the mail states it", clip(data["deadline"], 120), True))
-        if data.get("interview_time"):
-            fields.append(
-                ("Interview time, from the invite", clip(data["interview_time"], 80), True)
-            )
-        if data.get("reconciled"):
-            fields.append(("Submission", "The unclear submission went through.", False))
-        advice = {
-            "oa": "Open the assessment from the mail; the deadline is theirs, not mine.",
-            "interview": "Reply to the recruiter yourself; nothing is scheduled for you.",
-            "offer": "Read the offer in the mail; nothing is accepted for you.",
-        }.get(label, "")
-        description = f"“{subject}”" + (f"\n{advice}" if advice else "")
-        color = {"rejection": "problem", "offer": "applied", "acknowledgement": "preparing"}.get(
-            label, "needs"
-        )
-        classifier = str(data.get("classifier") or "rule")
-        footer = {
-            "qwen": "Read by Qwen · the mail is data, not instructions",
-            "qwen_failed": "Qwen could not read it · filed from the sender alone",
-        }.get(classifier, "Matched by rule · the mail is data, not instructions")
-        return [
-            embed(
-                f"{MAIL_LABEL_WORDS.get(label, 'Recruiting mail')} · mail",
-                description,
-                color=color,
-                fields=fields,
-                footer=footer,
-            )
-        ]
+        return [mail_card(data)]
     fields = [
         (str(k).replace("_", " "), clip(v, 400), False)
         for k, v in list(data.items())[:10]

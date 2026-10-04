@@ -289,6 +289,15 @@ Only applications that were sent, or whose submission is unclear, can match.
 - Weak: the company name appears in the subject, from any other sender. A weak match counts only when the rules below recognise the mail.
 - Anything else is ignored. SQLite keeps one row with its id and sender domain so it is not read again.
 
+The company name is the one in the application's title ("Company — Role", "Role at Company", "Role @ Company"), the employer's name on its job board (`example` in `jobs.ashbyhq.com/example/…`), or a brand learned from an earlier verified mail.
+
+A receipt has two extra ways to match, because it is the first mail after a send and it changes no state:
+
+- A board's acknowledgement that names no company on record is matched to the one application sent through that board in the 30 minutes before it arrived. With none or several, it is ignored. The brand in its sender name is kept for later mail.
+- An acknowledgement with a weak match is recorded when the mail server verified the sender's domain and the mail arrived within two days after that application's submit click. Any other label from such a sender still becomes a card for the owner.
+
+A mail changes the record by itself only when Zoho's own verdict says the sender's domain passed DMARC or an aligned DKIM signature. The verdict is read from the topmost `Authentication-Results` or `ARC-Authentication-Results` header above the first `Received` line; a header of either name further down proves nothing.
+
 When two applications match, the role's own words in the mail decide, and a tie goes to the most recently updated one.
 
 ### Classification
@@ -324,6 +333,8 @@ The states mail can set are OA, Interview, Offer and Rejected. Nothing in a mail
 
 `rove mail status` shows the switches, the checkpoint and the message counts without any secret.
 
+`rove mail recheck --days N` reads the last N days again (7 by default, 30 at most). Only mail that was ignored is read again; mail already recorded or shown on a card is not. Use it after an application was recorded late.
+
 ## Commands
 
 ```sh
@@ -337,6 +348,7 @@ uv run rove feed tick
 uv run rove browser status
 uv run rove mail status
 uv run rove mail tick
+uv run rove mail recheck --days 7
 ```
 
 `workflow resume` and `workflow defer` are local owner operations equal to the `go` and `park it` replies. `feed seed` queues up to 25 current matches for announcement so the first run has something to post. The services that run the ticks on a schedule are listed in [Requirements](requirements.md#services).

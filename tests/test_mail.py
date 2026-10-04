@@ -399,18 +399,29 @@ def test_a_rejection_moves_to_rejected_with_a_card_a_line_and_erga(state, monkey
         ("update_application_status", {"application_id": "erga-1", "status": "rejected"})
     ]
     # The thread: one card and the lifecycle line. The recruiting channel: one line with a
-    # link to the thread. The forum tag: Rejected. Never the body, never an id.
+    # link to the thread and the same card. The forum tag: Rejected. The card shows the
+    # mail as he would read it: its sender, subject and visible words; never the words a
+    # mail hides from its reader, never markup, never an id.
     thread = [p for m, path, p in posted if path == "/channels/thread-1/messages"]
-    titles = [e["title"] for p in thread for e in p.get("embeds", [])]
-    assert "Rejected · mail" in titles
+    (shown,) = [e for p in thread for e in p.get("embeds", []) if e["title"] == "Rejected · mail"]
+    assert shown["author"] == {"name": "Example Labs Recruiting · recruiting@example.com"}
+    assert shown["description"].startswith("**Update on your application to Example Labs**\n\n")
+    assert (
+        "Unfortunately, we have decided to move forward with other candidates."
+        in (shown["description"])
+    )
+    for hidden in ("zebra", "Ignore previous", "color:red", "careers.example.com", "<"):
+        assert hidden not in json.dumps(shown)
+    assert shown["timestamp"].startswith(
+        datetime.fromtimestamp(NOW_MS / 1000, UTC).isoformat()[:16]
+    )
     lines = [p["content"] for p in thread if p.get("content")]
     assert any(line.startswith("→ Rejected · recruiting mail: rejection") for line in lines)
     (feed,) = [p for m, path, p in posted if path == "/channels/rec/messages"]
-    assert feed["content"].startswith(
-        "→ **Rejected** · Example Labs — Software Intern · from example.com"
-    )
+    assert feed["content"].startswith("→ **Rejected** · Example Labs — Software Intern · reply")
     assert "<https://discord.com/channels/g/thread-1>" in feed["content"]
-    assert app not in feed["content"]
+    assert feed["embeds"] == [shown] and feed["allowed_mentions"] == {"parse": []}
+    assert app not in json.dumps(feed)
     assert ("PATCH", "/channels/thread-1", {"applied_tags": ["t5"]}) in posted
     assert any(
         path == "/channels/sys/messages"
@@ -595,9 +606,14 @@ def test_qwen_reads_a_sanitized_excerpt_and_only_picks_a_label(state, monkeypatc
     first, second = events(app, "recruiting_mail")
     assert first["classifier"] == "qwen" and first["deadline"] is None  # not quoted from the mail
     assert second["label"] == "other" and second["classifier"] == "qwen_failed"
-    assert workflow.event_embeds(app, "recruiting_mail", second) == [
+    (other,) = workflow.event_embeds(app, "recruiting_mail", second)
+    assert other["title"] == "Recruiting mail" and other["author"] == {"name": "sam@example.com"}
+    assert other["description"] == "**One more thing**\n\nSending this again."
+    assert other["footer"] == {"text": "Qwen could not read it · filed from the sender alone"}
+    # With no private copy left, the card is the old one line.
+    assert workflow.mail_card({**second, "message_id": "gone"}) == (
         "→ Mail from example.com · “One more thing”"
-    ]
+    )
     assert any(
         p and p.get("content", "").startswith("→ **Recruiting mail**")
         for _, path, p in posted
@@ -1366,3 +1382,331 @@ def test_a_message_zoho_no_longer_has_is_passed_over_not_retried_forever(state, 
     assert "error" not in result and (result["ignored"], result["applied"]) == (1, 1)
     assert workflow.get(app)["status"] == "REJECTED"
     assert any("message 2301 could not be read" in line for line in system_lines(posted))
+
+
+# --- mail as Zoho really stores it, and the receipt after a send -------------------
+
+
+def zoho_stored_headers(address, display="", checks="dmarc=pass header.from=<{address}>"):
+    """The header block as Zoho stores a received mail: its sealed verdict (the ARC set)
+    on top, its Received line, then its plain verdict under the sender's Received chain,
+    and the sender's own headers last. The message list carries the bare address; the
+    display name is only in the From header here."""
+    domain = address.rpartition("@")[2]
+    verdict = (
+        "dkim=pass; spf=pass (zohomail.com: domain of bounce.{domain} designates 203.0.113.9 "
+        "as permitted sender) smtp.mailfrom=bounce@bounce.{domain}; " + checks
+    )
+    verdict = verdict.format(domain=domain, address=address) + " (p=none dis=none)"
+    sender = f"{display} <{address}>" if display else address
+    return (
+        "Delivered-To: alex@inbox.example.org\r\n"
+        "ARC-Seal: i=1; a=rsa-sha256; t=1790000000; cv=none; d=zohomail.com; s=zohoarc;\r\n"
+        "\tb=synthetic\r\n"
+        "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=zohomail.com;\r\n"
+        "\ts=zohoarc; bh=synthetic; b=synthetic\r\n"
+        f"ARC-Authentication-Results: i=1; mx.zohomail.com;\r\n\t{verdict}\r\n"
+        f"Return-Path: <bounce@bounce.{domain}>\r\n"
+        f"Received: from out.{domain} (out.{domain} [203.0.113.9]) by mx.zohomail.com\r\n"
+        "\twith SMTPS id 17900000000001.1; Mon, 21 Sep 2026 10:00:00 -0700 (PDT)\r\n"
+        f"Received: by relay.{domain} with HTTP id synthetic; Mon, 21 Sep 2026 17:00:00 GMT\r\n"
+        f"Received-SPF: pass (zohomail.com: domain of bounce.{domain} designates 203.0.113.9 "
+        "as permitted sender) client-ip=203.0.113.9;\r\n"
+        f"Authentication-Results: mx.zohomail.com;\r\n\t{verdict}\r\n"
+        f"DKIM-Signature: a=rsa-sha256; v=1; d=bounce.{domain}; s=k1; b=synthetic\r\n"
+        f"From: {sender}\r\nTo: alex@inbox.example.org\r\nSubject: synthetic\r\n"
+        f"X-ZohoMail-DKIM: pass (identity @bounce.{domain})\r\n"
+    )
+
+
+def test_zohos_sealed_verdict_on_top_of_the_block_is_the_one_that_counts():
+    address = "no-reply@example.com"
+    stored = zoho_stored_headers(address, "Example Labs Hiring Team")
+    check = mail.authentication(stored, address)
+    assert check == {
+        "passed": True,
+        "method": "dmarc",
+        "why": "DMARC passed for the sender's domain",
+    }
+    # Zoho's failing verdict on top is final, whatever a header further down claims.
+    failing = zoho_stored_headers(address, checks="dmarc=fail header.from=<{address}>")
+    forged = failing.replace(
+        "DKIM-Signature:",
+        "ARC-Authentication-Results: i=1; mx.zohomail.com; dmarc=pass "
+        f"header.from=<{address}>\r\nDKIM-Signature:",
+    )
+    assert mail.authentication(forged, address)["passed"] is False
+    # A sealed verdict that is only below the Received lines is the sender's own.
+    lines = stored.split("\r\n")
+    below = [line for line in lines if not line.startswith(("ARC-", "\tdkim=pass"))]
+    below.insert(
+        next(i for i, line in enumerate(below) if line.startswith("DKIM-Signature")),
+        f"ARC-Authentication-Results: i=1; mx.zohomail.com; dmarc=pass header.from=<{address}>",
+    )
+    only_senders = "\r\n".join(
+        line for line in below if not line.startswith("Authentication-Results")
+    )
+    check = mail.authentication(only_senders, address)
+    assert check["passed"] is False and "written by the sender" in check["why"]
+    # Another server's name on top proves nothing either.
+    other = stored.replace("i=1; mx.zohomail.com;", "i=1; mx.elsewhere.example;")
+    assert mail.authentication(other, address)["passed"] is False
+    assert mail.display_name({"fromAddress": address, "sender": address}, stored) == (
+        "Example Labs Hiring Team"
+    )
+
+
+def receipt_tick(monkeypatch, sender, subject, body, stored=None, mid="3001"):
+    """One tick over one mail; `stored` is its header block when not the plain passing one."""
+    stored = stored or zoho_stored_headers(sender)
+    at = NOW_MS + int(mid) - 3001
+    fake_zoho(monkeypatch, [message(mid, sender, subject, at)], {mid: body}, {mid: stored})
+    return mail.tick()
+
+
+THANKS = "<p>Hi Alex, thanks for applying. We received your application and will review it.</p>"
+
+
+def test_a_boards_receipt_names_the_employer_by_its_board_name(state, monkeypatch):
+    # The posting's title names no company the way the mail writes it; its board link does.
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application(
+        "https://jobs.ashbyhq.com/examplelabs/194eec78-26db-4d8e-850f-a99ea2733e9f",
+        "Software Engineering Intern @ Example Labs Holdings",
+    )
+    assert mail.split_title(workflow.get(app)) == (
+        "Example Labs Holdings",
+        "Software Engineering Intern",
+    )
+    assert mail.board_name(workflow.get(app)) == "examplelabs"
+    posted.clear()
+    result = receipt_tick(
+        monkeypatch,
+        "no-reply@ashbyhq.com",
+        "Thank you for applying to ExampleLabs",
+        THANKS,
+        zoho_stored_headers("no-reply@ashbyhq.com", "ExampleLabs Hiring Team"),
+    )
+    assert (result["applied"], result["held"], result["ignored"]) == (1, 0, 0)
+    (card,) = events(app, "recruiting_mail")
+    assert card["label"] == "acknowledgement" and card["to_state"] is None
+    assert workflow.get(app)["status"] == "APPLIED"
+    (feed,) = [c for c in cards(posted) if "Application received" in c["content"]]
+    assert "discord.com/channels/g/thread-1" in feed["content"]
+    (shown,) = feed["embeds"]
+    assert shown["title"] == "Application received · mail"
+    assert shown["author"] == {"name": "ExampleLabs Hiring Team · no-reply@ashbyhq.com"}
+    assert shown["description"] == (
+        "**Thank you for applying to ExampleLabs**\n\n"
+        "Hi Alex, thanks for applying. We received your application and will review it."
+    )
+
+
+def test_a_verified_receipt_from_the_employers_own_domain_after_the_send_is_recorded(
+    state, monkeypatch
+):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application(
+        "https://job-boards.greenhouse.io/novaco/jobs/8239619",
+        "Job Application for Software Intern (Hybrid) at Novaco International",
+    )
+    attempt(app, minutes_before_now_ms=1, status="APPLIED")
+    posted.clear()
+    result = receipt_tick(
+        monkeypatch, "no-reply@novaco.example", "Thank you for applying to Novaco!", THANKS
+    )
+    assert (result["applied"], result["held"], result["ignored"]) == (1, 0, 0)
+    (card,) = events(app, "recruiting_mail")
+    assert card["label"] == "acknowledgement" and card["to_state"] is None
+    assert workflow.get(app)["status"] == "APPLIED"
+    assert any("Application received" in c["content"] for c in cards(posted))
+    # A domain that is not known to be the employer's teaches no brand.
+    assert mail.aliases_for([workflow.get(app)]) == {}
+
+
+@pytest.mark.parametrize(
+    ("clicked", "checks", "subject", "body"),
+    [
+        # No send on record: a "thank you" from an unknown domain is about nothing here.
+        (None, None, "Thank you for applying to Novaco!", THANKS),
+        # Sent three days ago: too late to be this send's receipt.
+        (3 * 24 * 60, None, "Thank you for applying to Novaco!", THANKS),
+        # The mail arrived before the click.
+        (-5, None, "Thank you for applying to Novaco!", THANKS),
+        # The sender's domain did not pass the mail server's check.
+        (1, "dmarc=fail header.from=<{address}>", "Thank you for applying to Novaco!", THANKS),
+        # A reminder to finish an application is the opposite of a receipt.
+        (
+            1,
+            None,
+            "Thank you for your interest in Novaco",
+            "<p>Thank you for your interest. Your application is incomplete.</p>",
+        ),
+    ],
+)
+def test_a_receipt_from_an_unknown_domain_needs_a_send_a_verified_sender_and_plain_words(
+    state, monkeypatch, clicked, checks, subject, body
+):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application(
+        "https://job-boards.greenhouse.io/novaco/jobs/8239619",
+        "Novaco International — Software Intern",
+    )
+    if clicked is not None:
+        attempt(app, minutes_before_now_ms=clicked, status="APPLIED")
+    posted.clear()
+    sender = "no-reply@novaco.example"
+    stored = zoho_stored_headers(sender, checks=checks) if checks else None
+    result = receipt_tick(monkeypatch, sender, subject, body, stored)
+    assert (result["applied"], result["held"], result["ignored"]) == (0, 0, 1)
+    assert events(app, "recruiting_mail") == [] and cards(posted) == []
+
+
+def test_a_rejection_from_an_unknown_domain_still_waits_for_the_owner(state, monkeypatch):
+    # Only a receipt is recorded on a name match; a step that moves the application is his.
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application(
+        "https://job-boards.greenhouse.io/novaco/jobs/8239619",
+        "Novaco International — Software Intern",
+    )
+    attempt(app, minutes_before_now_ms=1, status="APPLIED")
+    posted.clear()
+    result = receipt_tick(
+        monkeypatch,
+        "no-reply@novaco.example",
+        "Your application to Novaco",
+        "<p>Unfortunately, we have decided to move forward with other candidates.</p>",
+    )
+    assert (result["applied"], result["held"]) == (0, 1)
+    assert workflow.get(app)["status"] == "APPLIED" and events(app, "recruiting_mail") == []
+
+
+def test_a_boards_receipt_minutes_after_the_send_finds_it_and_keeps_the_brand(state, monkeypatch):
+    # Neither the title nor the board link carries the name the mail is written under.
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    app = sent_application(
+        "https://jobs.ashbyhq.com/rvt.tech/f421a524-72da-4dd6-a549-bbee9e98622e",
+        "Embedded Systems Software Engineering Intern",
+    )
+    attempt(app, minutes_before_now_ms=2, status="APPLIED")
+    posted.clear()
+    result = receipt_tick(
+        monkeypatch,
+        "no-reply@ashbyhq.com",
+        "Thank you for applying to Riverton Group",
+        THANKS,
+        zoho_stored_headers("no-reply@ashbyhq.com", "Riverton Group Hiring Team"),
+    )
+    assert (result["applied"], result["ignored"]) == (1, 0)
+    assert events(app, "recruiting_mail")[0]["label"] == "acknowledgement"
+    assert mail.aliases_for([workflow.get(app)]) == {app: ["riverton group"]}
+    assert any("mail brand learned · riverton group" in line for line in system_lines(posted))
+    # The brand now names the company: a later mail under it matches without the timing.
+    later = message("3002", "no-reply@ashbyhq.com", "Riverton Group: Online Assessment", NOW_MS + 9)
+    fake_zoho(
+        monkeypatch,
+        [later],
+        {"3002": "<p>Please complete the HackerRank assessment within 7 days.</p>"},
+        {"3002": zoho_stored_headers("no-reply@ashbyhq.com", "Riverton Group Hiring Team")},
+    )
+    assert mail.tick()["applied"] == 1 and workflow.get(app)["status"] == "OA"
+
+
+def test_a_boards_unnamed_receipt_is_not_guessed_between_two_sends(state, monkeypatch):
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    first = sent_application(
+        "https://jobs.ashbyhq.com/rvt.tech/f421a524-72da-4dd6-a549-bbee9e98622e",
+        "Embedded Systems Software Engineering Intern",
+    )
+    second = sent_application(
+        "https://jobs.ashbyhq.com/otherco/0b4c1f0e-1111-4222-8333-444455556666",
+        "Platform Intern",
+        thread="thread-2",
+    )
+    attempt(first, minutes_before_now_ms=4, status="APPLIED")
+    attempt(second, minutes_before_now_ms=2, status="APPLIED")
+    posted.clear()
+    result = receipt_tick(
+        monkeypatch, "no-reply@ashbyhq.com", "Thank you for applying to Riverton Group", THANKS
+    )
+    assert (result["applied"], result["held"], result["ignored"]) == (0, 0, 1)
+    # Another board's mail, or a send long before, is not this board's receipt either.
+    with workflow.db() as conn:
+        conn.execute("DELETE FROM live_submission_attempts WHERE application_id=?", (second,))
+    result = receipt_tick(
+        monkeypatch,
+        "no-reply@lever.co",
+        "Thank you for applying to Riverton Group",
+        THANKS,
+        mid="3003",
+    )
+    assert (result["applied"], result["held"], result["ignored"]) == (0, 0, 1)
+    # With one send left on that board, the same words from the board itself are its receipt.
+    result = receipt_tick(
+        monkeypatch,
+        "no-reply@ashbyhq.com",
+        "Thank you for applying to Riverton Group",
+        THANKS,
+        mid="3004",
+    )
+    assert result["applied"] == 1 and events(first, "recruiting_mail") != []
+
+
+def test_recheck_reads_passed_over_mail_again_and_never_repeats_a_recorded_one(state, monkeypatch):
+    # The receipt came before its application was on record, so the first read passed it over.
+    configure(state)
+    posted = recorder(monkeypatch)
+    erga_recorder(monkeypatch)
+    sender = "no-reply@ashbyhq.com"
+    listing = [message("3101", sender, "Thank you for applying to ExampleLabs", NOW_MS)]
+    stored = {"3101": zoho_stored_headers(sender, "ExampleLabs Hiring Team")}
+    other = sent_application("https://jobs.example.com/intern", "Example Labs — Software Intern")
+    fake_zoho(monkeypatch, listing, {"3101": THANKS}, stored)
+    assert mail.tick()["ignored"] == 1
+    app = sent_application(
+        "https://jobs.ashbyhq.com/examplelabs/194eec78-26db-4d8e-850f-a99ea2733e9f",
+        "Software Engineering Intern",
+        thread="thread-2",
+    )
+    assert mail.tick()["seen"] == 0  # the cursor is past it
+    posted.clear()
+    result = mail.recheck(30)
+    assert (result["read_again"], result["applied"]) == (1, 1)
+    assert len(events(app, "recruiting_mail")) == 1 and events(other, "recruiting_mail") == []
+    assert len([c for c in cards(posted) if "Application received" in c["content"]]) == 1
+    # A second recheck finds it recorded and leaves it alone.
+    posted.clear()
+    result = mail.recheck(30)
+    assert (result["read_again"], result["seen"]) == (0, 0)
+    assert len(events(app, "recruiting_mail")) == 1 and cards(posted) == []
+
+
+def test_the_card_shows_mail_words_as_inert_text():
+    words = "Hi *Alex* [your assessment](https://evil.example/a_b) @everyone <@1> `x`\n# Big"
+    assert workflow.inert(words) == (
+        "Hi \\*Alex\\* \\[your assessment\\](https://evil.example/a_b) \\@everyone "
+        "\\<\\@1\\> \\`x\\`\n\\# Big"
+    )
+    # A real link stays a link that shows where it goes.
+    assert workflow.inert("see https://jobs.example.com/a_b?c=1.") == (
+        "see https://jobs.example.com/a_b?c=1."
+    )
+    hidden = (
+        '<div style="display:none">preheader zebra</div><p>Hello</p>'
+        '<span style="font-size:0px">zebra</span><p hidden>zebra</p>'
+        '<div style="max-height:0;overflow:hidden"><div>zebra</div><div>zebra</div></div><p>Bye</p>'
+    )
+    assert mail.plain_text(hidden, visible_only=True) == "Hello\nBye"
+    assert "zebra" in mail.plain_text(hidden)  # the rules and the model's excerpt read it all
