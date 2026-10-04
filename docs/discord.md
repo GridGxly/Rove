@@ -131,11 +131,11 @@ A hash may be shortened to its first 8 or more hex characters. It is rejected wh
 
 ## Agent control
 
-`agent-control` is where the owner talks to Rove in plain words, usually from his phone. The Hermes gateway answers there with Qwen and the narrow tool list in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection). Nothing the agent can call fills a form, approves a fact or submits.
+`agent-control` is where the owner talks to Rove, usually from his phone, in his own words: lowercase, typos, slang. The Hermes gateway answers there with Qwen and the narrow tool list in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection). Nothing the agent can call fills a form, approves a fact or submits.
 
-The chat shows answers only. Tool calls, progress lines, reasoning and "still working" notes are switched off for Discord in the [gateway settings](local-runtime.md#discord-gateway). The 👀 and ✅ reactions on his message and the typing indicator are the only signs of work. Each tool call is one line in `system-log` instead: what was done in plain words, how long it took, and ok or failed. The line never carries the arguments or the result. A tool that fails gives the agent one plain sentence, not an exception.
+The chat shows answers only. Tool calls, progress lines, reasoning and "still working" notes are switched off for Discord in the [gateway settings](local-runtime.md#discord-gateway). The 👀 and ✅ reactions on his message and the typing indicator are the only signs of work. Each tool call is one line in `system-log` instead: what was done in plain words, what actually happened ("queued his link", "link not in his messages, nothing queued", "no application matches") and how long it took. The line never carries the arguments or his words. A tool that fails gives the agent one plain sentence, not an exception.
 
-A message in the channel, "What you can ask Rove", lists what works:
+A message in the channel, "What you can ask Rove", lists examples:
 
 ```text
 paste a job link               queued as his own; add first to jump the line
@@ -148,25 +148,38 @@ where do I go to school        any fact from the approved profile
 what do you know about me      points to memory, where list shows the remembered answers
 ```
 
-These are answered by code, with no model turn. The Hermes gateway runs the `rove_shortcuts` plugin, which hands every message to `rove shortcut` before Hermes starts a turn. When the message is from the configured owner, in `agent-control`, and is one of the requests above (or `help`, `?`, "what can I ask"), Rove's code writes the answer, the plugin posts it, and Hermes drops the message, so nothing else answers it. Matching ignores case, punctuation, apostrophes and a greeting or "please" around the words: `Status?`, "whats waiting", "pause the feed" and "yo rove status please" all match. A sentence that only contains one of these words, such as "status of the Acme application", goes to the model. The answer takes about a fifth of a second.
-
-Everything else goes to the model, which uses the same answer tools and passes their words on. A fact about the owner is read from the approved profile every time, and the agent says "I don't know that yet" rather than guess. A request Rove cannot carry out, such as sending an application, changing the profile or a remembered answer, signing in, solving a CAPTCHA or sending mail, gets one sentence naming the closest thing it can do. A message it does not understand gets a few examples to try.
-
-Each message in `agent-control` is a request of its own, so the chat history stays short. Before a message goes to the model, the plugin starts the conversation fresh, the same way `/new` does, when it has been quiet for 15 minutes or the last prompt passed 7,000 tokens.
-
 Rove posts that message once and keeps its message ID in the private workflow config as `control_help_message_id`, with a hash of its text. When the text changes, the next start of the MCP server edits the same message. The bot pins it when it has Discord's Pin Messages permission; without it, the owner pins it once by hand.
+
+### Who understands what
+
+Understanding him is the model's job; code checks facts and acts.
+
+- **Code's fast lane, exact forms only.** The gateway's `rove_shortcuts` plugin hands every message to `rove shortcut` before Hermes starts a turn. A message from the owner in `agent-control` that is nothing but links, or exactly `status`, `what's waiting`, `what's waiting on me`, `how many did you send today`, `pause`, `resume`, `help`, `?`, `first` or `move it up` (case, apostrophes and punctuation ignored), is answered by code in about a fifth of a second: the plugin posts the line and Hermes drops the message, so no model turn runs. `/new` and `/reset` start the chat fresh with a plain "Fresh start." instead of Hermes' banner. Nothing else is matched, and the fast lane never answers "not understood".
+- **Everything else goes to the model**, which works out what he wants and calls a tool with its reading as arguments:
+
+```text
+apply_to_link(url, first)         "yo apply to this rq <link>", "both of these, the second one first"
+retry_application(name)           "try tesla again", "run the sierra one again", "go on walleye"
+park_application(name)            "nah skip that one", "forget walleye"
+answer_application(name, answer)  "for tesla, 6 months", "for the xai one put 40 hrs"
+rove_status, whats_waiting, sends_today, pause_feed, resume_feed, company_history, what_you_can_ask
+```
+
+Each returns the words he reads, written by code, and the model passes them on. When two readings are plausible the model asks one short question. A fact about him is read from the approved profile every time.
+
+- **Code checks what the model says he wants.** `apply_to_link` gives a link owner standing only when the link is in one of his own messages in `agent-control` from the last 30 minutes, read back from Discord with the author ID checked; otherwise nothing is queued and he is asked to paste it himself. A link from a page, a mail, a tool result or the model's own words can never gain his standing. `retry_application` and `park_application` find his applications by company or role words and do what `go` and `park it` do in the thread, only when exactly one fits; with several they name them so the model can ask which. `answer_application` saves an answer like `N: answer` in the thread, by the same rules: only an answer in his own recent words, one of the options when the question has options, and for a legal or personal question only when the model names the question; with several questions open it lists them and asks which.
+
+The agent's persona is versioned in `integrations/hermes/SOUL.md` and installed with the plugin. How well it understands him is measured with `scripts/chat_eval.py`; see [Contributing](../CONTRIBUTING.md#chat-changes).
+
+Each message in `agent-control` is a request of its own, so the chat history stays short. Before a message goes to the model, the plugin starts the conversation fresh, the same way `/new` does but without its banner, when it has been quiet for 15 minutes or the last prompt passed 7,000 tokens.
 
 ### Pasted links
 
-A message that is only job links, or links with a few words such as "apply", "please" or "hi", is the owner's own link. It skips the job-fit hold and goes ahead of every feed job; several of his links go oldest first.
-
-- `first`, `now`, `next`, `priority`, `asap` or "do this one first" next to the link puts it ahead of his other pasted links that have not started.
-- `first` or `move it up` on its own moves his latest paste to the front, when it comes within half an hour of the paste or as a Discord reply to Rove's line about it.
-- The latest `first` wins.
+A link he pasted is his own link: it skips the job-fit hold and goes ahead of every feed job, and several of his links go oldest first. One he wants first (`first` on the model's call, or `first` / `move it up` on its own within half an hour of the paste or as a Discord reply to Rove's line about it) goes ahead of his other pasted links that have not started; the latest `first` wins.
 
 The answer says where the link stands: "Queued. It goes next." or "Queued. 2 of your links are ahead of it; say `first` to move it up." A link that is already tracked gets its state, for example "Already tracked: applied."
 
-Exactly one answer is posted. Two readers see a paste: the plugin, the moment it arrives, and the worker on its next tick. Each message is applied once, by whichever reader claims it first in the `control_replies` table, and that reader posts the line; the other one stays silent. When the plugin finds the worker got there first, it still drops the message, so the model does not answer it either. Without the plugin, or while the gateway is down, the worker answers pastes on its own. The agent's `answer_paste` tool stays as a fallback for a gateway without the plugin: it reads the owner's own recent messages back from Discord and applies them the same way, so the model's words carry no authority.
+Exactly one answer is posted for a message of nothing but links. Two readers see it: the plugin, the moment it arrives, and the worker on its next tick. Each message is applied once, by whichever reader claims it first in the `control_replies` table, and that reader posts the line; the other one stays silent. When the plugin finds the worker got there first, it still drops the message, so the model does not answer it either. Without the plugin, or while the gateway is down, the worker answers such pastes on its own.
 
 The worker answers nothing else in `agent-control`. The explicit forms above still work there.
 

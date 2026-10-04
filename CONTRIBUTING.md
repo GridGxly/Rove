@@ -92,6 +92,19 @@ Ceilings and floors only move one way:
 - **Performance budgets.** Time budgets are generous multiples of measured medians and catch regressions like a fixed sleep per field, not drift. Call counts are exact or ceilings. When a change moves one on purpose, update the table in `tests/test_performance.py` and say why in the commit.
 - **Configuration keys.** A new `config/workflow.json` key needs a row in the table in `docs/requirements.md`. Keys that were undocumented when the check was added are listed in `tests/test_repo_hygiene.py`; document one and remove it from that list.
 
+## Chat changes
+
+The owner talks to Rove in `agent-control` however he likes: lowercase, typos, slang. Understanding him is the model's job. Code takes only exact forms (a message that is nothing but links, and the few requests on the pinned help) and otherwise checks facts the model passes to its tools: a link must be in a message he wrote, a name must match one of his applications, an answer must be in his own words. Do not add word lists that decide what he meant.
+
+A change to the persona (`integrations/hermes/SOUL.md`), a chat tool or its description is measured against the real model:
+
+```bash
+uv run python scripts/chat_eval.py
+uv run python scripts/chat_eval.py --match tesla --verbose
+```
+
+It runs every message in `tests/chat_eval/phrases.jsonl` through the Hermes agent as the gateway builds it, with Rove's tools replaced by stubs that only record the call, so no state, Discord or browser is touched. It prints each miss and the pass rate; keep it at 90 % or above. It needs the local model and Hermes, takes several minutes, and is run by hand, not in CI. Add a phrase for every way he was misunderstood. The offline suite checks the tools themselves.
+
 ## Public repo and test data
 
 Treat anything committed here as public.

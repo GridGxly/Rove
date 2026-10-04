@@ -445,10 +445,12 @@ def park_application(name: str) -> str:
 
 @tool
 def answer_application(name: str, answer: str, question: str | None = None) -> str:
-    """Give his answer to an open question on one of his applications: "for tesla, 6
-    months", "for the xai one put 40 hrs". name: company or role words; answer: his
-    answer in his own words; question: words of the question when he named one. It asks
-    back when the question is unclear. Send the reply as is."""
+    """Save his answer to an open question on one of his applications: "for tesla, 6
+    months", "for the xai one put 40 hrs", or a bare "put 40" right after an
+    application's questions were shown. Nothing is saved unless this is called. name:
+    company or role words; answer: his answer in his own words; question: words of the
+    question when he named one. It asks back when the question is unclear. Send the
+    reply as is."""
     return said(chat.answer_application(name, answer, question))
 
 
