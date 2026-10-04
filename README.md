@@ -14,6 +14,14 @@
   <a href="https://github.com/GridGxly/Rove/actions/workflows/ci.yml"><img src="https://github.com/GridGxly/Rove/actions/workflows/ci.yml/badge.svg?branch=docs-initial-setup" alt="CI" /></a>
 </p>
 
+<p align="center">
+  <a href="docs/showcase.md">Visual walkthrough</a> ·
+  <a href="docs/getting-started.md">Set it up</a> ·
+  <a href="docs/visual-benchmark.md">Recorded results</a>
+</p>
+
+> **Pre-alpha.** The real end-to-end acceptance gate remains unmet. The walkthrough shows a synthetic fixture; it does not establish reliable employer submissions or Qwen visual reasoning.
+
 ## Why this exists
 
 Rove is meant for my personal internship search, but I opened it in case this same workflow is helpful for others.
@@ -36,6 +44,12 @@ Rove is not an official Erga project and is not affiliated with its maintainer. 
 Rove tries recognised picture checks with a bounded local solver. It asks me when that fails, an account step needs approval, a fact is missing, approved facts conflict, or a submission result is unclear. Supported email codes come from the optional Zoho integration; SMS and authenticator MFA remain manual. An unclear submission is never retried by code.
 
 Discord is the remote control. The model, the vault, the database, resumes, the browser profile, credentials and the application history stay on my Mac.
+
+## One application, from link to outcome
+
+![Rove workflow: find the role, prepare from evidence, and verify the outcome](docs/assets/rove-workflow.svg)
+
+This is a workflow illustration. The [visual walkthrough](docs/showcase.md) pairs it with actual before-and-after captures from the synthetic browser fixture, the server and database checks, and the current live limitations.
 
 ## Architecture
 
@@ -68,6 +82,7 @@ Qwen handles judgment: job fit, unfamiliar questions, written answers, and mail 
 - [Memory and storage](docs/memory-and-storage.md): where each kind of data lives
 - [Requirements](docs/requirements.md): the full install checklist and configuration keys
 - [Getting started](docs/getting-started.md): setup in order
+- [Visual walkthrough](docs/showcase.md): a synthetic application and the evidence behind it
 - [Qwen visual benchmark](docs/visual-benchmark.md): recorded failures and the evidence required for the MVP
 - [Security](SECURITY.md) and [Prompt injection](docs/prompt-injection.md): the trust model
 
@@ -121,7 +136,7 @@ cd Rove
 uv sync --frozen --python 3.12
 ```
 
-`docs-initial-setup` contains the implementation and these instructions; the repository's `main` branch currently contains only the initial commit. Then follow [Getting started](docs/getting-started.md). Start with synthetic data and leave submission off until preparation works on your machine.
+`docs-initial-setup` contains the current pre-alpha implementation; `main` may lag while changes are under review. Then follow [Getting started](docs/getting-started.md). Start with synthetic data and leave submission off until preparation works on your machine.
 
 If you want the original recruiting assistant without browser auto-application, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
 

@@ -28,7 +28,7 @@ The last command installs Patchright's Chromium build. The synthetic fixture and
 
 Keep hardware-specific changes in your own clone or fork.
 
-Use `docs-initial-setup` for this pre-alpha implementation. The current `main` branch contains only the initial commit. `--frozen` uses the dependency versions checked into this branch.
+Use `docs-initial-setup` for the current pre-alpha implementation; `main` may lag while changes are under review. `--frozen` uses the dependency versions checked into this branch.
 
 ## 3. Keep live data outside Git
 

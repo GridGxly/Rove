@@ -4,6 +4,7 @@ Rove is a personal, local-first recruiting system. It is not a hosted service.
 
 ## Understand it
 
+- [Visual walkthrough](showcase.md): actual synthetic browser captures, verification evidence, and live limitations
 - [How it works](how-it-works.md): the components, the path of one application, and who decides what
 - [Application workflow](application-workflow.md): intake, job fit, resume, answers, stops, sending, unattended sending, recruiting mail, limits, and work in progress
 - [Discord](discord.md): channels, cards, the replies Rove accepts, the memory channel, the system log and forum tags
