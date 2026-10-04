@@ -148,13 +148,17 @@ where do I go to school        any fact from the approved profile
 what do you know about me      points to memory, where list shows the remembered answers
 ```
 
-Code writes the answers to these: the agent calls one tool and passes its words on. A fact about the owner is read from the approved profile every time, and the agent says "I don't know that yet" rather than guess. A request Rove cannot carry out, such as sending an application, changing the profile or a remembered answer, signing in, solving a CAPTCHA or sending mail, gets one sentence naming the closest thing it can do. A message it does not understand gets a few examples to try.
+These are answered by code, with no model turn. The Hermes gateway runs the `rove_shortcuts` plugin, which hands every message to `rove shortcut` before Hermes starts a turn. When the message is from the configured owner, in `agent-control`, and is one of the requests above (or `help`, `?`, "what can I ask"), Rove's code writes the answer, the plugin posts it, and Hermes drops the message, so nothing else answers it. Matching ignores case, punctuation, apostrophes and a greeting or "please" around the words: `Status?`, "whats waiting", "pause the feed" and "yo rove status please" all match. A sentence that only contains one of these words, such as "status of the Acme application", goes to the model. The answer takes about a fifth of a second.
+
+Everything else goes to the model, which uses the same answer tools and passes their words on. A fact about the owner is read from the approved profile every time, and the agent says "I don't know that yet" rather than guess. A request Rove cannot carry out, such as sending an application, changing the profile or a remembered answer, signing in, solving a CAPTCHA or sending mail, gets one sentence naming the closest thing it can do. A message it does not understand gets a few examples to try.
+
+Each message in `agent-control` is a request of its own, so the chat history stays short. Before a message goes to the model, the plugin starts the conversation fresh, the same way `/new` does, when it has been quiet for 15 minutes or the last prompt passed 7,000 tokens.
 
 Rove posts that message once and keeps its message ID in the private workflow config as `control_help_message_id`, with a hash of its text. When the text changes, the next start of the MCP server edits the same message. The bot pins it when it has Discord's Pin Messages permission; without it, the owner pins it once by hand.
 
 ### Pasted links
 
-A message that is only job links, or links with a few words such as "apply" or "please", is the owner's own link. It skips the job-fit hold and goes ahead of every feed job; several of his links go oldest first.
+A message that is only job links, or links with a few words such as "apply", "please" or "hi", is the owner's own link. It skips the job-fit hold and goes ahead of every feed job; several of his links go oldest first.
 
 - `first`, `now`, `next`, `priority`, `asap` or "do this one first" next to the link puts it ahead of his other pasted links that have not started.
 - `first` or `move it up` on its own moves his latest paste to the front, when it comes within half an hour of the paste or as a Discord reply to Rove's line about it.
@@ -162,7 +166,7 @@ A message that is only job links, or links with a few words such as "apply" or "
 
 The answer says where the link stands: "Queued. It goes next." or "Queued. 2 of your links are ahead of it; say `first` to move it up." A link that is already tracked gets its state, for example "Already tracked: applied."
 
-Exactly one answer is posted. Hermes cannot stay silent on a message, so the agent gives the answer: it calls `answer_paste`, which reads the owner's own recent messages back from Discord, checks the author ID, applies them through the same code the worker uses and returns that code's line. The agent's words carry no authority here. Each message is applied once, by whichever side reaches it first, and recorded in the `control_replies` table. A line no agent picked up within 45 seconds, because the gateway or the model is down, is posted by the worker.
+Exactly one answer is posted. Two readers see a paste: the plugin, the moment it arrives, and the worker on its next tick. Each message is applied once, by whichever reader claims it first in the `control_replies` table, and that reader posts the line; the other one stays silent. When the plugin finds the worker got there first, it still drops the message, so the model does not answer it either. Without the plugin, or while the gateway is down, the worker answers pastes on its own. The agent's `answer_paste` tool stays as a fallback for a gateway without the plugin: it reads the owner's own recent messages back from Discord and applies them the same way, so the model's words carry no authority.
 
 The worker answers nothing else in `agent-control`. The explicit forms above still work there.
 

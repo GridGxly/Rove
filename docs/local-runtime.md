@@ -60,7 +60,7 @@ Enable `HERMES_AUTOPILOT_16K=1` only for this certified local configuration. The
 The MCP server command is the absolute path to this checkout's `.venv/bin/rove`, with the argument `mcp` and the checkout as its working directory. Register it under the name `rove`, which makes its Hermes toolset `mcp-rove`.
 
 - Disable every built-in Hermes toolset for this profile and set each platform's toolsets to `mcp-rove`.
-- Use the include list of thirteen tools in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection), plus the eight chat tools `rove_status`, `whats_waiting`, `sends_today`, `pause_feed`, `resume_feed`, `company_history`, `answer_paste` and `what_you_can_ask`. The server also defines four synthetic certification tools and three direct browser tools, and none of those belong on the production list.
+- Use the include list of thirteen tools in [Onboarding and jobs](onboarding-and-jobs.md#hermes-connection) without `application_workflow_status`, plus the eight chat tools `rove_status`, `whats_waiting`, `sends_today`, `pause_feed`, `resume_feed`, `company_history`, `answer_paste` and `what_you_can_ask`: twenty in all. `application_workflow_status` returns the raw queue, about 8,000 characters, and the model miscounted it; the chat tools answer the same questions in code. The server also defines four synthetic certification tools and three direct browser tools, and none of those belong on the production list.
 - Set `tools.tool_search.enabled: off` so the small schemas are present directly.
 - Inside the MCP server's `tools` config, set `resources: false` and `prompts: false`. Excluding names alone does not suppress Hermes' generated wrappers.
 
@@ -97,21 +97,42 @@ custom_providers:
     base_url: http://127.0.0.1:8000/v1
     model: Qwen3.8-27B-Uncensored-4bit
     extra_body:
+      temperature: 0
       chat_template_kwargs:
         enable_thinking: false
+plugins:
+  enabled:
+    - rove_shortcuts
 ```
 
 - `tool_progress` must be written as `off` for Discord, because Hermes treats an unset value as "show every tool call". The other display keys stop interim commentary, "still working" heartbeats, busy acknowledgements, reasoning and engine warnings. The typing indicator and the 👀 and ✅ reactions remain.
-- Hermes merges the custom provider's `extra_body` into every request to that address and model, so chat turns skip Qwen's thinking. `agent.reasoning_effort` cannot do this: oMLX hands it to the chat template, which rejects `none` and falls back to `low`. The worker sends the same flag itself, so it is unaffected.
+- Hermes merges the custom provider's `extra_body` into every request to that address and model, so chat turns skip Qwen's thinking and sample at temperature 0. `agent.reasoning_effort` cannot turn thinking off: oMLX hands it to the chat template, which rejects `none` and falls back to `low`. oMLX logs a request's temperature only at debug level; a request captured from Hermes itself carries `temperature: 0` and `enable_thinking: false`. The worker calls oMLX directly with its own values, so it is unaffected.
 - The four agent switches remove Hermes' coding-agent prompt blocks, which push for tools this profile does not have.
 - The persona is `SOUL.md` in the Hermes home: answer first in plain words, pass on the chat tools' words as they are, read the approved profile before stating any fact, and name the closest thing Rove can do when it cannot do something. `agent.system_prompt` stays empty.
 - There is no output cap for chat turns. This Hermes build sends no `max_tokens` for a custom provider, whatever `model.max_tokens` says, and an `extra_body` cap would also cap the worker. The server's per-model ceiling of 2,048 tokens applies, and the persona keeps answers short.
-- Hermes replaces a bare silence marker on a person's Discord message with a warning, so the agent always answers. That is why a pasted link is answered through the agent; see [Discord](discord.md#pasted-links).
-- The model's generation config samples at temperature 1.0 when a request names none, and Hermes names none for the chat. At that temperature Qwen now and then drops the first lines of a long answer it was asked to pass on; at temperature 0 the same request was copied exactly every time. The worker sends temperature 0 and is unaffected. A lower default for the chat would be an oMLX model setting.
+- Without a temperature the model's generation config samples at 1.0. At that temperature Qwen now and then dropped the first lines of a long answer it was asked to pass on, and once answered `status` with a sentence of its own instead of the tool's words; at temperature 0 the same request was copied exactly every time.
+- Each turn sends the twenty Rove tool schemas, about 7,500 characters. The gateway's start-up line "62 tool schema(s) materialized" counts every tool Hermes knows about while it warms up, not what a Discord turn receives.
 
 Restart the gateway after changing these: `launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway`. The display keys are also read again on every turn.
 
-With nothing else running on the model, a warm "hi" took 1.8 to 3 seconds inside the agent after these changes, against 5 to 7.5 seconds before; a profile question took 6 to 8 seconds, against 15.6 to 16; "status" took 6 to 7 seconds, against 106 seconds and a 2,180-character answer. A first turn after oMLX unloaded the model (600 seconds idle) also pays for loading the weights.
+### The Rove shortcuts plugin
+
+The owner's fixed requests in `agent-control` (status, what's waiting, sends today, pause, resume, help, a pasted job link, `first`, why did you skip a company) are answered by Rove's code with no model turn. A Hermes plugin does it: `integrations/hermes/rove_shortcuts` in this repository. Install or update it from the checkout, then restart the gateway:
+
+```sh
+uv run rove gateway install-shortcuts
+uv run rove gateway restart
+```
+
+The command copies `plugin.yaml` and `__init__.py` into `plugins/rove_shortcuts` in the Hermes home, writes `settings.json` next to them with the command to run (this checkout's `.venv/bin/rove shortcut`) and the state root, runs `hermes plugins enable rove_shortcuts`, and prints each step. `hermes plugins disable rove_shortcuts` turns it off again.
+
+- The plugin uses Hermes' `pre_gateway_dispatch` hook, which runs for every incoming message before Hermes checks the sender or starts a turn. It passes the Discord message (text, IDs, author) to `rove shortcut` on stdin, in a fresh process with a minimal environment, and reads one JSON line back.
+- Rove answers only the configured owner, only in `agent-control`, never in a thread, and only for a fixed request. The plugin then posts Rove's line through the gateway's Discord adapter and returns `skip`, so Hermes drops the message: no model turn, no second reply. The 👀 and ✅ reactions still appear. Anything else, from anyone, or any failure in the plugin, leaves the message to Hermes as before.
+- For the owner's other messages in `agent-control`, the plugin starts the chat fresh through Hermes' own `/new` path when it has been quiet for 15 minutes or the last prompt passed 7,000 tokens. Hermes itself no longer resets gateway conversations on a timer. This part calls two internal gateway methods (`_session_key_for_source`, `_handle_reset_command`); if a Hermes update renames them, the plugin logs a warning and the message still goes to the model.
+- A fixed request takes about 0.15 to 0.2 seconds, mostly starting Python. The decision is printed before the `system-log` line is posted, so Discord's latency is not in the way.
+- A message that arrives while the agent is still answering an earlier one goes to Hermes' busy handling (`display.busy_input_mode`), not to the plugin; it is checked when it runs.
+
+Measured on the reference Mac: `status` in the gateway took 44 seconds on its first evening, two model calls of 5,808 and 5,987 input tokens on a conversation carrying 18 old messages. Through the plugin it is answered in about 0.2 seconds with no model call. A question the model answers on a fresh conversation sends about 4,180 input tokens on the first call, 4,096 of them from oMLX's prefix cache; with nothing else on the model, a warm "hi" took 1.8 to 3 seconds and a profile question 6 to 8 seconds. While the worker is using the model, a chat turn waits for it, and one test turn waited almost three minutes. A first turn after oMLX unloaded the model (600 seconds idle) also pays for loading the weights.
 
 ## How the worker calls Qwen
 
