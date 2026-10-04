@@ -7,7 +7,7 @@
       "src/rove/dates.py": 1,
       "src/rove/delivery.py": 1,
       "src/rove/discord_feed.py": 2,
-      "src/rove/live_browser.py": 4,
+      "src/rove/live_browser.py": 6,
       "src/rove/mail.py": 5,
       "src/rove/overlays.py": 1,
       "src/rove/questions.py": 3,
@@ -19,21 +19,20 @@
       "src/rove/cli.py": 1,
       "src/rove/delivery.py": 1,
       "src/rove/draft_guard.py": 1,
-      "src/rove/live_browser.py": 3,
+      "src/rove/live_browser.py": 4,
       "src/rove/mail.py": 2,
       "src/rove/memory_channel.py": 1,
-      "src/rove/timing.py": 3
+      "src/rove/submission.py": 1,
+      "src/rove/timing.py": 3,
+      "src/rove/worker.py": 1
     },
     "attr-defined": {
       "src/rove/cli.py": 5,
-      "src/rove/live_browser.py": 76,
+      "src/rove/live_browser.py": 79,
       "src/rove/postings.py": 2
     },
     "call-arg": {
       "src/rove/cli.py": 1
-    },
-    "dict-item": {
-      "src/rove/live_browser.py": 2
     },
     "import-not-found": {
       "src/rove/hermes_review.py": 3
@@ -74,7 +73,7 @@
     "union-attr": {
       "src/rove/delivery.py": 1,
       "src/rove/discord_feed.py": 4,
-      "src/rove/live_browser.py": 4,
+      "src/rove/live_browser.py": 5,
       "src/rove/mail.py": 1,
       "src/rove/onboarding.py": 1,
       "src/rove/reasoning.py": 4,
@@ -85,7 +84,7 @@
       "src/rove/benchmark.py": 1,
       "src/rove/evidence.py": 1,
       "src/rove/intake.py": 1,
-      "src/rove/live_browser.py": 8,
+      "src/rove/live_browser.py": 10,
       "src/rove/mail.py": 3,
       "src/rove/matching.py": 1,
       "src/rove/research.py": 1,

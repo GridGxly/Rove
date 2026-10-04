@@ -130,7 +130,7 @@ async def keep_short(event, gateway, session_store) -> bool:
             return False
         updated = entry.updated_at
         # Hermes keeps session times as naive local time.
-        now = datetime.now(updated.tzinfo) if updated.tzinfo else datetime.now()  # noqa: DTZ005
+        now = datetime.now(updated.tzinfo) if updated.tzinfo else datetime.now()
         quiet = (now - updated).total_seconds()
         if quiet < IDLE_RESET and (entry.last_prompt_tokens or 0) < MAX_PROMPT_TOKENS:
             return False

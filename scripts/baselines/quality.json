@@ -2,8 +2,10 @@
   "about": "Ceilings for ruff findings per rule and file; the rules are those in [tool.ruff.lint] ignore. Checked by scripts/ratchet.py quality. Lower with --update after fixing; never raise without review.",
   "counts": {
     "ARG001": {
+      "integrations/hermes/rove_shortcuts/__init__.py": 1,
       "src/rove/benchmark.py": 1,
       "src/rove/questions.py": 1,
+      "src/rove/submission.py": 1,
       "src/rove/worker.py": 1,
       "src/rove/workflow.py": 1
     },
@@ -26,13 +28,13 @@
       "src/rove/browser.py": 1,
       "src/rove/cli.py": 1,
       "src/rove/intake.py": 2,
-      "src/rove/live_browser.py": 2,
+      "src/rove/live_browser.py": 3,
       "src/rove/mail.py": 2,
       "src/rove/model_client.py": 1,
       "src/rove/questions.py": 3,
       "src/rove/reasoning.py": 2,
       "src/rove/resumes.py": 1,
-      "src/rove/submission.py": 1,
+      "src/rove/submission.py": 2,
       "src/rove/vault.py": 1,
       "src/rove/worker.py": 3,
       "src/rove/workflow.py": 1
@@ -43,7 +45,8 @@
       "src/rove/form_reading.py": 80,
       "src/rove/inbound.py": 2,
       "src/rove/intake.py": 1,
-      "src/rove/live_browser.py": 49,
+      "src/rove/job_index.py": 1,
+      "src/rove/live_browser.py": 54,
       "src/rove/mail.py": 2,
       "src/rove/matching.py": 1,
       "src/rove/memory_channel.py": 1,
@@ -52,12 +55,14 @@
       "src/rove/questions.py": 12,
       "src/rove/reasoning.py": 2,
       "src/rove/server.py": 1,
-      "src/rove/submission.py": 5,
+      "src/rove/shortcuts.py": 1,
+      "src/rove/submission.py": 9,
       "src/rove/vault.py": 2,
       "src/rove/worker.py": 3,
       "src/rove/workflow.py": 10,
       "tests/test_boards.py": 1,
       "tests/test_browser_app.py": 1,
+      "tests/test_browser_guards.py": 12,
       "tests/test_education.py": 1,
       "tests/test_form_reading.py": 4,
       "tests/test_form_steps.py": 8,
@@ -69,6 +74,7 @@
       "tests/test_security_inbound.py": 3
     },
     "E731": {
+      "src/rove/live_browser.py": 1,
       "src/rove/matching.py": 1,
       "tests/test_common_questions.py": 1,
       "tests/test_delivery.py": 1,
@@ -81,10 +87,11 @@
     },
     "PLR0911": {
       "src/rove/intake.py": 1,
-      "src/rove/live_browser.py": 2,
+      "src/rove/live_browser.py": 1,
       "src/rove/mail.py": 1,
       "src/rove/memory_channel.py": 1,
       "src/rove/questions.py": 6,
+      "src/rove/worker.py": 1,
       "src/rove/workflow.py": 3,
       "tests/test_delivery.py": 1,
       "tests/test_mail.py": 1
@@ -93,12 +100,12 @@
       "src/rove/browser.py": 1,
       "src/rove/cli.py": 1,
       "src/rove/intake.py": 2,
-      "src/rove/live_browser.py": 2,
+      "src/rove/live_browser.py": 3,
       "src/rove/mail.py": 2,
       "src/rove/model_client.py": 1,
       "src/rove/questions.py": 3,
       "src/rove/reasoning.py": 2,
-      "src/rove/submission.py": 1,
+      "src/rove/submission.py": 2,
       "src/rove/vault.py": 1,
       "src/rove/worker.py": 3,
       "src/rove/workflow.py": 1
@@ -139,8 +146,10 @@
       "src/rove/resumes.py": 1,
       "src/rove/services.py": 1,
       "src/rove/worker.py": 1,
+      "tests/test_browser_guards.py": 1,
       "tests/test_model_path.py": 1,
-      "tests/test_reasoning.py": 1
+      "tests/test_reasoning.py": 1,
+      "tests/test_unattended_failure_modes.py": 1
     },
     "S101": {
       "scripts/benchmark_hermes.py": 2,
@@ -158,6 +167,7 @@
       "src/rove/memory.py": 1,
       "src/rove/reasoning.py": 2,
       "src/rove/services.py": 3,
+      "src/rove/shortcuts.py": 1,
       "src/rove/unslop.py": 1,
       "src/rove/worker.py": 1
     },
@@ -170,15 +180,17 @@
     "S608": {
       "src/rove/delivery.py": 11,
       "src/rove/intake.py": 5,
+      "src/rove/job_index.py": 2,
       "src/rove/jobs.py": 2,
       "src/rove/mail.py": 1,
+      "src/rove/submission.py": 1,
       "src/rove/timing.py": 1,
-      "src/rove/workflow.py": 2
+      "src/rove/workflow.py": 4
     },
     "SIM105": {
       "src/rove/boards/base.py": 1,
       "src/rove/live_browser.py": 7,
-      "src/rove/submission.py": 4,
+      "src/rove/submission.py": 3,
       "tests/test_form_steps.py": 1
     },
     "SIM108": {

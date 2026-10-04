@@ -682,7 +682,7 @@ def test_the_stuck_send_bound_covers_every_wait_of_a_send():
         + submission.LOAD_TIMEOUT_MS
     )
     assert waits == submission.SEND_WAITS_MS
-    assert submission.STALE_SEND_AFTER >= timedelta(milliseconds=waits) + timedelta(minutes=5)
+    assert timedelta(milliseconds=waits) + timedelta(minutes=5) <= submission.STALE_SEND_AFTER
     # The click's own budget is the hover and the click the browser gives it.
     default_click = live_browser.RecruitingBrowser.click.__defaults__[0]
     assert default_click + 3000 <= submission.CLICK_TIMEOUT_MS
@@ -793,7 +793,7 @@ def test_same_job_on_an_employer_site_allows_the_apply_step_under_the_posting():
 def test_an_existing_database_gains_the_job_index_and_keeps_every_row(state):
     """The upgrade: a database written before job keys existed, duplicates included."""
     old = {
-        # id: (url, status, created_at)
+        # Each row: its id, then the url, the status and when it was created.
         "a" * 12: (GREENHOUSE, "APPLIED", "2026-09-02T00:00:00+00:00"),
         # The same job under another spelling, queued earlier and never sent.
         "b" * 12: (
@@ -958,7 +958,7 @@ def resolves_to(monkeypatch, *addresses):
         "192.168.1.1",
         "169.254.169.254",  # link-local: cloud metadata
         "100.64.0.1",  # carrier-grade NAT
-        "0.0.0.0",
+        "0.0.0.0",  # noqa: S104 -- an address the guard must refuse, never bound
         "::1",
         "fe80::1",
         "fe80::1%en0",
@@ -1947,8 +1947,9 @@ def test_a_post_to_another_host_keeps_the_send_unknown(board, site, monkeypatch)
     checks = result["checks"]
     assert not checks["no_form_error"] and not checks["post_accepted"] and checks["posts_kept"]
     assert Site.posts == ["/v1/applications"]
-    assert {"path": "/v1/applications", "status": 200} == {
-        k: result["responses"][0][k] for k in ("path", "status")
+    assert {k: result["responses"][0][k] for k in ("path", "status")} == {
+        "path": "/v1/applications",
+        "status": 200,
     }
     never_twice(runtime, run_id, package_hash, state)
 
@@ -2466,7 +2467,7 @@ def test_a_reconnect_keeps_an_unclear_sends_tab_and_every_tab_rove_did_not_open(
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/json/new?{site}/acme/jobs/699", method="PUT"
         )
-        with urllib.request.urlopen(request, timeout=10) as reply:
+        with urllib.request.urlopen(request, timeout=10) as reply:  # noqa: S310 -- loopback devtools
             assert reply.status == 200
         time.sleep(0.5)
         runtime.playwright.stop()

@@ -391,7 +391,7 @@ def test_a_quiet_or_long_chat_starts_fresh_before_the_model_answers(monkeypatch)
 
     def store(minutes_quiet, tokens):
         entry = SimpleNamespace(
-            updated_at=datetime.now() - timedelta(minutes=minutes_quiet),  # noqa: DTZ005
+            updated_at=datetime.now() - timedelta(minutes=minutes_quiet),
             last_prompt_tokens=tokens,
         )
         return SimpleNamespace(lookup_by_session_key=lambda key: entry)
