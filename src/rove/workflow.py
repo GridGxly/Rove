@@ -1320,6 +1320,17 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         return [f"→ {data.get('source', 'The feed')} reports the posting closed"]
     if kind == "redirect_blocked":
         where = clip(data.get("destination", "an address off the public web"), 120)
+        if data.get("after_send"):
+            # After the click nothing may claim that nothing was sent.
+            return [
+                embed(
+                    "Redirect blocked after the send · tab closed",
+                    f"After the send, the page went to {where}, which is not a public HTTPS "
+                    "site. The tab was closed without reading it, so whether the application "
+                    "went through is unclear.",
+                    color="problem",
+                )
+            ]
         return [
             embed(
                 "Redirect blocked · tab closed",

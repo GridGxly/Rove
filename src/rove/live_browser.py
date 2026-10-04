@@ -53,6 +53,22 @@ UNSAFE_REDIRECT = (
     "HTTPS site, so I closed the tab. Nothing was typed or sent there. Reply `park it` to "
     "drop this one, or `go` to try the posting again."
 )
+# The same stop after the send's click: whether the application went through is not
+# known, so nothing here may say that nothing was sent.
+UNSAFE_AFTER_SEND = (
+    PLAIN_STOP + "After the send, the page went to an address that is not a public HTTPS "
+    "site, so I closed the tab without reading it. Whether the application went through is "
+    "unclear: check your email before you tell me the outcome, and do not click Submit again."
+)
+LOOKUP_FAILED = (
+    PLAIN_STOP + "I could not look up the address this page is on, so I stopped before "
+    "reading or typing anything there. The tab is still open. Reply `go` to try again."
+)
+LOOKUP_FAILED_AFTER_SEND = (
+    PLAIN_STOP + "After the send I could not look up the address the page went to, so I "
+    "could not read what it said. Whether the application went through is unclear: check "
+    "your email and the recruiting browser, and do not click Submit again."
+)
 BROWSER_GONE = (
     PLAIN_STOP + "The recruiting browser was closed, so this application's page is gone. I "
     "started the browser again; reply `go` and I open the page afresh."
@@ -88,6 +104,8 @@ RECONNECTED = (
 # Operations run a second time when the browser died under the first try. A send and an
 # account creation are not: their click may already have reached the site.
 RETRIED_ACTIONS = frozenset({"open", "observe", "follow", "prepare", "login", "reopen"})
+# A failed address lookup is tried once more after this pause before the run stops.
+LOOKUP_RETRY_SECONDS = 0.5
 # Pages the browser shows on its own: a new tab, a navigation that failed.
 BROWSER_PAGES = ("about:blank", "chrome-error://")
 RUN_ID = re.compile(r"[a-f0-9]{12}")
@@ -704,9 +722,12 @@ class RecruitingBrowser:
         # chosen on. No entry means the tab's own document.
         self.frames = {}
         self.frames_waited = None
+        self.sending = False  # between a send's click and its recorded outcome
 
-    def allowed(self, url: str) -> bool:
-        """Public HTTPS only; a host's addresses are looked up again once a minute."""
+    def destination(self, url: str) -> str:
+        """ "public", "private" (anything that is not public HTTPS), or "unresolved" when
+        the host's address could not be looked up. A host's addresses are looked up again
+        once a minute."""
         try:
             host = urlsplit(url).hostname
             if host not in self.dns or time.monotonic() - self.dns[host] > 60:
@@ -714,9 +735,15 @@ class RecruitingBrowser:
                 self.dns[host] = time.monotonic()
             elif not public_link(url):
                 raise PermissionError("Unsupported URL")
-            return True
-        except (ValueError, PermissionError, OSError):
-            return False
+            return "public"
+        except (ValueError, PermissionError):
+            return "private"
+        except OSError:  # the lookup itself failed: nothing is known about the address
+            return "unresolved"
+
+    def allowed(self, url: str) -> bool:
+        """Public HTTPS only."""
+        return self.destination(url) == "public"
 
     def _route(self, route):
         """Continue a public HTTPS request, abort anything else; each route once.
@@ -751,25 +778,37 @@ class RecruitingBrowser:
             return
         hops, self.hops = self.hops, []
         landed = self.page.url
-        if landed and not landed.startswith(BROWSER_PAGES) and not self.allowed(landed):
-            self.stop_unsafe(landed)
+        if landed and not landed.startswith(BROWSER_PAGES):
+            self.require_public(landed)
         for url in hops:
-            if not self.public_hop(url):
-                self.stop_unsafe(url)
+            self.require_public(url, hop=True)
 
-    def public_hop(self, url: str) -> bool:
+    def require_public(self, url: str, hop: bool = False):
+        """Stop on an address that is not public HTTPS (the tab is closed), and on one whose
+        lookup failed twice (the tab stays: nothing is known against it)."""
+        verdict = self.public_hop(url) if hop else self.destination(url)
+        if verdict == "unresolved":
+            time.sleep(LOOKUP_RETRY_SECONDS)  # one more try: a lookup can fail for a moment
+            verdict = self.public_hop(url) if hop else self.destination(url)
+        if verdict == "private":
+            self.stop_unsafe(url)
+        if verdict == "unresolved":
+            self.stop_unresolved(url)
+
+    def public_hop(self, url: str) -> str:
         """A redirect hop may be plain HTTP on its way to HTTPS; it may never be a private,
         loopback or link-local address, another port or another scheme."""
-        if self.allowed(url):
-            return True
+        verdict = self.destination(url)
+        if verdict != "private":
+            return verdict
         try:
             parsed = urlsplit(url)
             if parsed.scheme != "http" or parsed.port not in (None, 80) or not parsed.hostname:
-                return False
+                return "private"
             host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
         except ValueError:
-            return False
-        return self.allowed(f"https://{host}{parsed.path or '/'}")
+            return "private"
+        return self.destination(f"https://{host}{parsed.path or '/'}")
 
     def stop_unsafe(self, url: str):
         run_id = self.run["id"] if self.run else None
@@ -777,15 +816,30 @@ class RecruitingBrowser:
             self.page.close()
         # The closed page stays referenced so code already holding it fails cleanly.
         self.observation = None
+        after_send = bool(self.sending)
         if run_id:
             self.pages.pop(run_id, None)
             self.runs.pop(run_id, None)
             parsed = urlsplit(url)
             where = f"{parsed.scheme}://{parsed.hostname or ''}"[:200]
             with contextlib.suppress(Exception):  # the stop itself must not depend on Discord
-                workflow.record(run_id, "redirect_blocked", {"destination": where})
+                workflow.record(
+                    run_id,
+                    "redirect_blocked",
+                    {"destination": where, **({"after_send": True} if after_send else {})},
+                )
                 workflow.system_line(run_id, f"redirect blocked · tab closed · {where}")
-        raise PermissionError(UNSAFE_REDIRECT)
+        raise PermissionError(UNSAFE_AFTER_SEND if after_send else UNSAFE_REDIRECT)
+
+    def stop_unresolved(self, url: str):
+        """The address could not be looked up: stop before anything on the page is read,
+        typed or clicked, and leave the tab as it is."""
+        run_id = self.run["id"] if self.run else None
+        host = (urlsplit(url).hostname or "")[:200]
+        if run_id:
+            with contextlib.suppress(Exception):
+                workflow.system_line(run_id, f"address lookup failed twice · {host}")
+        raise PermissionError(LOOKUP_FAILED_AFTER_SEND if self.sending else LOOKUP_FAILED)
 
     def mark_traps(self, data: dict, frame=None):
         """Mark optional text fields nobody can see as `hidden_trap`; nothing fills or asks them.
@@ -868,6 +922,7 @@ class RecruitingBrowser:
         self.port = None
         self.page = self.run = self.observation = None
         self.lost.update(dict.fromkeys(self.pages, BROWSER_GONE))
+        self.frames.clear()
         self.pages.clear()
         self.runs.clear()
         self.dns.clear()
@@ -968,47 +1023,91 @@ class RecruitingBrowser:
                 dict(r)
                 for r in conn.execute(
                     "SELECT id,url FROM application_queue WHERE run_id IS NOT NULL AND status IN "
-                    "('NEEDS_USER','READY_FOR_REVIEW','MANUAL_TAKEOVER','PREPARING')"
+                    "('NEEDS_USER','READY_FOR_REVIEW','MANUAL_TAKEOVER','PREPARING',"
+                    "'SUBMITTING','UNKNOWN_SUBMISSION')"
                 )
                 if only is None or r["id"] == only
             ]
+        mine = set(self.own_tabs()) if only is None else set()
         runs = {}
         for item in waiting:
             run_file = state_root() / f"applications/{item['id']}/run.json"
             with contextlib.suppress(OSError, ValueError):
                 runs[item["id"]] = json.loads(run_file.read_text())
-        for page in list(self.context.pages):
-            if page.is_closed() or any(page is held for held in self.pages.values()):
-                continue
-            owner = next(
-                (
-                    item
-                    for item in waiting
-                    if item["id"] in runs
-                    and item["id"] not in self.pages
-                    and self.shows(page.url, item["url"], runs[item["id"]])
-                ),
-                None,
-            )
-            if owner:
-                self.pages[owner["id"]] = page
-                self.runs[owner["id"]] = runs[owner["id"]]
-                self.lost.pop(owner["id"], None)
-                self.watch_dialogs(page)
-            elif only is None:
+        free = [
+            page
+            for page in self.context.pages
+            if not page.is_closed() and not any(page is held for held in self.pages.values())
+        ]
+        # A tab at an application's own address first; one that only shows the same job
+        # (another spelling of its link) after, so it never takes another tab's place.
+        for exact in (True, False):
+            for page in list(free):
+                owner = next(
+                    (
+                        item
+                        for item in waiting
+                        if item["id"] in runs
+                        and item["id"] not in self.pages
+                        and self.shows(page.url, item["url"], runs[item["id"]], exact)
+                    ),
+                    None,
+                )
+                if owner:
+                    free.remove(page)
+                    self.pages[owner["id"]] = page
+                    self.runs[owner["id"]] = runs[owner["id"]]
+                    self.lost.pop(owner["id"], None)
+                    self.watch_dialogs(page)
+        for page in free:
+            if only is None and self.tab_id(page) in mine:
+                # Only a tab Rove itself opened, for a run that is over or a blank one;
+                # the owner's own tabs and one an unclear send left open stay.
                 with contextlib.suppress(PlaywrightError):
                     page.close()
 
+    TABS = "browser/tabs.json"
+
+    def own_tabs(self) -> list[str]:
+        try:
+            tabs = json.loads((state_root() / self.TABS).read_text())
+        except (OSError, ValueError):
+            return []
+        return [str(t) for t in tabs] if isinstance(tabs, list) else []
+
+    def tab_id(self, page) -> str | None:
+        """The browser's own id for a tab, which survives a reconnect."""
+        try:
+            session = self.context.new_cdp_session(page)
+            try:
+                return session.send("Target.getTargetInfo")["targetInfo"]["targetId"]
+            finally:
+                with contextlib.suppress(Exception):
+                    session.detach()
+        except Exception:  # noqa: BLE001 -- an unknown tab is treated as the owner's
+            return None
+
+    def remember_tab(self, page, target: str | None = None):
+        """Note that Rove opened this tab, so a later reconnect may close it when its run
+        is over. A tab missing from the list is never closed by Rove."""
+        target = target or self.tab_id(page)
+        if not target:
+            return
+        tabs = [t for t in self.own_tabs() if t != target][-199:] + [target]
+        with contextlib.suppress(OSError):
+            write_private(state_root() / self.TABS, tabs)
+
     @staticmethod
-    def shows(url: str, queued: str, run: dict) -> bool:
+    def shows(url: str, queued: str, run: dict, exact: bool = False) -> bool:
         """The tab's address is a page of this application: its posting, its target, or
-        the page it last observed (a form on another host after an Apply link)."""
+        the page it last observed (a form on another host after an Apply link). `exact`
+        asks for that address itself (or a page under it), not only the same job."""
         if not str(url or "").startswith(("https://", "http://")):
             return False  # a blank tab or the browser's own error page is nobody's
         for known in (queued, run.get("target_url"), run.get("url")):
             if not known or not str(known).startswith(("https://", "http://")):
                 continue
-            if same_job(known, url) or url.startswith(str(known).rstrip("/")):
+            if url.startswith(str(known).rstrip("/")) or (not exact and same_job(known, url)):
                 return True
         return False
 
@@ -1017,14 +1116,16 @@ class RecruitingBrowser:
         if self.cdp is None:
             page = self.context.new_page()
             self.watch_dialogs(page)
+            self.remember_tab(page)
             return page
         first = not any(not page.is_closed() for page in self.context.pages)
         with self.context.expect_page(timeout=15000) as created:
-            self.cdp.send(
+            target = self.cdp.send(
                 "Target.createTarget",
                 {"url": "about:blank", "newWindow": first, "background": True},
             )
         self.watch_dialogs(created.value)
+        self.remember_tab(created.value, (target or {}).get("targetId"))
         return created.value
 
     @contextlib.contextmanager
@@ -1232,6 +1333,9 @@ class RecruitingBrowser:
             self.page.wait_for_function(RENDERED_JS, timeout=timeout)
         except PlaywrightError:
             pass
+        # The wait may have ended on another page: checked again before anything is
+        # clicked, and again before each click below.
+        self.require_public_page()
         self.dismiss_consent()
         self.clear_overlays()
         try:
@@ -1404,6 +1508,7 @@ class RecruitingBrowser:
         try:
             if not self.page.evaluate(CONSENT_JS):
                 return
+            self.require_public_page()
             self.click(self.page.locator('[data-rove-consent="1"]').first, timeout=3000)
             self.page.wait_for_function(
                 "() => { const b = document.querySelector('[data-rove-consent]');"
@@ -1431,6 +1536,10 @@ class RecruitingBrowser:
             if self.wait_for_child_form(5000):
                 frame, data = self.read_form()
         if frame is not main:
+            if frame.url.startswith(("https://", "http://")):
+                # Data is typed into the frame: its own address must be public too. A
+                # frame written by the page itself (about:srcdoc) is the page's own.
+                self.require_public(frame.url)
             # The tab shows the employer's page; the form, its address and everything the
             # observation names belong to the frame.
             data["page_url"] = self.page.url
@@ -1678,6 +1787,7 @@ class RecruitingBrowser:
             self.require_public_page()
         fresh = [p for p in self.context.pages if p not in old_pages]
         if fresh:
+            self.remember_tab(fresh[-1])
             # The link opened its own tab, which loaded outside the route guard.
             self.page = fresh[-1]
             self.pages[run_id] = self.page
@@ -2222,6 +2332,7 @@ class RecruitingBrowser:
             return False
 
     def press_overlay_button(self, overlay: dict, button: dict) -> bool:
+        self.require_public_page()
         locator = self.overlay_frame(overlay).locator(
             f'[data-rove-overlay-button="{int(button["ref"])}"]'
         )
@@ -2235,6 +2346,7 @@ class RecruitingBrowser:
         """Close one pop-up: its control, then Escape, then its backdrop; how, or None."""
         if button is not None and self.press_overlay_button(overlay, button):
             return f"button “{button['label']}”"
+        self.require_public_page()
         with contextlib.suppress(PlaywrightError):
             self.page.keyboard.press("Escape")
         if self.overlay_gone(overlay, 1200):
@@ -2248,6 +2360,7 @@ class RecruitingBrowser:
                 box = frame.frame_element().bounding_box()
                 point = [point[0] + box["x"], point[1] + box["y"]] if box else None
         if point:
+            self.require_public_page()
             with contextlib.suppress(PlaywrightError):
                 self.page.mouse.click(point[0], point[1])
             if self.overlay_gone(overlay, 1200):

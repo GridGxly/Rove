@@ -16,6 +16,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -985,9 +986,9 @@ def test_only_public_https_urls_are_allowed_destinations(state, monkeypatch):
     ):
         assert not browser.allowed(refused), refused
     # A redirect hop may be plain HTTP on its way to HTTPS, and nothing else.
-    assert browser.public_hop("http://jobs.example.com/old-path?id=1")
-    assert browser.public_hop("http://jobs.example.com:80/")
-    assert browser.public_hop("https://jobs.example.com/posting")
+    assert browser.public_hop("http://jobs.example.com/old-path?id=1") == "public"
+    assert browser.public_hop("http://jobs.example.com:80/") == "public"
+    assert browser.public_hop("https://jobs.example.com/posting") == "public"
     for refused in (
         "http://jobs.example.com:8080/",
         "http://127.0.0.1/",
@@ -999,13 +1000,13 @@ def test_only_public_https_urls_are_allowed_destinations(state, monkeypatch):
         "file:///etc/passwd",
         "",
     ):
-        assert not browser.public_hop(refused), refused
+        assert browser.public_hop(refused) == "private", refused
     # A name that stops resolving, or starts resolving privately, is refused once the
     # minute-long cache expires.
     browser.dns["jobs.example.com"] -= 120
     resolves_to(monkeypatch, "10.1.2.3")
     assert not browser.allowed("https://jobs.example.com/posting")
-    assert not browser.public_hop("http://jobs.example.com/old-path")
+    assert browser.public_hop("http://jobs.example.com/old-path") == "private"
 
 
 # ---------------------------------------------------------------------------
@@ -2008,6 +2009,105 @@ def test_nothing_slow_runs_between_the_claim_and_the_click(board, site, monkeypa
     assert status_at_outcome == ["APPLIED"]
 
 
+def test_a_redirect_to_a_private_address_while_settling_is_caught_before_any_click(
+    board, site, internal, monkeypatch
+):
+    """Finding 6: the page moves on during the settle wait, through a redirect the route
+    never sees, to a private address that shows a cookie banner: nothing there is
+    clicked, read or kept."""
+    runtime, _base, state = board
+    only_public(monkeypatch, site)
+    Site.pages["/acme/jobs/811"] = (
+        b"<!doctype html><title>Loading</title><p>One moment.</p>"
+        b"<script>setTimeout(() => location.assign('/acme/jobs/812'), 300)</script>"
+    )
+    Site.redirects["/acme/jobs/812"] = internal + "/admin"
+    clicked = []
+    original = runtime.click
+    monkeypatch.setattr(
+        runtime,
+        "click",
+        lambda locator, *a, **k: (clicked.append(runtime.page.url), original(locator, *a, **k)),
+    )
+    with pytest.raises(PermissionError) as stopped:
+        runtime.open(site + "/acme/jobs/811")
+    assert owner_words(str(stopped.value)).startswith("The page sent the recruiting browser")
+    assert "/admin" in Internal.hits  # the redirect itself cannot be stopped in flight
+    assert clicked == []  # the private page's banner was never clicked
+    assert runtime.page.is_closed()
+    nothing_captured(state)
+
+
+def test_a_failed_address_lookup_stops_plainly_and_keeps_the_tab(board, site, monkeypatch):
+    """Finding 7: a lookup that fails is not a private address. It is tried again; then the
+    run stops with its own plain reason, the tab stays open, and no "redirect blocked"
+    card claims anything about what was sent."""
+    runtime, _base, _state = board
+    only_public(monkeypatch, site)
+    Site.pages["/acme/jobs/813"] = live.FORM
+    opened = runtime.open(site + "/acme/jobs/813")
+    lookups = []
+
+    def failing(url):
+        lookups.append(url)
+        raise socket.gaierror(8, "nodename nor servname provided, or not known")
+
+    monkeypatch.setattr(live_browser, "validate_destination", failing)
+    monkeypatch.setattr(live_browser, "LOOKUP_RETRY_SECONDS", 0, raising=False)
+    runtime.dns.clear()
+    with pytest.raises(PermissionError) as stopped:
+        runtime.observe()
+    words = owner_words(str(stopped.value))
+    assert words == owner_words(live_browser.LOOKUP_FAILED)
+    assert "could not look up" in words and "nothing" not in words.split(".")[-1]
+    assert len(lookups) == 2  # tried again before stopping
+    assert not runtime.page.is_closed() and opened["run_id"] in runtime.pages
+    with workflow.db() as conn:
+        kinds = [r[0] for r in conn.execute("SELECT kind FROM application_events")]
+    assert "redirect_blocked" not in kinds
+    # During a send's click the same failure never says that nothing was sent.
+    runtime.sending = True
+    runtime.dns.clear()
+    with pytest.raises(PermissionError) as after_send:
+        runtime.observe()
+    runtime.sending = False
+    words = owner_words(str(after_send.value))
+    assert "unclear" in words and "nothing was sent" not in words.lower()
+
+
+def test_a_redirect_after_the_click_never_says_nothing_was_sent(board, site, internal, monkeypatch):
+    """Finding 7: after a send's click the tab may still be closed for a private address,
+    but the card says the outcome is unclear, never that nothing was sent."""
+    runtime, _base, state = board
+    live.generic_only(monkeypatch)
+    only_public(monkeypatch, site)
+    Site.pages["/acme/jobs/814"] = generic_form_with(
+        b"""document.querySelector('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  await fetch(location.pathname, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+  location.assign('/acme/jobs/815');
+});"""
+    )
+    Site.redirects["/acme/jobs/815"] = internal + "/thanks"
+    run_id, package_hash = live.prepared(runtime, site, state, 814)
+    approve(run_id, package_hash)
+    result = submission.submit(runtime, run_id, package_hash, "msg-1")
+    assert result["status"] == "UNKNOWN_SUBMISSION", result
+    assert "unclear" in result["reason"] and "nothing was sent" not in result["reason"].lower()
+    with workflow.db() as conn:
+        blocked = [
+            json.loads(r[0])
+            for r in conn.execute(
+                "SELECT data FROM application_events WHERE kind='redirect_blocked'"
+            )
+        ]
+    assert blocked and blocked[-1]["after_send"] is True
+    card = workflow.event_embeds(run_id, "redirect_blocked", blocked[-1])[0]
+    assert "unclear" in card["description"] and "sent" not in card["description"].replace(
+        "the send", ""
+    )
+
+
 THANKS_THEN_ERROR = b"""document.querySelector('form').addEventListener('submit', async e => {
   e.preventDefault();
   await fetch(location.pathname, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
@@ -2257,20 +2357,15 @@ def test_a_tab_the_daemon_lost_sight_of_is_adopted_back_instead_of_refused(board
     assert first not in runtime.pages
 
 
-def test_a_dropped_devtools_session_reconnects_and_keeps_the_open_tabs(
-    board, site, monkeypatch, tmp_path
-):
-    """The Rove Browser stays up while the daemon's DevTools session dies (a laptop sleep):
-    the next call reconnects to the same browser, adopts the tab back, and goes on."""
-    runtime, _base, _state = board
-    Site.pages["/acme/jobs/610"] = live.FORM
-    executable = runtime_executable()
+@contextlib.contextmanager
+def running_chrome(runtime, tmp_path):
+    """A browser that outlives the daemon's session, reached over DevTools as the Rove
+    Browser is: the fixture Chromium, headless and with the mock keychain, so macOS is
+    never asked for a keychain and no dialog reaches the owner's screen."""
     port = live_browser.free_port()
-    # Started the way Playwright starts its own: headless, and with the mock keychain, so
-    # macOS is never asked for a keychain and no dialog reaches the owner's screen.
     chrome = subprocess.Popen(
         [
-            executable,
+            runtime_executable(),
             "--headless=new",
             f"--remote-debugging-port={port}",
             f"--user-data-dir={tmp_path / 'profile'}",
@@ -2296,6 +2391,23 @@ def test_a_dropped_devtools_session_reconnects_and_keeps_the_open_tabs(
 
         runtime.launcher = Running()
         runtime.headless = False
+        yield port
+    finally:
+        with contextlib.suppress(Exception):
+            runtime.playwright.stop()
+        runtime.context = runtime.playwright = runtime.browser = None
+        chrome.terminate()
+        chrome.wait(10)
+
+
+def test_a_dropped_devtools_session_reconnects_and_keeps_the_open_tabs(
+    board, site, monkeypatch, tmp_path
+):
+    """The Rove Browser stays up while the daemon's DevTools session dies (a laptop sleep):
+    the next call reconnects to the same browser, adopts the tab back, and goes on."""
+    runtime, _base, _state = board
+    Site.pages["/acme/jobs/610"] = live.FORM
+    with running_chrome(runtime, tmp_path):
         logged = []
         monkeypatch.setattr(workflow, "system_line", lambda app, text: logged.append(text))
         opened = ask_daemon(runtime, action="open", url=site + "/acme/jobs/610")["result"]
@@ -2315,12 +2427,38 @@ def test_a_dropped_devtools_session_reconnects_and_keeps_the_open_tabs(
         runtime.lost[run_id] = live_browser.TAB_GONE
         gone = ask_daemon(runtime, action="prepare", run_id=run_id)
         assert owner_words(gone["error"]).startswith("The recruiting browser stopped answering")
-    finally:
-        with contextlib.suppress(Exception):
-            runtime.playwright.stop()
-        runtime.context = runtime.playwright = runtime.browser = None
-        chrome.terminate()
-        chrome.wait(10)
+
+
+def test_a_reconnect_keeps_an_unclear_sends_tab_and_every_tab_rove_did_not_open(
+    board, site, monkeypatch, tmp_path
+):
+    """Finding 8: after a reconnect, the tab of a send the owner is told to check stays
+    open and is adopted back, a tab the owner opened by hand stays, and only a tab Rove
+    opened for a run that is over is closed."""
+    runtime, _base, _state = board
+    for job in (620, 621):
+        Site.pages[f"/acme/jobs/{job}"] = live.FORM
+    Site.pages["/acme/jobs/699"] = b"<!doctype html><title>Owner's reading</title><p>Hi</p>"
+    with running_chrome(runtime, tmp_path) as port:
+        monkeypatch.setattr(workflow, "system_line", lambda app, text: None)
+        unclear = ask_daemon(runtime, action="open", url=site + "/acme/jobs/620")["result"]
+        done = ask_daemon(runtime, action="open", url=site + "/acme/jobs/621")["result"]
+        workflow.set_state(unclear["run_id"], "UNKNOWN_SUBMISSION")
+        workflow.set_state(done["run_id"], "APPLIED")
+        # The owner opens a tab of his own in the same browser.
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/json/new?{site}/acme/jobs/699", method="PUT"
+        )
+        with urllib.request.urlopen(request, timeout=10) as reply:
+            assert reply.status == 200
+        time.sleep(0.5)
+        runtime.playwright.stop()
+        assert "error" not in ask_daemon(runtime, action="observe", run_id=unclear["run_id"])
+        urls = sorted(page.url for page in runtime.context.pages if not page.is_closed())
+        assert site + "/acme/jobs/620" in urls  # the unclear send's tab, adopted back
+        assert site + "/acme/jobs/699" in urls  # the owner's own tab, untouched
+        assert site + "/acme/jobs/621" not in urls  # Rove's tab of a finished run
+        assert runtime.pages[unclear["run_id"]].url == site + "/acme/jobs/620"
 
 
 def runtime_executable() -> str:
