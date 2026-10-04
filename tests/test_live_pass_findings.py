@@ -605,6 +605,13 @@ def test_text_updates_and_other_roles_take_the_owners_standing_yes():
         TEXT_OPTIONS[0],
         "policy.default.contact_consent",
     )
+    by_method = (
+        "I agree to receive Northwind recruiting related messages via the communication "
+        "method I have selected above. Please review our Terms and Conditions and Privacy "
+        "Policy."
+    )
+    assert classify(by_method).canonical_id == "contact_consent"
+    assert answer(by_method, kind="checkbox") == ("Yes", "policy.default.contact_consent")
     assert classify(OTHER_ROLES).canonical_id == "talent_network_opt_in"
     assert answer(OTHER_ROLES, YES_NO)[0] == "Yes"
     # A line that asks for more than contact is not this question.

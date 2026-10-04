@@ -1367,6 +1367,44 @@ def test_a_verification_code_comes_only_from_a_verified_sender_after_the_moment(
     assert not any("/folders/" + SPAM in path for _, _, path in calls)
 
 
+def test_a_code_from_the_employers_own_domain_counts_only_when_the_mail_names_the_employer(
+    state, monkeypatch
+):
+    # A board may send its codes from the employer's own mail domain, which no address
+    # of the application names. The mail must then say whose it is, and be verified.
+    configure(state)
+    recorder(monkeypatch)
+    since = datetime.fromtimestamp(NOW_MS / 1000, UTC)
+    own = "careers@northwind.example"
+    messages = [
+        message("2101", own, "Northwind Credit Union: your verification code", NOW_MS + 1000),
+        message("2102", "alerts@bank.example", "Your verification code", NOW_MS + 2000),
+        message("2103", "someone@gmail.com", "Northwind verification code", NOW_MS + 3000),
+    ]
+    contents = {
+        "2101": "<p>Your verification code is 482913</p>",
+        "2102": "<p>Your verification code is 777777</p>",
+        "2103": "<p>Your verification code is 555555</p>",
+    }
+    stored = {
+        "2101": zoho_stored_headers(own, "Northwind Credit Union Careers"),
+        "2102": zoho_stored_headers("alerts@bank.example", "Example Bank"),
+        "2103": zoho_stored_headers("someone@gmail.com", "Northwind"),
+    }
+    fake_zoho(monkeypatch, messages, contents, stored)
+    board = ["board.example", "boardmail.example"]
+    # Without the employer's name only the board's own domains count.
+    assert mail.verification_code(board, since, (6, 6)) is None
+    # With it: the employer's verified mail, never another service's code that arrived
+    # later, and never a public mailbox that only claims the name.
+    assert mail.verification_code(board, since, (6, 6), ["Northwind Credit Union"]) == "482913"
+    assert mail.verification_code(board, since, (6, 6), ["Globex"]) is None
+    assert mail.verification_code(board, since, (6, 6), ["nw"]) is None  # too short to tell
+    failing = zoho_stored_headers(own, checks="dmarc=fail header.from=<{address}>")
+    fake_zoho(monkeypatch, messages, contents, {**stored, "2101": failing})
+    assert mail.verification_code(board, since, (6, 6), ["Northwind Credit Union"]) is None
+
+
 def test_a_message_zoho_no_longer_has_is_passed_over_not_retried_forever(state, monkeypatch):
     configure(state)
     posted = recorder(monkeypatch)

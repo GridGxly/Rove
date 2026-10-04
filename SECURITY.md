@@ -146,7 +146,7 @@ Keep these manual unless a future reviewed design explicitly adds support.
 
 ### MFA
 
-Email verification may be passed through a narrow broker. SMS codes, authenticator apps, security keys, CAPTCHA, and unusual identity checks should pause for manual action.
+Email verification is passed through a narrow broker: a code a site mails to the owner's application address is read from his own mailbox, only from the site's own authenticated sender and only for the step that asked for it, and it is never logged or stored. SMS codes, authenticator apps, security keys, CAPTCHA, and unusual identity checks pause for manual action. After a CAPTCHA the owner solved, Rove continues in the same tab without being told.
 
 ## Obsidian vault boundaries
 

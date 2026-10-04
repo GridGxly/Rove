@@ -167,7 +167,13 @@ When no value is known, the daemon opens the list once to read its options so Qw
 
 ### Multi-page forms
 
-When a page is complete, has no final Submit control and shows a Next or Continue control, the daemon clicks it, waits for the next step's fields, and fills again. It does this for at most four pages.
+When a page is complete, has no final Submit control and shows a Next or Continue control, the daemon clicks it, waits for the next step's fields, and fills again. It does this for at most eight pages.
+
+A first step that only asks for an email address to start under (an email field, at most two more fields, and a Next control) counts as the form's first page. It is filled from the profile like any other page, after the fit review and the site check.
+
+When a step does not move, the data requests the page made during the click (method, path and status, never a query string or a body) are saved as `step-stuck.json`, and the system log gets one line with their count and statuses.
+
+If the page after a Next click reads as the site's own "application received" page, the run stops with "The site may have taken the application". It is never counted as sent on a guess: the owner looks and replies `applied` or `park it`.
 
 If the click leaves the same page with a validation message about the phone, the other phone format is tried once. If the form never reaches a step with exactly one final control, the run ends with "Final step not reached" and the site's message when there is one. A form in that state is never called ready.
 
@@ -184,6 +190,20 @@ Sending checks the live page against this package field by field. See [Applicati
 ## The submit guard
 
 Every page in the Rove Browser gets a script that blocks form submission events unless a flag on the document is set. Submission code sets the flag for one click and removes it afterward. The guard stops accidental submits during preparation, including the Enter key in a field. It is not a network-level guarantee against a page script that posts on its own.
+
+Some sites wire a step's Next control as a submit of that step's own form. The flag is therefore also set for the one observed click on a control read as Next or Continue, and removed as soon as the step was taken. It is never set for any other click during preparation.
+
+## Steps in front of the form
+
+Two kinds of step are not questions, and `gates.py` holds their rules.
+
+**A picture check (CAPTCHA).** Rove never solves one and never works around one. When a challenge is on screen, on the page as opened or after a Next click, the run stops with one card, "CAPTCHA needs you", and the tab stays as it is. Each worker tick then asks the daemon whether that tab still shows the challenge and whether the page has moved on since (`challenge`, which only looks). When the challenge is gone and the page moved, the application goes back to the front of the queue by itself, the card is withdrawn, and the next pass reads the tab in place instead of loading the posting again, so what the owner did there is kept. A challenge that was closed without the page moving changes nothing.
+
+**A code mailed to the owner's application address.** A page that says it sent a code and shows the boxes for one (a single box, or four to eight one-character boxes) is a code step. The daemon reads the code from the owner's own Zoho mailbox with `mail.verification_code`: only Inbox mail that arrived after the step that asked for it, only from the site's own mail domains (the form's domain, its board's sending domain, such as `oracle.com` for `oraclecloud.com`), and only when Zoho's verdict says that domain really sent it. It waits up to two minutes, types the code into the boxes it read, presses the one control that reads as Verify or Continue, and goes on. The code is never logged, saved or posted; the thread gets one line. When no code arrives or the site refuses it, the run stops with a card and the step is the owner's. A page that says its code came by text message, a call or an authenticator app is never a code step: those stay manual.
+
+A page's own loading screen (no words, no buttons, a spinner or progress mark over the window) is waited out for up to fifteen seconds and is never treated as a pop-up to close.
+
+Requests for `blob:` and `data:` addresses are let through the public-HTTPS filter: they are content the page already holds, not a destination.
 
 ## Sign-in and account pages
 

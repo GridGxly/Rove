@@ -151,7 +151,9 @@ Every stop is one card in the thread and one in an owner channel, with the repli
 | Verify the account email | The account was created and the site wants the email verified. | `go` after opening the link |
 | Sign-in needs you | A sign-in page with no stored account, or the stored sign-in failed. | `go` after signing in |
 | Manual step in the browser | The page has a field labeled social security, passport, bank account or verification code. | `go` after finishing it |
-| CAPTCHA needs you | A CAPTCHA challenge is visible. | `go` after solving it |
+| CAPTCHA needs you | A CAPTCHA challenge is visible, on the page as opened or after a step. Rove carries on by itself in the same tab once it is solved. | none needed; `go` also works, `park it` |
+| A step in the browser needs you | The site mailed a code to the application address and none arrived within two minutes, or the site refused it. | `go` after entering it, `park it` |
+| The site may have taken the application | After a Next click the page read as the site's "application received" page, before the send step. | `applied`, `park it` |
 | Blocked by the employer's site | The site showed a block page twice. | `applied`, `park it` |
 | The site says you already applied | The page says an application already exists. | `applied`, `park it` |
 | Resume needs review | Erga's PDF failed Rove's validation, or there is no approved base PDF to fall back on. | `go`, `park it` |
@@ -173,7 +175,7 @@ Every stop is one card in the thread and one in an owner channel, with the repli
 
 A posting whose page says it no longer accepts applications is parked with a line in the thread and no card.
 
-Rove never solves a CAPTCHA, never completes MFA, and never types a password it did not generate itself. It uses no proxies.
+Rove never solves a CAPTCHA, never completes MFA, and never types a password it did not generate itself. It uses no proxies. The one code it enters is a code a site mails to the owner's application address, read from his own mailbox as described in [Browser automation](browser-automation.md#steps-in-front-of-the-form).
 
 ### Where a form may be filled
 

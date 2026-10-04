@@ -7,7 +7,7 @@
       "src/rove/dates.py": 1,
       "src/rove/delivery.py": 1,
       "src/rove/discord_feed.py": 2,
-      "src/rove/live_browser.py": 6,
+      "src/rove/live_browser.py": 5,
       "src/rove/mail.py": 5,
       "src/rove/overlays.py": 1,
       "src/rove/questions.py": 3,
@@ -19,7 +19,7 @@
       "src/rove/cli.py": 1,
       "src/rove/delivery.py": 1,
       "src/rove/draft_guard.py": 1,
-      "src/rove/live_browser.py": 4,
+      "src/rove/live_browser.py": 3,
       "src/rove/mail.py": 2,
       "src/rove/memory_channel.py": 1,
       "src/rove/submission.py": 1,
@@ -27,7 +27,6 @@
     },
     "attr-defined": {
       "src/rove/cli.py": 5,
-      "src/rove/live_browser.py": 79,
       "src/rove/postings.py": 2
     },
     "call-arg": {
@@ -42,14 +41,13 @@
       "src/rove/discord_feed.py": 4,
       "src/rove/form_frames.py": 1,
       "src/rove/intake.py": 1,
-      "src/rove/live_browser.py": 23,
+      "src/rove/live_browser.py": 1,
       "src/rove/memory_channel.py": 1,
       "src/rove/questions.py": 2,
       "src/rove/reasoning.py": 6
     },
     "list-item": {
-      "src/rove/questions.py": 1,
-      "src/rove/workflow.py": 19
+      "src/rove/questions.py": 1
     },
     "misc": {
       "src/rove/boards/bamboohr.py": 1,
@@ -72,7 +70,6 @@
     "union-attr": {
       "src/rove/delivery.py": 1,
       "src/rove/discord_feed.py": 4,
-      "src/rove/live_browser.py": 5,
       "src/rove/mail.py": 1,
       "src/rove/onboarding.py": 1,
       "src/rove/reasoning.py": 4,
@@ -83,7 +80,7 @@
       "src/rove/benchmark.py": 1,
       "src/rove/evidence.py": 1,
       "src/rove/intake.py": 1,
-      "src/rove/live_browser.py": 10,
+      "src/rove/live_browser.py": 4,
       "src/rove/mail.py": 3,
       "src/rove/matching.py": 1,
       "src/rove/research.py": 1,

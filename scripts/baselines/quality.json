@@ -42,7 +42,7 @@
       "src/rove/inbound.py": 2,
       "src/rove/intake.py": 1,
       "src/rove/job_index.py": 1,
-      "src/rove/live_browser.py": 54,
+      "src/rove/live_browser.py": 53,
       "src/rove/mail.py": 2,
       "src/rove/matching.py": 1,
       "src/rove/memory_channel.py": 1,
@@ -184,7 +184,7 @@
     },
     "SIM105": {
       "src/rove/boards/base.py": 1,
-      "src/rove/live_browser.py": 7,
+      "src/rove/live_browser.py": 6,
       "src/rove/submission.py": 3,
       "tests/test_form_steps.py": 1
     },

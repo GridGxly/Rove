@@ -281,6 +281,18 @@ def retry_later(application_id: str, phase: str):
         )
 
 
+def retry_later_first(application_id: str, phase: str = "owner_step"):
+    """Put an application the owner just unblocked at the front of the queue: it is
+    picked up before anything new, like a quiet second try, without counting a failure
+    against it."""
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO preparation_attempts VALUES(?,?,0,'',1,?) ON CONFLICT(application_id,"
+            "phase) DO UPDATE SET retry_due=1,updated_at=excluded.updated_at",
+            (application_id, phase, workflow.now()),
+        )
+
+
 def forget(application_id: str, phase: str | None = None):
     """A card went to the owner, or a pass went through: the count starts again."""
     with db() as conn:

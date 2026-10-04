@@ -1337,7 +1337,7 @@ def draft_lines(pairs, limit: int = 10) -> str:
     return "\n".join(lines)
 
 
-def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
+def event_embeds(application_id: str, kind: str, data: dict) -> list:
     """Glanceable forum entries: one card per event, values in fields, commands in code.
 
     Items are cards (dicts), quiet lines (strings) and, for a file, one
@@ -1522,6 +1522,10 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         return [f"→ Qwen did not finish {doing(str(data.get('phase') or ''))}"]
     if kind in {"model_unavailable", "discord_tag_failed"}:
         return []  # a wait or a cosmetic miss: the system log has it, the thread does not
+    if kind == "mailed_code":
+        return ["→ Entered the code the site mailed to your address"]
+    if kind == "captcha_cleared":
+        return ["→ You solved the picture check · carrying on"]
     if kind == "owner_answer":
         label = clip(data.get("label") or "the question", 90)
         if data.get("proposal_hash"):
@@ -2356,16 +2360,26 @@ def action_needed(
     headline: str | None = None,
     items=None,
     channel: str = "action",
+    watch: str = "",
+    in_place: bool = False,
 ):
-    """One card in the thread and one in an owner channel: what happened, what to reply."""
+    """One card in the thread and one in an owner channel: what happened, what to reply.
+
+    `watch` names something Rove keeps an eye on to carry on by itself ("captcha": the
+    picture check leaving the screen). `in_place` says the next pass reads the tab as the
+    owner left it instead of loading the posting again."""
     item = get(application_id)
-    payload = {
+    payload: dict = {
         "reason": reason,
         "questions": list(questions or []),
         "commands": list(commands or []),
         "headline": headline,
         "items": list(items or []),
     }
+    if watch:
+        payload["watch"] = watch
+    if in_place:
+        payload["in_place"] = True
     record(application_id, "needs_action", payload)
     # The owner's card first: the thread may have a pass worth of entries to post. The
     # card also becomes the thread's status card; the thread itself gets one line.

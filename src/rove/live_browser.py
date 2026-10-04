@@ -20,7 +20,9 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from patchright.sync_api import Error as PlaywrightError
@@ -32,6 +34,7 @@ from . import (
     dates,
     form_frames,
     form_reading,
+    gates,
     overlays,
     questions,
     recovery,
@@ -418,6 +421,9 @@ PREPARE_GUARD = (
     "e.preventDefault();e.stopImmediatePropagation();}},true)"
 )
 
+ARM_JS = "() => document.documentElement.setAttribute('data-rove-submit-armed', '1')"
+DISARM_JS = "() => document.documentElement.removeAttribute('data-rove-submit-armed')"
+
 BLOCK_MARKERS = re.compile(
     r"access denied|pardon our interruption|request unsuccessful|verify (?:that )?you are (?:a )?human"
     r"|just a moment\.\.\.|attention required|are you a robot|checking your browser"
@@ -719,6 +725,29 @@ CONSENT_JS = """() => {
 }"""
 
 
+# How long a code the site mails may take to arrive.
+CODE_WAIT_SECONDS = 120
+# A picture check that is on screen: its challenge frame is shown at a size to be worked.
+CAPTCHA_SHOWING_JS = """() => [...document.querySelectorAll(
+  'iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],' +
+  'iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"]')]
+  .some(e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return !!e.getClientRects().length && s.visibility !== 'hidden' && r.width >= 200
+      && r.height >= 60 && r.bottom > 0 && r.top < innerHeight; })"""
+# Addresses that are the page's own content, not a place on the network.
+LOCAL_CONTENT = ("blob:", "data:")
+# The page's address and how many controls and dialogs it shows, and whether that changed.
+PAGE_STATE = (
+    "[location.href, document.querySelectorAll("
+    "'input:not([type=hidden]),select,textarea,[role=dialog],dialog[open]').length]"
+)
+WHERE_JS = f"() => {PAGE_STATE}"
+MOVED_JS = (
+    f"before => {{ const now = {PAGE_STATE}; "
+    "return now[0] !== before[0] || now[1] !== before[1]; }"
+)
+
+
 class RecruitingBrowser:
     # What a school picker chose instead of the name ("Other"), or why it chose nothing.
     picked_label: str | None = None
@@ -726,19 +755,20 @@ class RecruitingBrowser:
 
     def __init__(self, headless: bool = False):
         self.headless = headless
-        self.playwright = None
-        self.context = None
-        self.page = None
-        self.run = None
-        self.observation = None
-        self.dns = {}
-        self.runs = {}
-        self.pages = {}
-        self.browser = None
-        self.cdp = None
-        self.warmed = set()
-        self.hops = []
-        self.secrets = set()
+        # The driver's objects and the current run are set once the browser is reached.
+        self.playwright: Any = None
+        self.context: Any = None
+        self.page: Any = None
+        self.run: Any = None
+        self.observation: Any = None
+        self.dns: dict[str, float] = {}
+        self.runs: dict[str, dict] = {}
+        self.pages: dict[str, Any] = {}
+        self.browser: Any = None
+        self.cdp: Any = None
+        self.warmed: set[str] = set()
+        self.hops: list[str] = []
+        self.secrets: set[str] = set()
         # Applications whose tab went with a session that was dropped, and the plain words
         # that say what happened to it.
         self.lost: dict[str, str] = {}
@@ -783,7 +813,10 @@ class RecruitingBrowser:
             return
         mark_handled(route)
         try:
-            allowed = self.allowed(route.request.url)
+            url = route.request.url
+            # A blob: or data: address is content the page already holds (a worker's own
+            # script, an inline image): it names no destination, so nothing is reached.
+            allowed = url.startswith(LOCAL_CONTENT) or self.allowed(url)
         except Exception:  # noqa: BLE001 -- an unreadable request is never let through
             allowed = False
         with contextlib.suppress(PlaywrightError):
@@ -1439,6 +1472,20 @@ class RecruitingBrowser:
                 return False
             self.page.wait_for_timeout(200)
 
+    def wait_for_reading(self, seconds: float = 10.0) -> bool:
+        """Bounded wait until the page reads as something to act on: a field, an Apply
+        link or a sign-in control, by the same reading an observation uses. A page may
+        hold its inputs in the document for a while before it shows them."""
+        deadline = time.monotonic() + seconds
+        while True:
+            with contextlib.suppress(PlaywrightError):
+                _frame, data = self.read_form()
+                if any(data.get(k) for k in ("fields", "application_links", "auth_controls")):
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            self.page.wait_for_timeout(400)
+
     def wait_for_child_form(self, timeout_ms: int) -> bool:
         """Bounded wait for a child frame that may hold a form to show a control."""
         main = self.page.main_frame
@@ -1623,8 +1670,16 @@ class RecruitingBrowser:
             data["auth_page"] = (
                 "register" if len(passwords) >= 2 or "register" in intents else "login"
             )
+        # A code the site mailed to the owner's address is Rove's to fetch and type.
+        with contextlib.suppress(PlaywrightError):
+            data["code_step"] = gates.code_step(
+                data.get("text", ""), frame.evaluate(gates.CODE_BOXES_JS)
+            )
         # Secrets/identity steps are kept out of saved screenshots and model context.
-        if passwords or any(questions.manual_only(f["label"]) for f in data["fields"]):
+        if passwords or (
+            not data.get("code_step")
+            and any(questions.manual_only(f["label"]) for f in data["fields"])
+        ):
             data["text"] = data["text"][:1500]
             data["fields"] = [{k: v for k, v in f.items() if k != "value"} for f in data["fields"]]
             data["manual_takeover_required"] = True
@@ -1648,18 +1703,27 @@ class RecruitingBrowser:
             wanted = option["label"] in labels
             if member.is_checked() == wanted:
                 continue
-            try:
-                member.set_checked(wanted, timeout=3000)
-            except PlaywrightError as error:
-                if overlays.blocked_click(error):
-                    raise  # something sits on top of the form: cleared, then tried again
-                # Styled boxes hide the input; its associated label is the visible target.
-                target = member.get_attribute("id")
-                if target:
-                    self.form.locator(f'label[for="{target}"]').first.click()
+            self.set_box(member, wanted)
             if member.is_checked() != wanted:
                 return False
         return True
+
+    def set_box(self, box, wanted: bool):
+        """Tick or clear one checkbox or radio. A styled box hides its input (no size, no
+        opacity): its label is the visible target then."""
+        try:
+            box.set_checked(wanted, timeout=3000)
+        except PlaywrightError as error:
+            target = box.get_attribute("id")
+            label = self.form.locator(f'label[for="{target}"]') if target else None
+            if label is not None and label.count() and label.first.is_visible():
+                # What sits on top of a styled box is its own label. Its text may hold
+                # links (terms, a policy): the click goes to its edge, not to a link.
+                label.first.click(position={"x": 4, "y": 4}, timeout=5000)
+            elif overlays.blocked_click(error):
+                raise  # something else sits on top of the form: cleared, then tried again
+            else:
+                box.evaluate("e => e.click()")
 
     def fill_read_question(
         self,
@@ -1725,7 +1789,10 @@ class RecruitingBrowser:
         )
         return True
 
-    def open(self, url: str) -> dict:
+    def open(self, url: str, in_place: bool = False) -> dict:
+        """Open an application's posting, or with `in_place` read the tab as it stands
+        when it is still open inside that job's application: the owner finished a step
+        there himself (a picture check), and a fresh load would undo it."""
         target = validate_destination(url.strip().strip("<>\"'"))
         approved = read_approved()
         self.ensure()
@@ -1736,10 +1803,14 @@ class RecruitingBrowser:
         if existing["status"] in {"APPLIED", "SUBMITTING", "UNKNOWN_SUBMISSION"}:
             raise PermissionError("Existing submission or uncertain attempt blocks reopening")
         if run_id in self.pages and not self.pages[run_id].is_closed():
-            # A reopened application starts from a fresh load of its page: no half-filled
-            # form, no toggled choices, no attached file the site hid its input for.
             self.page, self.run = self.pages[run_id], self.runs[run_id]
             with self.guarded(self.page):
+                if in_place and self.inside_application(target):
+                    self.settle()
+                    return self.observe()
+                # A reopened application starts from a fresh load of its page: no
+                # half-filled form, no toggled choices, no attached file the site hid
+                # its input for.
                 self.navigate(target)
                 return self.observe()
         self.run = {
@@ -1788,6 +1859,94 @@ class RecruitingBrowser:
         workflow.flush_events(run_id)
         return result
 
+    def where(self) -> list:
+        """The page as it stands before a click: its address and how many controls and
+        dialogs it shows. A page that swaps its view changes one of them."""
+        return self.form.evaluate(WHERE_JS)
+
+    def inside_application(self, target: str) -> bool:
+        """Whether the tab is past the posting and still inside this job's application:
+        the same site, an address under the posting's own (its apply steps)."""
+        here, there = urlsplit(self.page.url), urlsplit(target)
+        return (
+            (here.scheme, here.hostname, here.port) == (there.scheme, there.hostname, there.port)
+            and here.path.rstrip("/") != there.path.rstrip("/")
+            and here.path.startswith(there.path.rstrip("/") + "/")
+        )
+
+    def challenge(self, run_id: str) -> dict:
+        """Whether the application's tab still shows a picture check, and where the page
+        stands, without touching it. For the worker's watch after a CAPTCHA card."""
+        page = self.pages.get(run_id)
+        if page is None or page.is_closed():
+            return {"open": False, "showing": False, "moved": False}
+        try:
+            frame = page.main_frame
+            showing = bool(frame.evaluate(CAPTCHA_SHOWING_JS))
+            state = frame.evaluate(WHERE_JS)
+        except PlaywrightError:
+            return {"open": True, "showing": True, "moved": False}
+        held_at = (self.runs.get(run_id) or {}).get("captcha_state")
+        return {"open": True, "showing": showing, "moved": bool(held_at) and state != held_at}
+
+    def enter_mailed_code(self, run_id: str) -> bool:
+        """Type the code the site just mailed to the owner's application address.
+
+        The code is read from his own mailbox, from the site's own sender, and only mail
+        that arrived after this run asked for it. It is typed into the boxes that were
+        read as the code's, never logged and never kept. False when no code came, or the
+        site did not take it: the step is then the owner's.
+        """
+        from . import mail
+
+        boxes = self.form.evaluate(gates.CODE_BOXES_JS)
+        if not boxes.get("count"):
+            return False
+        asked = self.run.get("code_asked_at")
+        since = (
+            datetime.fromisoformat(asked) if asked else datetime.now(UTC) - timedelta(minutes=15)
+        )
+        senders = gates.code_senders(self.page.url, self.run.get("target_url", ""))
+        digits = (boxes["count"], boxes["count"]) if boxes["segmented"] else (4, 8)
+        # The employer as this application knows it, for mail from a domain of its own.
+        names = [mail.company_name(workflow.get(run_id))]
+        code = None
+        deadline = time.monotonic() + CODE_WAIT_SECONDS
+        while code is None:
+            self.beat()
+            with contextlib.suppress(mail.ZohoFailure, OSError):
+                code = mail.verification_code(senders, since, digits, names)
+            if code is not None or time.monotonic() >= deadline:
+                break
+            self.page.wait_for_timeout(5000)  # the page keeps running while Rove waits
+        if not code:
+            return False
+        state = self.form.evaluate(form_reading.FORM_STATE_JS)
+        url = self.form.url
+        if boxes["segmented"]:
+            for index, digit in enumerate(code[: boxes["count"]]):
+                box = self.form.locator(f'[data-rove-code="{index}"]')
+                box.click()
+                box.press_sequentially(digit, delay=90)
+        else:
+            self.type_value(self.form.locator('[data-rove-code="0"]'), code)
+        go = self.form.evaluate(gates.CODE_GO_JS)
+        with self.step_armed():
+            if go:
+                self.click(self.form.locator('[data-rove-code-go="1"]'))
+            self.next_step(state, url)
+        self.run["code_asked_at"] = None
+        workflow.record(run_id, "mailed_code", {"host": urlsplit(self.page.url).hostname})
+        after = self.form.evaluate(gates.CODE_BOXES_JS)
+        return not after.get("count")
+
+    def moved_on(self, before: list) -> bool:
+        """Whether the page is no longer the one a click was made on."""
+        try:
+            return bool(self.form.evaluate(MOVED_JS, before))
+        except PlaywrightError:
+            return True  # the document itself was replaced
+
     def follow(self, run_id: str, observation_id: str, ref: str) -> dict:
         self.check(run_id)
         if not self.observation or observation_id != self.observation["observation_id"]:
@@ -1798,6 +1957,21 @@ class RecruitingBrowser:
         if not item:
             raise PermissionError("Only an observed application-start link may be followed")
         locator = self.form.locator(f'[data-rove-link="{int(ref)}"]')
+        if locator.count() == 0:
+            # The page drew itself again since it was read and dropped the mark. It is
+            # read once more, and only the one link of the same words and kind is taken.
+            again = self.observe()
+            same = [
+                x
+                for x in again["application_links"]
+                if normalized(x["label"]) == normalized(item["label"])
+                and x.get("kind") == item.get("kind")
+                and x.get("url") == item.get("url")
+            ]
+            if len(same) != 1:
+                raise ValueError("Application link changed")
+            item = same[0]
+            locator = self.form.locator(f'[data-rove-link="{int(item["ref"])}"]')
         if normalized(locator.inner_text()) != normalized(item["label"]):
             raise ValueError("Application link changed")
         if item["url"]:
@@ -1813,15 +1987,20 @@ class RecruitingBrowser:
                     raise PermissionError(hold)
         old_pages = list(self.context.pages)
         with self.guarded(self.page):
-            self.click(locator)
+            before = self.where()
             try:
-                self.form.wait_for_function(
-                    "old => location.href !== old || !!document.querySelector('input:not([type=hidden]),select,textarea,[role=dialog]')",
-                    arg=self.observation["url"],
-                    timeout=2500,
-                )
+                self.click(locator)
             except PlaywrightError:
-                pass
+                # A page that swaps itself the moment it is clicked may never tell the
+                # driver the click landed. It landed when the page is no longer the one
+                # that was clicked: another address, or other controls.
+                if not self.moved_on(before):
+                    raise
+            # A single-page site takes a moment to swap its view: bounded wait for the
+            # address or the controls to change. A page with a search box of its own does
+            # not count as changed.
+            with contextlib.suppress(PlaywrightError):
+                self.form.wait_for_function(MOVED_JS, arg=before, timeout=10000)
             self.require_public_page()
         fresh = [p for p in self.context.pages if p not in old_pages]
         if fresh:
@@ -1842,6 +2021,7 @@ class RecruitingBrowser:
             ):
                 # The application page painted its shell first: one bounded chance for the form.
                 self.wait_for_fields()
+                self.wait_for_reading()
                 result = self.observe()
         workflow.record(
             run_id, "application_link", {"clicked": item["label"], "url": result["url"]}
@@ -2522,6 +2702,19 @@ class RecruitingBrowser:
         )
         raise overlays.OverlayInTheWay(overlays.HOLD_WORDS)
 
+    def wait_out_loading(self, seconds: float = 15.0):
+        """Bounded wait while the page shows its own loading screen over the window: it
+        has no words and no buttons, and it leaves by itself."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                seen = self.page.main_frame.evaluate(overlays.FIND_JS)
+            except PlaywrightError:
+                return
+            if not any(o.get("busy") and o.get("covers") for o in seen):
+                return
+            self.page.wait_for_timeout(300)
+
     def clear_overlays(self, after_failure: bool = False) -> int:
         """Get pop-ups out of the way of the form; how many were closed.
 
@@ -2534,6 +2727,10 @@ class RecruitingBrowser:
         if self.page is None or self.page.is_closed() or not self.run:
             return 0
         self.close_stray_tabs()
+        self.wait_out_loading()
+        with contextlib.suppress(PlaywrightError):
+            if self.page.main_frame.evaluate(CAPTCHA_SHOWING_JS):
+                return 0  # a picture check is the owner's: never closed, never clicked
         closed = 0
         # A site's front door is only visited for the sake of the visit: nothing is filled
         # there, so a pop-up that stays is left alone instead of stopping the run.
@@ -3002,7 +3199,8 @@ class RecruitingBrowser:
                 and str(value).lower() in {"yes", "no", "true", "false"}
             ):
                 desired = str(value).lower() in {"yes", "true"}
-                locator.set_checked(desired)
+                if locator.is_checked() != desired:
+                    self.set_box(locator, desired)
                 if locator.is_checked() != desired:
                     raise ValueError("Selection verification failed")
                 filled.append(
@@ -3076,7 +3274,12 @@ class RecruitingBrowser:
         return questions.settled_page(before["fields"], filled, pending)
 
     def _prepare(self, run_id: str) -> dict:
-        from .submission import duplicate_words, embedded_form, fill_hold_words
+        from .submission import (
+            duplicate_words,
+            embedded_form,
+            fill_hold_words,
+            success_phrases,
+        )
 
         before = self.observe()
         target = self.run.get("target_url", workflow.get(run_id)["url"])
@@ -3121,7 +3324,26 @@ class RecruitingBrowser:
         # `landed` is the last page reached, for what it says about itself (an assessment).
         result = landed = before
         moved = False
+        sent_on_step = ""
+        captcha = False
         for _step in range(FORM_PAGES):
+            if before.get("code_step"):
+                # The site mailed a code to prove the address: fetched and typed, then
+                # the page after it is filled like any other.
+                if not self.enter_mailed_code(run_id):
+                    pending.append(
+                        {
+                            "label": "The code the site mailed you",
+                            "key": "mailed-code",
+                            "required": True,
+                            "reason": gates.NO_CODE_WORDS,
+                            "manual": True,
+                        }
+                    )
+                    result = landed = before
+                    break
+                before = result = landed = self.observe()
+                continue
             pages.append(before["url"])
             page_filled, page_pending = self.fill_cleared(run_id, before, approved, answers)
             filled.extend(page_filled)
@@ -3146,10 +3368,39 @@ class RecruitingBrowser:
                 break
             # A complete step of a multi-page form: continue once, then keep filling.
             state = self.form.evaluate(form_reading.FORM_STATE_JS)
-            self.click(self.form.locator(f'[data-rove-nav="{int(nav[0]["ref"])}"]'))
-            self.next_step(state, result["url"])
+            self.run["code_asked_at"] = workflow.now()  # a code mailed from here on is this step's
+            with self.requests_heard() as heard, self.step_armed():
+                self.click(self.form.locator(f'[data-rove-nav="{int(nav[0]["ref"])}"]'))
+                self.next_step(state, result["url"])
             before = landed = self.observe()
             workflow.record(run_id, "form_step", {"clicked": nav[0]["label"], "url": before["url"]})
+            if self.form.evaluate(CAPTCHA_SHOWING_JS):
+                # The step put a picture check on screen: the owner's, never Rove's.
+                # Where the page stands is kept, to tell later that it moved on.
+                captcha = True
+                self.run["captcha_state"] = self.where()
+                self.save()
+                result = landed = before
+                break
+            if (
+                not before["fields"]
+                and not before.get("final_controls")
+                and success_phrases(before.get("text")) - success_phrases(result.get("text"))
+            ):
+                # The site took the application on a step that only said to go on. That
+                # is never counted as sent by a guess: the owner looks and says.
+                sent_on_step = nav[0]["label"]
+                break
+            if before["url"] in pages and before["fields"] == result["fields"]:
+                # The step did not move: what the site was asked and answered is kept
+                # for the system log, without a query string or a body.
+                write_private(directory / "step-stuck.json", {"requests": heard[-40:]})
+                answered = ", ".join(str(h.get("status") or h.get("failed")) for h in heard[-6:])
+                workflow.system_line(
+                    run_id,
+                    f"step did not move · {nav[0]['label']} · {len(heard)} requests"
+                    + (f" · {answered}" if answered else ""),
+                )
             if urlsplit(before["url"]).hostname != urlsplit(pages[0]).hostname:
                 # The step left the site the form was verified on: nothing more is typed.
                 moved = True
@@ -3207,7 +3458,21 @@ class RecruitingBrowser:
         if not pending and not ready:
             error = self.run.pop("form_error", "")
             step = form_reading.owner_step(landed)
-            if step:
+            if captcha:
+                result = {**result, "captcha": True, "reason": gates.CAPTCHA_WORDS}
+            elif sent_on_step:
+                result = {
+                    **result,
+                    "owner_step": True,
+                    "headline": "The site may have taken the application",
+                    "reason": (
+                        f"After I pressed “{sent_on_step}” the site showed what reads as its "
+                        "application-received page, before the send step. I did not count it "
+                        "as sent. Check the recruiting browser: reply `applied` if it went "
+                        "through, or `park it`."
+                    ),
+                }
+            elif step:
                 # A video interview or an assessment: named, with its link, for the owner.
                 result = {**result, **step, "owner_step": True}
             else:
@@ -3226,7 +3491,71 @@ class RecruitingBrowser:
                 }
         return {**result, **package, "status": status}
 
-    def next_step(self, state: str, url: str, timeout_ms: int = 6000):
+    @contextlib.contextmanager
+    def step_armed(self):
+        """Lift the preparation guard for one observed click on a form's Next control.
+
+        A site may wire its Next as a submit of the step's own form; the guard that stops
+        accidental submits during preparation would swallow it and the step would never
+        move. Only a control read as one that goes on is clicked under this, never the
+        final one; the guard is back the moment the step has been taken.
+        """
+        with contextlib.suppress(PlaywrightError):
+            self.form.evaluate(ARM_JS)
+        try:
+            yield
+        finally:
+            with contextlib.suppress(PlaywrightError):
+                self.form.evaluate(DISARM_JS)
+
+    @contextlib.contextmanager
+    def requests_heard(self):
+        """The data requests the page makes while a step is taken: method, kind, path and
+        how each ended. For telling a site that refused from a click that did nothing."""
+        heard: list[dict] = []
+        page = self.page
+
+        def path(url: str) -> str:
+            parts = urlsplit(url)
+            return f"{parts.hostname}{parts.path}"[-140:]
+
+        def asked(request):
+            if request.resource_type in {"xhr", "fetch", "document"}:
+                heard.append(
+                    {
+                        "method": request.method,
+                        "kind": request.resource_type,
+                        "path": path(request.url),
+                    }
+                )
+
+        def answered(response):
+            for entry in reversed(heard):
+                if entry["path"] == path(response.url) and "status" not in entry:
+                    entry["status"] = response.status
+                    return
+
+        def failed(request):
+            for entry in reversed(heard):
+                if entry["path"] == path(request.url) and "status" not in entry:
+                    entry["failed"] = str(request.failure or "failed")[:80]
+                    return
+
+        page.on("request", asked)
+        page.on("response", answered)
+        page.on("requestfailed", failed)
+        try:
+            yield heard
+        finally:
+            for name, handler in (
+                ("request", asked),
+                ("response", answered),
+                ("requestfailed", failed),
+            ):
+                with contextlib.suppress(Exception):
+                    page.remove_listener(name, handler)
+
+    def next_step(self, state: str, url: str, timeout_ms: int = 12000):
         """After a Next click: wait until the step changed (another address, or other
         controls and values), then for a loading indicator to go and for the new step's
         fields or its final control. A step that shows neither (a video interview, an
@@ -3309,6 +3638,10 @@ def handle_request(browser, request: dict):
         # Closing a tab touches no path: the id only names an entry to drop.
         browser.attach_if_running()
         return browser.close_run(request["run_id"])
+    if action == "challenge":
+        # A look at a tab that is already open; a browser that is not running has none.
+        browser.attach_if_running()
+        return browser.challenge(str(checked_run_id(request)))
     if action not in BROWSER_ACTIONS:
         raise PermissionError("Unsupported browser action")
     run_id = checked_run_id(request)
@@ -3338,7 +3671,9 @@ def cut_words(action: str, run_id: str | None) -> str:
 
 def perform(browser, action: str, run_id: str | None, request: dict):
     if action == "open":
-        return browser.open(request["url"])
+        # Read in place only when asked: a plain open is called as it always was.
+        how = {"in_place": True} if request.get("in_place") else {}
+        return browser.open(request["url"], **how)
     if action == "observe":
         if run_id:
             browser.check(run_id)

@@ -201,7 +201,10 @@ def test_a_visible_captcha_hands_over_and_go_resumes_it(state, monkeypatch):
     card = the_card(discord_calls)
     no_ids(card)
     assert "CAPTCHA needs you" in card["description"]
-    assert "Solve it in the recruiting browser" in card["description"]
+    assert "Open the recruiting browser and solve it" in card["description"]
+    assert "I carry on by myself in the same tab" in card["description"]
+    hold = workflow.latest_hold(app)
+    assert hold["watch"] == "captcha" and hold["in_place"] is True
     assert reply_block(card) == workflow.command_block(["go", "park it"])
     nothing_sent(app, calls)
     with workflow.db() as conn:

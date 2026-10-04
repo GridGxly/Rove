@@ -58,6 +58,9 @@ FIND_JS = r"""() => {
  const outer=[...found].filter(e=>![...found].some(o=>o!==e&&o.contains(e)));
  document.querySelectorAll('[data-rove-overlay],[data-rove-overlay-button]').forEach(e=>{e.removeAttribute('data-rove-overlay');e.removeAttribute('data-rove-overlay-button');});
  const CLOSE_WORDS=/^(?:[×✕✖⨯x]|close|dismiss)$/i;
+ // A page's own loading screen: no words, no buttons, a progress or spinner mark.
+ const BUSY='[role=progressbar],[aria-busy=true],[class*="spinner" i],'+
+   '[class*="loading" i],[class*="loader" i]';
  let buttonIndex=0;
  return outer.map((e,i)=>{
    e.setAttribute('data-rove-overlay',String(i));
@@ -84,6 +87,8 @@ FIND_JS = r"""() => {
      share:Math.round(share(e)*100)/100,covers,covers_form:coversForm,form_in_view:!!formPoint,
      dialog:!!e.closest('[role=dialog],[role=alertdialog],[aria-modal=true],dialog'),
      modal:!!(e.closest('[aria-modal=true]')||e.querySelector('[aria-modal=true]')),
+     busy:!squash(e.innerText)&&!buttons.length&&!fields.length
+       &&(e.matches(BUSY)||!!e.querySelector(BUSY)),
      backdrop:!squash(e.innerText)&&!buttons.length};
  });
 }"""
@@ -225,6 +230,8 @@ def in_the_way(found: list[dict], after_failure: bool = False) -> list[dict]:
     When anything blocks the page, every visible dialog counts too: a modal's content and
     its backdrop are often two elements, and the content is where the close control is.
     """
+    # A page's own loading screen is waited out by the browser, never closed.
+    found = [o for o in found if not o.get("busy")]
     blocked = [o for o in found if blocking(o, after_failure)]
     if blocked:
         blocked = [o for o in found if blocking(o, after_failure) or o.get("dialog")]

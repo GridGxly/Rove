@@ -1329,11 +1329,15 @@ def only_public(monkeypatch, *public):
 
 
 def private_files(state) -> list:
-    """Every private file the workflow wrote, apart from the browser's own profile."""
+    """Every private file the workflow wrote, apart from the browser's own profile and
+    SQLite's own journal files, which come and go while the database is in use (their
+    content is in the database file once it is closed)."""
     return [
         path
         for path in state.rglob("*")
-        if path.is_file() and "recruiting-profile" not in path.parts
+        if path.is_file()
+        and "recruiting-profile" not in path.parts
+        and not path.name.endswith(("-wal", "-shm", "-journal"))
     ]
 
 
@@ -1572,6 +1576,34 @@ def test_posting_text_that_orders_different_answers_or_another_url_changes_nothi
     # The approved profile itself is what it was.
     frozen = json.loads((state / "applications" / run_id / "profile.json").read_text())
     assert frozen["profile"]["identity"]["legal_first_name"] == "Alex"
+
+
+def test_an_apply_button_the_page_drew_again_is_found_by_its_words(board, site):
+    """What a live careers site did: the page rebuilt its markup after it was read, so the
+    button Rove had marked was gone when it came to click it."""
+    runtime, _base, _state = board
+    posting = (
+        b"<!doctype html><title>Posting</title><h1>Software Intern</h1><div id='slot'>"
+        b"<button onclick=\"location.href=location.pathname+'/apply'\">Apply Now</button></div>"
+    )
+    Site.pages["/acme/jobs/403"] = Site.pages["/acme/jobs/404"] = posting
+    Site.pages["/acme/jobs/403/apply"] = live.FORM
+    slot = "document.getElementById('slot')"
+    opened = runtime.open(site + "/acme/jobs/403")
+    (link,) = opened["application_links"]
+    unmark = "s.innerHTML = s.innerHTML.replace(/ data-rove-link=\"\\d+\"/, '')"
+    runtime.page.evaluate(f"() => {{ const s = {slot}; {unmark}; }}")
+    assert runtime.page.locator("[data-rove-link]").count() == 0
+    landed = runtime.follow(opened["run_id"], opened["observation_id"], link["ref"])
+    assert landed["url"] == site + "/acme/jobs/403/apply" and landed["fields"]
+    # Redrawn with two buttons of the same words, there is no telling which was read.
+    opened = runtime.open(site + "/acme/jobs/404")
+    (link,) = opened["application_links"]
+    runtime.page.evaluate(
+        f"() => {{ {slot}.innerHTML = '<button>Apply Now</button><button>Apply Now</button>'; }}"
+    )
+    with pytest.raises(ValueError, match="Application link changed"):
+        runtime.follow(opened["run_id"], opened["observation_id"], link["ref"])
 
 
 def test_an_apply_link_to_another_site_is_not_followed(board, site, monkeypatch):

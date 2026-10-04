@@ -12,6 +12,7 @@ import httpx
 from . import (
     delivery,
     fastpath,
+    gates,
     inbound,
     intake,
     matching,
@@ -382,6 +383,30 @@ def skip_optional(application_id: str, questions: list):
     workflow.flush_events(application_id)
 
 
+def form_page(page: dict) -> bool:
+    """Whether a page is the application form or one of its first steps: it asks for a
+    resume or a name; it is the step some boards start with, an email address to begin
+    under and a control that goes on; or it asks for the code the site mailed to that
+    address. A sign-in page (a password) is never one."""
+    fields = page.get("fields") or []
+    if any(f["kind"] == "password" for f in fields):
+        return False
+    if page.get("code_step"):
+        return True  # the code the site mailed: the browser fetches and types it
+    if any(
+        f["kind"] == "file"
+        or "first name" in f["label"].lower()
+        or "full name" in f["label"].lower()
+        for f in fields
+    ):
+        return True
+    return (
+        bool(page.get("nav_controls"))
+        and len(fields) <= 3
+        and any(f["kind"] == "email" for f in fields)
+    )
+
+
 # Why a resume could not be used, in the owner's words.
 RESUME_WORDS = {
     "No validated generated or approved base PDF": (
@@ -482,7 +507,10 @@ def process(application_id: str) -> dict:
     headline = "Browser needs a look"
     try:
         timing.lap("open")
-        page = browser_call("open", url=item["url"])
+        # After a step the owner took in the browser himself (a picture check), the tab
+        # is read as it stands: a fresh load would undo what he did.
+        in_place = bool((workflow.latest_hold(application_id) or {}).get("in_place"))
+        page = browser_call("open", url=item["url"], in_place=in_place)
         for _ in range(6):
             if not page.get("fields") and not page.get("blocked"):
                 # The posting itself; application-form labels are never requirements, and
@@ -512,10 +540,11 @@ def process(application_id: str) -> dict:
                 return held(
                     application_id,
                     "MANUAL_TAKEOVER",
-                    "The site shows a CAPTCHA. Solve it in the recruiting browser, then reply "
-                    "`go`; nothing was sent.",
-                    "CAPTCHA needs you",
+                    gates.CAPTCHA_WORDS,
+                    gates.CAPTCHA_HEADLINE,
                     commands=["go", "park it"],
+                    watch="captcha",
+                    in_place=True,
                 )
             if page.get("ats_markers", {}).get("already_applied"):
                 return held(
@@ -620,12 +649,7 @@ def process(application_id: str) -> dict:
                 )
                 headline = "Manual step in the browser"
                 break
-            if page.get("fields") and any(
-                f["kind"] == "file"
-                or "first name" in f["label"].lower()
-                or "full name" in f["label"].lower()
-                for f in page["fields"]
-            ):
+            if form_page(page):
                 from .reasoning import review_application, review_job
 
                 # Erga's intake runs beside the job-fit review; the resume step joins it.
@@ -733,6 +757,26 @@ def process(application_id: str) -> dict:
                         timing.note(**fastpath.fill_counts(application_id, page))
                         page["qwen_review"] = proposals
                         pending = page.get("pending", [])
+                if page.get("captcha"):
+                    return held(
+                        application_id,
+                        "MANUAL_TAKEOVER",
+                        gates.CAPTCHA_WORDS,
+                        gates.CAPTCHA_HEADLINE,
+                        commands=["go", "park it"],
+                        watch="captcha",
+                        in_place=True,
+                    )
+                by_hand = next((q for q in pending if q.get("manual")), None)
+                if by_hand:
+                    return held(
+                        application_id,
+                        "MANUAL_TAKEOVER",
+                        by_hand["reason"],
+                        "A step in the browser needs you",
+                        commands=["go", "park it"],
+                        in_place=True,
+                    )
                 questions = question_list(asked, pending, proposals, used)
                 if pending:
                     open_numbers = [
@@ -1844,6 +1888,35 @@ def receipt_follow_up():
         workflow.system_line("mail", f"receipt check failed · {type(error).__name__}")
 
 
+def carry_on_after_captcha() -> list[str]:
+    """Applications that wait on a picture check go back to work by themselves once the
+    owner has solved it: the check is off the screen and the page has moved on. He does
+    not have to come back and say so. Returns the applications that were picked up."""
+    with workflow.db() as conn:
+        waiting = [
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM application_queue WHERE status='MANUAL_TAKEOVER'"
+            ).fetchall()
+        ]
+    resumed = []
+    for application_id in waiting:
+        if (workflow.latest_hold(application_id) or {}).get("watch") != "captcha":
+            continue
+        seen: dict = {}
+        with contextlib.suppress(Exception):  # no browser, no tab: nothing to carry on with
+            seen = browser_call("challenge", run_id=application_id)
+        if not seen.get("open") or seen.get("showing") or not seen.get("moved"):
+            continue
+        workflow.withdraw_notices(application_id)
+        workflow.record(application_id, "captcha_cleared", {})
+        workflow.set_state(application_id, "QUEUED", error="")
+        recovery.retry_later_first(application_id)
+        workflow.system_line(application_id, "picture check solved by the owner · carrying on")
+        resumed.append(application_id)
+    return resumed
+
+
 def release_stale_tabs():
     """After the profile changed, let the browser service forget tabs it opened under the
     old version; each reopens with the new one when its application runs. A browser that
@@ -1874,6 +1947,7 @@ def work(settings: dict, reachable: bool = True) -> dict:
     if submitted:
         write_private(state_root() / "workflow-status.json", {"submissions": submitted})
         return {"submissions": submitted}
+    carry_on_after_captcha()
     with workflow.db() as conn:
         # A send in flight or an in-flight preparation holds everything. An unclear send
         # waits for the owner on its own card; the rest of the queue goes on.

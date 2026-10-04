@@ -628,7 +628,10 @@ CONTACT_NOUNS = _words(
 )
 CONTACT_VERBS = _words("agree agreement consent opt may can allow like ok okay willing happy")
 # The employer's own name in "…updates from <employer> regarding your application".
-CONTACT_SENDER = re.compile(r"\bfrom (?:[a-z0-9]+ ){1,8}?(?=(?:regarding|about|concerning)\b)")
+CONTACT_SENDER = re.compile(
+    r"\bfrom (?:[a-z0-9]+ ){1,8}?(?=(?:regarding|about|concerning)\b)"
+    r"|(?<=\breceive )(?:[a-z0-9]+ ){1,5}?(?=(?:recruiting|recruitment|hiring)\b)"
+)
 CONTACT_WORDS = _words(
     "i do you agree consent to be being contacted contact receive receiving by via text texts"
     " sms message messages messaging phone call calls email emails e mail from the company"
@@ -639,7 +642,7 @@ CONTACT_WORDS = _words(
     " data rates apply talent network community pool join joining added add keep kept"
     " considered consider other notified notify are willing happy"
     " agreement check indicate no of frequency vary stop reply out view here privacy policy"
-    " terms conditions"
+    " terms conditions communication method selected have review"
 )
 # "I authorize the <employer's team> to consider me for other roles …": the whole label is
 # that one request. The team's name may be any words but a second request ("to run a
@@ -1064,7 +1067,7 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
         return {"id": "salary_expectation" + unit}
     # Acknowledgements the owner's rule covers. Their wording is checked word for word,
     # so they are plain even though "agree" and "consent" are sensitive words elsewhere.
-    contact = CONTACT_SENDER.sub("from ", text).split()
+    contact = CONTACT_SENDER.sub(lambda m: "from " if m[0].startswith("from") else "", text).split()
     if _only(contact, CONTACT_NOUNS, CONTACT_WORDS) and CONTACT_VERBS & set(contact):
         return {"id": "contact_consent", "sensitivity": PLAIN, "default": "contact_consent"}
     if CONSIDER_OTHER.fullmatch(text) and not {"not", "no", "never", "decline"} & set(words):
