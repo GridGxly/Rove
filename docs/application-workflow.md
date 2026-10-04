@@ -323,9 +323,9 @@ Only an ambiguous mail from a strong match goes to Qwen. Qwen reads a sanitized 
 
 ### What a classified mail does
 
-- The thread gets a card with the label, the sender's domain, the clipped subject and the deadline as the mail states it. A regex quotes phrases such as "by October 9, 2026 at 11:59 PM PT" or "within 72 hours". Nothing is computed, and the body is never posted.
+- The thread gets a card with the label as its headline and the mail as the owner would read it in his inbox: the sender, when it arrived, the subject and the mail's visible words (up to 1,800 characters). The words are shown as plain text: formatting characters are escaped so nothing in a mail can hide a link behind other words or mention anyone, text a mail hides from its reader (`display:none` and the like) is left out, and verification codes are removed before the private copy is written. The deadline is quoted as the mail states it; a regex finds phrases such as "by October 9, 2026 at 11:59 PM PT" or "within 72 hours" and nothing is computed.
 - The application moves when the label is a step forward: Applied to OA to Interview to Offer, and Rejected from any of them. A label behind the current state is recorded without a move, and nothing moves a rejected application.
-- The recruiting channel gets one line with a link to the thread.
+- The recruiting channel gets one line with a link to the thread, and the same card under it.
 - Erga's `update_application_status` is called with `oa`, `interview`, `offer` or `rejected` when the resume manifest links an Erga application. A failure there changes nothing locally.
 - A mail with any label except `other` settles an unclear submission. The attempt is recorded as applied with the mail as the receipt's evidence, and an assessment or interview then moves it on.
 

@@ -261,4 +261,4 @@ A failed card deletion or status-card edit is logged and not retried. A forum po
 
 ## What stays out of Discord
 
-Passwords, tokens, cookies, verification codes, encryption keys and mail bodies are never posted. Account creation is recorded with the host and the username only.
+Passwords, tokens, cookies, verification codes and encryption keys are never posted. A recruiting mail that was recorded against an application is shown on its card as plain text with codes removed; other mail is never posted. Account creation is recorded with the host and the username only.
