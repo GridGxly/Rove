@@ -1424,6 +1424,48 @@ def test_sponsorship_behind_a_condition_is_the_same_question():
         assert answer(other, YES_NO) == (None, None), other
 
 
+def test_the_employers_own_name_in_the_sponsorship_question_does_not_change_it():
+    named = "Do you require immigration sponsorship to work for Acme in the United States?"
+    assert classify(named).canonical_id == "sponsorship_us_now_or_future"
+    assert answer(named, YES_NO) == answer("Do you require immigration sponsorship?", YES_NO)
+    with_it = "Will you require sponsorship for employment with Globex Robotics Inc in the US?"
+    assert classify(with_it).canonical_id.startswith("sponsorship_us")
+    asked_from = "Will you require sponsorship from Acme for employment now or in the future?"
+    assert classify(asked_from).canonical_id == "sponsorship_now_or_future"
+    allowed = "Are you legally eligible to work in the United States for Acme?"
+    assert classify(allowed).canonical_id == "work_authorization_us"
+    assert answer(allowed, YES_NO) == answer("Are you eligible to work in the US?", YES_NO)
+    # A length of time, an office of its own or another party there is a different question.
+    for other in (
+        "Will you require sponsorship to work for more than 12 months in the United States?",
+        "Will you require sponsorship to work at our London office?",
+        "Will you require sponsorship to work for another employer in the United States?",
+        "Will you require sponsorship from a family member now or in the future?",
+        "Are you authorized to work in the United States for your current employer only?",
+        "Are you authorized to work in the United States for more than 20 hours a week?",
+    ):
+        assert answer(other, YES_NO) == (None, None), other
+
+
+def test_an_employer_named_like_an_attestation_word_is_not_an_attestation():
+    # "Affirm" is a company; "I affirm that ..." is a statement only the owner makes.
+    heard = classify("How did you first learn about Affirm as an employer?")
+    assert (heard.canonical_id, heard.sensitivity) == ("how_did_you_hear", questions.PLAIN)
+    worked = "Have you previously been employed at Affirm for any length of time?"
+    assert classify(worked).canonical_id == "previously_employed_here"
+    board = "greenhouse.io/affirm"
+    assert answer(worked, YES_NO, profile=STUDENT, employer=board)[0] == "No"
+    assert not questions.is_sensitive("Why do you want to work at Affirm?")
+    for statement in (
+        "I affirm that the information above is true",
+        "By submitting you affirm the above is correct",
+        "The applicant affirms everything is accurate",
+        "I hereby affirm my answers",
+        "Affirmation of accuracy",
+    ):
+        assert questions.is_sensitive(statement), statement
+
+
 ROBINHOOD_STYLE = [
     "I currently work at Acme as a full-time employee or intern",
     "I have previously worked at Acme as a full-time employee or intern",

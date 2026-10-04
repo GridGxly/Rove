@@ -233,6 +233,45 @@ def test_the_school_typeahead_reads_the_name_above_a_country_and_a_website(
     assert reader.page.locator("#s").input_value() == "Example State University"
 
 
+PLACE_PICKER = """<title>Apply</title><form>
+<div class="select__container"><label for="c">Location (City)</label>
+<div class="select__single-value" id="chosen"></div>
+<input id="c" role="combobox" aria-autocomplete="list" aria-controls="places" required>
+<ul id="places" role="listbox"></ul></div>
+<script>
+const places = ["Springfield, Missouri, United States", "Springfield, Illinois, United States",
+  "Springfield Gardens, New York, United States"];
+const input = document.getElementById('c'), list = document.getElementById('places');
+input.addEventListener('input', () => {
+  list.innerHTML = '';
+  const typed = input.value.toLowerCase();
+  if (!typed) return;
+  for (const name of places.filter(s => s.toLowerCase().includes(typed))) {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option'); li.textContent = name;
+    li.addEventListener('click', () => {
+      document.getElementById('chosen').textContent = name;
+      input.value = ''; list.innerHTML = '';
+    });
+    list.appendChild(li);
+  }
+});
+</script></form>"""
+
+
+def test_a_place_picker_that_empties_its_input_shows_the_choice_beside_it(
+    reader, state, monkeypatch
+):
+    # What a live board did: the chosen city moved into the picker's value label and the
+    # input went blank, so the input alone said nothing was chosen.
+    filled, pending = fill(reader, PLACE_PICKER, monkeypatch)
+    assert pending == []
+    assert [f["label"] for f in filled] == ["Location (City)"]
+    chosen = reader.page.locator("#chosen").inner_text()
+    assert chosen == "Springfield, Illinois, United States"
+    assert reader.page.locator("#c").input_value() == ""
+
+
 def test_a_school_not_listed_takes_other_or_waits_with_a_reason(reader, state, monkeypatch):
     filled, pending = fill(reader, typeahead(["Rollins College", "Other"]), monkeypatch)
     assert pending == [] and filled[0]["value"] == "Other"

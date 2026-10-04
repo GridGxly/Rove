@@ -157,7 +157,10 @@ SENSITIVE_PATTERNS = tuple(
         (
             "agreement",
             (
-                r"certify|certifies|i hereby|attest\w*|affirm\w*|swear|agree\w*|consent\w*|signature\w*"
+                r"certify|certifies|i hereby|attest\w*|swear|agree\w*|consent\w*|signature\w*"
+                # "I affirm that ...", never the employer called Affirm ("work for Affirm").
+                r"|(?:i|we|you|hereby|also|further|solemnly) affirm|affirm (?:that|under|my)"
+                r"|affirms|affirmed|affirming|affirmation\w*"
                 r"|e sign\w*|signed|to sign|sign (?:here|below)|acknowledg\w*|privacy"
                 r"|terms (?:and conditions|conditions|of (?:use|service|employment))"
                 r"|non ?compete|non ?disclosure|nda|arbitrat\w*|binding|truthful\w*|true and"
@@ -536,6 +539,41 @@ SPONSORSHIP_WORDS = _words(
     " lawful legal from this your us u s usa united states america xplace xjobplace order"
     " including and"
 )
+# The employer's own name in the sponsorship question does not change it: "... to work
+# for Acme in the United States". A length of time, a place of its own or a condition in
+# that spot does, and such a label stays the owner's.
+SPONSOR_EMPLOYER = re.compile(
+    r"(?:(?P<lead>\bto (?:work|be employed)|\bemployment) (?:for|at|by|with)"
+    r"|(?P<from>\bsponsorship) from)"
+    r" (?P<name>[a-z0-9]+(?: [a-z0-9]+){0,3}?)(?= in | for | to | now\b| or\b| either\b|$)"
+)
+NOT_AN_EMPLOYER = _words(
+    "more than less longer over under least most year years month months week weeks day days"
+    " hour hours period duration after before until beyond during while if when unless not"
+    " only up to full part time office offices location locations site sites branch country"
+    " region our your my this the a an any another other different new current present"
+    " employer employers company family spouse partner relative member school university"
+)
+
+
+def employer_like(words: list[str]) -> bool:
+    """Whether these words can be an employer's own name: one to four of them, none a
+    number and none a word that makes the phrase about a time, a place or someone else."""
+    return (
+        1 <= len(words) <= 4
+        and not set(words) & NOT_AN_EMPLOYER
+        and not any(word.isdigit() for word in words)
+    )
+
+
+def without_employer_name(asked: str) -> str:
+    """The sponsorship question with the employer's own name taken out of it."""
+    match = SPONSOR_EMPLOYER.search(asked)
+    if not match or not employer_like(match["name"].split()):
+        return asked
+    return asked[: match.start()] + (match["lead"] or match["from"]) + asked[match.end() :]
+
+
 # A condition in front of the sponsorship question that does not change it: "If working in
 # the US, will you now or in the future require sponsorship?"
 LEADING_CONDITION = re.compile(
@@ -726,6 +764,11 @@ WORKED_HERE = re.compile(
     r"(?: (?P<prep>for|at|by|with) (?P<rest>[a-z0-9]+(?: [a-z0-9]+)*)"
     r"| here(?: (?:before|previously|in the past))?)"
 )
+# "... for any length of time", "... at any time": said after the employer, it asks the
+# same thing.
+WORKED_SPAN = re.compile(
+    r" (?:for|during|over) any (?:length|period|amount) of time\b| at any (?:time|point)\b"
+)
 # What may follow the employer's name in that question without changing it.
 WORKED_BOUNDARY = _words("as before previously prior in or and during either since note")
 WORKED_TAIL = WORKED_BOUNDARY | _words(
@@ -755,7 +798,7 @@ CORPORATE_SUFFIX = _words("inc incorporated llc ltd limited corp corporation co 
 def worked_here_employer(text: str) -> list[str] | None:
     """The employer a "have you worked for ..." label names, as words; [] for "us" or
     "here", None when the label is not that question or adds a condition."""
-    match = WORKED_HERE.fullmatch(text)
+    match = WORKED_HERE.fullmatch(WORKED_SPAN.sub("", text))
     if not match:
         return None
     if match["rest"] is None:
@@ -1008,10 +1051,13 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
         scope = place_scope(match.group("where") or "", found)
         if WITHOUT_SPONSORSHIP.fullmatch(tail):
             return {"id": "work_authorization_without_sponsorship", "scope": scope}
-        if set(tail.split()) <= AUTHORIZED_TAIL:
+        after = tail.split()
+        # "... to work in the United States for Acme?": the employer's own name.
+        named = after[:1] == ["for"] and employer_like(after[1:])
+        if named or set(after) <= AUTHORIZED_TAIL:
             return {"id": "work_authorization", "scope": scope}
     condition = LEADING_CONDITION.match(text)
-    asked = text[condition.end() :] if condition else text
+    asked = without_employer_name(text[condition.end() :] if condition else text)
     body = asked.split()
     if (
         re.match(r"(?:will|do|would) you\b", asked)

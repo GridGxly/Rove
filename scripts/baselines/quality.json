@@ -48,7 +48,7 @@
       "src/rove/memory_channel.py": 1,
       "src/rove/overlays.py": 11,
       "src/rove/prompts.py": 1,
-      "src/rove/questions.py": 12,
+      "src/rove/questions.py": 11,
       "src/rove/reasoning.py": 2,
       "src/rove/shortcuts.py": 1,
       "src/rove/submission.py": 9,

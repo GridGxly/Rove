@@ -675,6 +675,10 @@ STEP_JS = (
   && /^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i
      .test((e.innerText || e.value || '').trim()))"""
 )
+# What a select-style picker shows as its chosen value; its input is emptied on a choice.
+CHOSEN_JS = (
+    "e => e.closest('.select__container')?.querySelector('.select__single-value')?.innerText || ''"
+)
 # The visible suggestion that names the typed place, in a dropdown without ARIA roles.
 SUGGESTION_JS = """(city) => {
   const norm = s => (s || '').toLowerCase();
@@ -2170,9 +2174,10 @@ class RecruitingBrowser:
         expected = texts[matches[0]]
         options.nth(matches[0]).click()
         if place and city:
-            # A place picker commits the suggestion into the input: that text is the proof.
+            # A place picker commits the suggestion into the input, or shows it as the
+            # chosen value beside an emptied input: either text is the proof.
             self.page.wait_for_timeout(300)
-            committed = normalized(locator.input_value())
+            committed = normalized(locator.input_value() + " " + locator.evaluate(CHOSEN_JS))
             if normalized(city) in committed:
                 locator.press("Escape")
                 return True

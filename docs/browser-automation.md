@@ -129,6 +129,7 @@ A few questions are answered from approved eligibility and preferences:
 
 - "Are you legally authorized to work in the United States" takes the approved answer.
 - "Will you now or in the future require sponsorship" is answered No only when both approved sponsorship answers are No.
+- The employer's own name in either question does not change it: "to work for Example in the United States" and "sponsorship from Example" are the same two questions. A length of time, an office, another employer or a family member in that place makes it a different question, which stays the owner's.
 - A question about relocating, commuting or working onsite is answered Yes when the approved preferences say relocate and include onsite work, unless it names a location the owner excluded.
 - A graduation question shown as a group of options takes the option that matches the approved graduation month.
 
@@ -159,7 +160,7 @@ A field is treated as a picker when it is a combobox, when it has an autocomplet
 
 For an ordinary picker the daemon opens the list and selects the option whose text equals the approved value, when there is exactly one. Typing into the search box does not count as a selection. The choice is confirmed from the widget: the selected option, the displayed value, or the accessibility announcement.
 
-For a place picker the daemon types the approved city and waits for suggestions, polling for up to six seconds because these widgets geocode after a pause. It picks the suggestion that equals the approved "City, State" or "City, State, Country", or else the first one that starts with the city, preferring one that also names the state. When the suggestion list has no ARIA roles, it clicks the shortest visible suggestion that contains the city, or takes the first suggestion with the keyboard when it finds none. The pick is accepted only when the text committed to the input names the approved city.
+For a place picker the daemon types the approved city and waits for suggestions, polling for up to six seconds because these widgets geocode after a pause. It picks the suggestion that equals the approved "City, State" or "City, State, Country", or else the first one that starts with the city, preferring one that also names the state. When the suggestion list has no ARIA roles, it clicks the shortest visible suggestion that contains the city, or takes the first suggestion with the keyboard when it finds none. The pick is accepted only when the committed text names the approved city: the text in the input, or the chosen value the widget shows beside an input it emptied.
 
 A picker that refuses the value becomes a question. The daemon keeps private evidence for the next fix: what it typed, the options the picker listed, what the input kept, and a screenshot.
 
