@@ -2,7 +2,6 @@
   "about": "Ceilings for ruff findings per rule and file; the rules are those in [tool.ruff.lint] ignore. Checked by scripts/ratchet.py quality. Lower with --update after fixing; never raise without review.",
   "counts": {
     "ARG001": {
-      "integrations/hermes/rove_shortcuts/__init__.py": 1,
       "src/rove/benchmark.py": 1,
       "src/rove/questions.py": 1,
       "src/rove/submission.py": 1,
@@ -54,7 +53,6 @@
       "src/rove/prompts.py": 1,
       "src/rove/questions.py": 12,
       "src/rove/reasoning.py": 2,
-      "src/rove/server.py": 1,
       "src/rove/shortcuts.py": 1,
       "src/rove/submission.py": 9,
       "src/rove/vault.py": 2,

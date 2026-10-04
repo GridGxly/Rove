@@ -491,13 +491,17 @@ def act_on(name, word: str, allowed: set, doing: str) -> dict:
         }
     if not actionable:
         row = matches[0]
+        state = workflow.STATE_WORDS.get(row["status"], "tracked").lower()
         return {
             "say": f"{title_of(row)} is {application_line(row)}, so there's nothing to {doing}.",
-            "outcome": f"nothing to {doing}, it is {workflow.STATE_WORDS.get(row['status'], 'tracked').lower()}",
+            "outcome": f"nothing to {doing}, it is {state}",
         }
     row = actionable[0]
+    command = worker.thread_command(word, row["id"])
+    if command is None:
+        raise ValueError(f"{word!r} is not a reply an application thread takes")
     try:
-        worker.apply_command(worker.thread_command(word, row["id"]), command_id())
+        worker.apply_command(command, command_id())
     except (ValueError, PermissionError) as error:
         return {"say": str(error), "outcome": f"could not {doing}, {type(error).__name__}"}
     return {"row": row}
@@ -537,56 +541,53 @@ def open_questions(application_id: str) -> list[tuple[int, dict]]:
     ]
 
 
-def answer_application(name: str, answer: str, question: str | None = None) -> dict:
-    """His answer to an open question of one application, applied like `N: answer` in
-    its thread. The answer must be in his own words; a legal or personal question also
-    needs `question` naming it, and an answer with options must be one of them."""
-    from . import questions, worker
-
-    answer = " ".join(str(answer or "").split())
-    if not answer:
-        return {"say": "What's the answer?", "outcome": "no answer given, nothing saved"}
+def waiting_application(name) -> dict:
+    """{"row": row} for the one application `name` points to that waits on an answer;
+    otherwise what to say."""
     matches = find_applications(name)
     waiting = [r for r in matches if r["status"] == "NEEDS_USER" and open_questions(r["id"])]
-    if not waiting:
-        if matches:
-            return {
-                "say": f"Nothing on {title_of(matches[0])} is waiting for an answer right now.",
-                "outcome": "no open question there, nothing saved",
-            }
-        return {
-            "say": f"I don't have an application matching “{clip(name, 40)}”.",
-            "outcome": "no application matches",
-        }
-    if len(waiting) > 1:
+    if len(waiting) == 1:
+        return {"row": waiting[0]}
+    if waiting:
         return {
             "say": which_of(waiting),
             "outcome": f"{len(waiting)} applications match, asked which",
         }
-    row = waiting[0]
-    asked = open_questions(row["id"])
-    chosen = asked if len(asked) == 1 and not question else []
-    if question:
-        terms = [w for w in plain(question).split() if len(w) >= 3]
-        scored = [
-            (sum(f" {t}" in f" {plain(q.get('label'))} " for t in terms), n, q) for n, q in asked
-        ]
-        best = max((s for s, _n, _q in scored), default=0)
-        top = [(n, q) for s, n, q in scored if s == best and s > 0]
-        chosen = top if len(top) == 1 else []
-    listing = "; ".join(f"{n}) {clip(q.get('label'), 70)}" for n, q in asked[:6])
-    if len(chosen) != 1:
+    if matches:
         return {
-            "say": f"{title_of(row)} has {len(asked)} open questions: {listing}. Which one is it for?",
-            "outcome": "asked which question",
+            "say": f"Nothing on {title_of(matches[0])} is waiting for an answer right now.",
+            "outcome": "no open question there, nothing saved",
         }
-    number, picked = chosen[0]
+    return {
+        "say": f"I don't have an application matching “{clip(name, 40)}”.",
+        "outcome": "no application matches",
+    }
+
+
+def pick_question(asked: list[tuple[int, dict]], question: str | None) -> tuple[int, dict] | None:
+    """The one open question his answer is for: the only one open, or the one whose
+    label best carries the words of `question`. None when that is not exactly one."""
+    if not question:
+        return asked[0] if len(asked) == 1 else None
+    terms = [w for w in plain(question).split() if len(w) >= 3]
+    scored = [(sum(f" {t}" in f" {plain(q.get('label'))} " for t in terms), n, q) for n, q in asked]
+    best = max((s for s, _n, _q in scored), default=0)
+    top = [(n, q) for s, n, q in scored if s == best and s > 0]
+    return top[0] if len(top) == 1 else None
+
+
+def checked_answer(answer: str, picked: dict, named: bool, title: str) -> dict:
+    """{"value": text} for an answer that may be saved; otherwise what to say. A legal or
+    personal question must be named, the answer must be in his own words, and a question
+    with options takes one of them."""
+    from . import questions
+
     label = str(picked.get("label") or "")
     options = questions.real_options(picked.get("options"))
-    sensitive = questions.is_sensitive(label, picked.get("kind") or "", options)
-    if sensitive and not question:
+    if questions.is_sensitive(label, picked.get("kind") or "", options) and not named:
         return {
-            "say": f"To be sure: is “{clip(answer, 60)}” your answer to “{clip(label, 80)}” for {title_of(row)}?",
+            "say": f"To be sure: is “{clip(answer, 60)}” your answer to "
+            f"“{clip(label, 80)}” for {title}?",
             "outcome": "asked to confirm a personal question",
         }
     if not in_his_words(answer):
@@ -594,17 +595,46 @@ def answer_application(name: str, answer: str, question: str | None = None) -> d
             "say": "I only fill in answers you typed yourself. Tell me the answer in your words.",
             "outcome": "answer not in his messages, nothing saved",
         }
-    value = answer
-    if options:
-        key = " ".join(plain(answer).split())
-        value = next((o for o in options if " ".join(plain(o).split()) == key), "")
-        if not value:
-            return {
-                "say": f"“{clip(label, 60)}” takes one of: "
-                + " / ".join(options[:8])
-                + ". Which one?",
-                "outcome": "answer is not one of the options, nothing saved",
-            }
+    if not options:
+        return {"value": answer}
+    key = " ".join(plain(answer).split())
+    value = next((o for o in options if " ".join(plain(o).split()) == key), "")
+    if value:
+        return {"value": value}
+    return {
+        "say": f"“{clip(label, 60)}” takes one of: " + " / ".join(options[:8]) + ". Which one?",
+        "outcome": "answer is not one of the options, nothing saved",
+    }
+
+
+def answer_application(name: str, answer: str, question: str | None = None) -> dict:
+    """His answer to an open question of one application, applied like `N: answer` in
+    its thread. The answer must be in his own words; a legal or personal question also
+    needs `question` naming it, and an answer with options must be one of them."""
+    from . import worker
+
+    answer = " ".join(str(answer or "").split())
+    if not answer:
+        return {"say": "What's the answer?", "outcome": "no answer given, nothing saved"}
+    found = waiting_application(name)
+    if "row" not in found:
+        return found
+    row = found["row"]
+    asked = open_questions(row["id"])
+    chosen = pick_question(asked, question)
+    if chosen is None:
+        listing = "; ".join(f"{n}) {clip(q.get('label'), 70)}" for n, q in asked[:6])
+        return {
+            "say": f"{title_of(row)} has {len(asked)} open questions: {listing}. "
+            "Which one is it for?",
+            "outcome": "asked which question",
+        }
+    number, picked = chosen
+    label = str(picked.get("label") or "")
+    checked = checked_answer(answer, picked, bool(question), title_of(row))
+    if "value" not in checked:
+        return checked
+    value = checked["value"]
     command = {
         "kind": "answer",
         "application_id": row["id"],

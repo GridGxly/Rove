@@ -17,7 +17,6 @@ worker is using the model. Run by hand; it is not part of the offline test suite
 """
 
 import argparse
-import glob
 import json
 import os
 import re
@@ -45,14 +44,20 @@ CANNED = {
     "retry_application": "Going again on that one. It goes next.",
     "park_application": "Parked it. Say “try it again” when you want it back.",
     "answer_application": "Saved that answer. Say “try it again” and I'll go on with it.",
-    "rove_status": "3 need you. Ask “what's waiting” to see which.\nIn the queue: 12. Parked: 4.\nSent today: 2. The cap is 30 a day.",
-    "whats_waiting": "3 need you:\n• Tesla — Embedded Software Intern: 1 question only you can answer\n"
-    "• xAI — Software Engineer Intern: 2 questions only you can answer\n• Sierra — Agent Intern: your call on fit",
+    "rove_status": "3 need you. Ask “what's waiting” to see which.\n"
+    "In the queue: 12. Parked: 4.\nSent today: 2. The cap is 30 a day.",
+    "whats_waiting": "3 need you:\n"
+    "• Tesla — Embedded Software Intern: 1 question only you can answer\n"
+    "• xAI — Software Engineer Intern: 2 questions only you can answer\n"
+    "• Sierra — Agent Intern: your call on fit",
     "sends_today": "Sent today: 2. The cap is 30 a day.\nAcme — Web Intern, Globex — Data Intern.",
-    "pause_feed": "Paused. Jobs from the feed stay in the queue and wait. Links you paste still go.",
+    "pause_feed": "Paused. Jobs from the feed stay in the queue and wait. "
+    "Links you paste still go.",
     "resume_feed": "The feed is running again. Its jobs take their turn in the queue.",
-    "company_history": "• Acme — Sales Intern: skipped by your feed rules (sales role · posted 40 days ago)",
-    "what_you_can_ask": "Things you can ask me:\n• Paste a job link — I queue it as yours\n• `status`\n• `what's waiting on me`",
+    "company_history": "• Acme — Sales Intern: skipped by your feed rules "
+    "(sales role · posted 40 days ago)",
+    "what_you_can_ask": "Things you can ask me:\n• Paste a job link — I queue it as yours\n"
+    "• `status`\n• `what's waiting on me`",
     "read_candidate_section": json.dumps(
         {
             "section": "education",
@@ -95,7 +100,7 @@ def serve_stubs():
 
     for tool in server.mcp._tool_manager.list_tools():
 
-        def stub(_name=tool.name, **arguments):
+        def stub(_name=tool.name, **_arguments):
             return CANNED.get(_name, "{}")
 
         tool.fn = stub
@@ -188,7 +193,7 @@ def run_eval(args):
     from agent import prompt_builder
 
     soul = Path(args.soul).read_text().strip()
-    prompt_builder.load_soul_md = lambda *a, **k: soul
+    prompt_builder.load_soul_md = lambda *_a, **_k: soul
     from run_agent import AIAgent
     from tools.mcp_tool_discovery import discover_mcp_tools
 
@@ -240,8 +245,8 @@ def run_eval(args):
         ok = meets(phrase["expect"], calls, reply)
         passed += ok
         shown = ", ".join(f"{c['tool']}({json.dumps(c['args'])})" for c in calls) or "no tool"
-        line = f"[{number:2d}] {'pass' if ok else 'MISS'} {time.monotonic() - took:5.1f}s  {phrase['say'][:70]!r}"
-        print(line, flush=True)
+        mark, seconds = "pass" if ok else "MISS", time.monotonic() - took
+        print(f"[{number:2d}] {mark} {seconds:5.1f}s  {phrase['say'][:70]!r}", flush=True)
         if not ok or args.verbose:
             print(f"       expected: {json.dumps(phrase['expect'])[:160]}")
             print(f"       got: {shown[:200]}")
@@ -249,9 +254,8 @@ def run_eval(args):
         if not ok:
             misses.append(phrase["say"])
     total = len(phrases)
-    print(
-        f"\n{passed}/{total} passed ({100 * passed / max(total, 1):.0f} %) in {time.monotonic() - started:.0f}s"
-    )
+    rate, seconds = 100 * passed / max(total, 1), time.monotonic() - started
+    print(f"\n{passed}/{total} passed ({rate:.0f} %) in {seconds:.0f}s")
     for say in misses:
         print("  miss:", say)
     return 0 if passed / max(total, 1) >= args.bar else 1
@@ -265,7 +269,7 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="show every call, not only misses")
     parser.add_argument("--bar", type=float, default=0.9, help="pass rate the exit code checks")
     parser.add_argument("--hermes-checkout", default=str(Path.home() / ".hermes/hermes-agent"))
-    found = sorted(glob.glob(str(Path.home() / ".hermes/tools/python-*/bin/python3")))
+    found = sorted(str(p) for p in (Path.home() / ".hermes/tools").glob("python-*/bin/python3"))
     parser.add_argument("--hermes-python", default=found[-1] if found else "")
     parser.add_argument("--rove-python", default=str(REPOSITORY / ".venv/bin/python"))
     parser.add_argument("--soul", default=str(REPOSITORY / "integrations/hermes/SOUL.md"))

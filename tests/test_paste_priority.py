@@ -114,7 +114,7 @@ def test_no_word_list_decides_what_he_meant():
     for name in ("PASTE_WORDS", "APPLY_WORDS", "ASKING_WORDS", "REFUSAL_WORDS", "REQUEST_WORDS"):
         assert not hasattr(inbound, name), name
     assert not hasattr(inbound, "wants_first")
-    assert inbound.FIRST_REPLIES == {"first", "move it up"}
+    assert set(inbound.FIRST_REPLIES) == {"first", "move it up"}
 
 
 def test_several_links_go_in_the_order_pasted(state):

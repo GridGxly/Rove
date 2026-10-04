@@ -161,7 +161,7 @@ async def keep_short(event, gateway, session_store) -> bool:
         return False
 
 
-async def on_message(event, gateway=None, session_store=None, **kwargs):
+async def on_message(event, gateway=None, session_store=None, **_kwargs):
     message = message_of(event)
     settings = load_settings() if message else None
     if not settings:
@@ -198,14 +198,14 @@ CLAIM = re.compile(
 NOT_DONE = "I haven't done that yet. Say it once more and I'll do it."
 
 
-def on_tool(tool_name=None, session_id=None, turn_id=None, **kwargs):
+def on_tool(tool_name=None, session_id=None, turn_id=None, **_kwargs):
     if str(tool_name or "").startswith("mcp__rove__"):
         ACTED[(session_id, turn_id)] = True
         while len(ACTED) > 256:
             ACTED.pop(next(iter(ACTED)))
 
 
-def on_reply(response_text=None, session_id=None, turn_id=None, platform=None, **kwargs):
+def on_reply(response_text=None, session_id=None, turn_id=None, platform=None, **_kwargs):
     if str(platform or "") != "discord":
         return None
     if ACTED.pop((session_id, turn_id), False):
