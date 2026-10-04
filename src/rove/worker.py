@@ -253,13 +253,17 @@ def use_drafts(application_id: str, proposals: dict, asked: list) -> list[str]:
             if gate:
                 refused.append((answer["key"], gate["code"]))
                 continue
-            if conn.execute(
-                "SELECT 1 FROM application_answers WHERE application_id=? AND field_key=?",
+            kept = conn.execute(
+                "SELECT owner_message_id FROM application_answers WHERE application_id=? "
+                "AND field_key=?",
                 (application_id, answer["key"]),
-            ).fetchone():
+            ).fetchone()
+            # A blank Rove left while the question looked optional gives way to a draft;
+            # the owner's own answer and an earlier draft stay.
+            if kept and not str(kept[0]).startswith("auto-skip:"):
                 continue
             conn.execute(
-                "INSERT INTO application_answers VALUES(?,?,?,?)",
+                "INSERT OR REPLACE INTO application_answers VALUES(?,?,?,?)",
                 (
                     application_id,
                     answer["key"],
@@ -455,6 +459,9 @@ def process(application_id: str) -> dict:
     except Exception as error:
         raise PhaseError("forum", error) from error
     workflow.set_state(application_id, "PREPARING", error=None)
+    # A new pass reads the form afresh: what an earlier pass left blank as optional is
+    # decided again (it may be required now, or have an answer).
+    workflow.forget_skips(application_id)
     waits = workflow.intake_hold(item)
     if waits:
         # A link the agent queued opens no page until the owner has looked at it.
@@ -1117,6 +1124,7 @@ def card_application(message: dict, channel: str) -> str | None:
 
 # A word under several cards means the newest one when that card came this recently.
 RECENT_CARD = timedelta(minutes=10)
+CLOCK_SLACK = timedelta(seconds=5)
 DISCORD_EPOCH_MS = 1420070400000
 
 
@@ -1148,7 +1156,9 @@ def right_under(card: dict, message: dict, channel: str) -> bool:
         with contextlib.suppress(TypeError, ValueError):
             posted = datetime.fromisoformat(str(card.get("created_at")))
     said = snowflake_time(message.get("id")) or datetime.now(UTC)
-    if posted is not None and timedelta(0) <= said - posted <= RECENT_CARD:
+    # The card's time may be this Mac's and the message's Discord's: a few seconds of
+    # clock difference must not put his reply "before" the card it answers.
+    if posted is not None and -CLOCK_SLACK <= said - posted <= RECENT_CARD:
         return True
     if not message.get("id") or not card.get("message_id"):
         return False
@@ -1314,7 +1324,7 @@ def apply_command(command: dict, message_id: str):
     if label is not None:
         data["label"] = label
     if remember_later:
-        workflow.remember_answer(*remember_later, message_id, **remember_how)
+        data.update(keep_answer(remember_later, message_id, remember_how))
     workflow.record(
         application_id,
         "owner_answer" if command["kind"] in {"answer", "use"} else command["kind"] + "_requested",
@@ -1331,6 +1341,17 @@ def apply_command(command: dict, message_id: str):
         from .submission import reconcile
 
         reconcile(application_id, command["outcome"], message_id)
+
+
+def keep_answer(answered: tuple, message_id: str, how: dict) -> dict:
+    """His answer becomes a fact for later forms. Returns what the thread line adds: a
+    plain no about one employer (a relative there, a referral) is kept for every one."""
+    from . import questions
+
+    label, offered, given = answered
+    workflow.remember_answer(label, offered, given, message_id, **how)
+    tie = questions.classify(label, how["kind"], offered)
+    return {"every_company": True} if questions.general_no(tie, given) else {}
 
 
 # How often every candidate channel is read whatever Discord's channel list says, in case

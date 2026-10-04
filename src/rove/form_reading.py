@@ -286,11 +286,18 @@ READING_JS = r"""
    return {text:nearby(first,members),missing:true};
  };
  const choiceOnly=(box,type)=>{const inside=controlsIn(box);return inside.length&&inside.every(c=>c.type===type)?inside:null;};
+ // A box that names its options: a legend, an ARIA name, or a label of its own that
+ // points at no control (a board's question title).
+ const titledBox=box=>!!(box.querySelector('legend')||box.getAttribute('aria-label')||box.getAttribute('aria-labelledby')||[...box.querySelectorAll('label')].some(l=>!l.control&&squash(l.innerText)));
  const membersOf=(e,all)=>{
-   if(e.name){const same=all.filter(x=>x.type===e.type&&x.name===e.name&&x.form===e.form&&x.getRootNode()===e.getRootNode());if(same.length>=2)return same;}
    const box=e.closest(e.type==='radio'?'fieldset,[role=radiogroup],[role=group]':'fieldset,[role=group]');
+   if(e.name){let same=all.filter(x=>x.type===e.type&&x.name===e.name&&x.form===e.form&&x.getRootNode()===e.getRootNode());
+     // Checkboxes that share a name but sit in separate titled boxes are separate
+     // questions (a board that names every lone box "Yes").
+     if(e.type==='checkbox'&&box&&titledBox(box)&&same.some(x=>x.closest('fieldset,[role=group]')!==box))same=same.filter(x=>x.closest('fieldset,[role=group]')===box);
+     if(same.length>=2)return same;}
    const boxed=box&&choiceOnly(box,e.type);
-   if(boxed&&(boxed.length>=2||(e.type==='checkbox'&&(box.querySelector('legend')||box.getAttribute('aria-label')||box.getAttribute('aria-labelledby')))))return boxed;
+   if(boxed&&(boxed.length>=2||(e.type==='checkbox'&&titledBox(box))))return boxed;
    if(e.type==='checkbox'){
      // A question row whose only control is this checkbox, with the question in its own label block (Lever cards).
      const row=e.closest('.application-question');const carded=row&&choiceOnly(row,'checkbox');

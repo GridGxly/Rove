@@ -1077,6 +1077,38 @@ def remember_answer(
                 origin,
             ),
         )
+        general = questions.memory_key(question) if employer else None
+        if (
+            general
+            and general != key
+            and questions.general_no(question, text)
+            and not conn.execute(
+                "SELECT 1 FROM answer_memory WHERE fingerprint=?", (general,)
+            ).fetchone()
+        ):
+            # His "no" about one employer is his answer for every employer, until he
+            # says otherwise for one: the same question is not asked at the next company.
+            from .common_questions import BY_ID
+
+            worded = BY_ID[question.canonical_id].label if question.canonical_id in BY_ID else label
+            conn.execute(
+                "INSERT INTO answer_memory(fingerprint,label,options,value,created_at,"
+                "owner_message_id,canonical_id,polarity,scope,sensitivity,origin) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    general,
+                    str(worded)[:300],
+                    json.dumps(["Yes", "No"]),
+                    "No",
+                    now(),
+                    owner_message_id,
+                    question.canonical_id,
+                    question.polarity,
+                    _memory_scope(question, ""),
+                    question.sensitivity,
+                    origin,
+                ),
+            )
     try:
         from . import vault
 
@@ -1494,7 +1526,11 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list[dict]:
         label = clip(data.get("label") or "the question", 90)
         if data.get("proposal_hash"):
             return [f"→ You approved Qwen's draft for “{label}”"]
-        return [f"→ You answered “{label}”: {clip(data.get('value', ''), 300)}"]
+        kept = " · kept for every company unless you tell me otherwise for one"
+        return [
+            f"→ You answered “{label}”: {clip(data.get('value', ''), 300)}"
+            + (kept if data.get("every_company") else "")
+        ]
     if kind.endswith("_requested"):
         word = data.get("word") or kind[: -len("_requested")]
         if not data.get("word") and kind == "reconcile_requested":
@@ -2371,6 +2407,17 @@ def _answers(application_id: str) -> list:
             "SELECT field_key,value,owner_message_id FROM application_answers WHERE application_id=?",
             (application_id,),
         ).fetchall()
+
+
+def forget_skips(application_id: str):
+    """Drop the blanks Rove itself left for this application; the owner's answers and
+    the drafts it used stay."""
+    with db() as conn:
+        conn.execute(
+            "DELETE FROM application_answers WHERE application_id=? AND owner_message_id "
+            "LIKE 'auto-skip:%'",
+            (application_id,),
+        )
 
 
 def approved_answers(application_id: str) -> dict:

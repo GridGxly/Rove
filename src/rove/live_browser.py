@@ -2081,6 +2081,9 @@ class RecruitingBrowser:
         identity = profile.get("identity") or {}
         places = [identity.get("city"), identity.get("state_region")]
         school = str(value)
+        with contextlib.suppress(PlaywrightError):
+            if normalized(school) and normalized(school) == normalized(locator.input_value()):
+                return True  # an earlier fill of this page already chose it
         locator.click()
         texts = self.school_suggestions(locator, school, school, places)
         index = questions.school_option(texts, school, places)

@@ -612,6 +612,11 @@ PRIVACY_WORDS = _words(
     "i have read and agree to the our privacy policy notice statement consent acknowledge"
     " accept understand understood reviewed by checking this box that processing of my"
     " personal data information in accordance with as described do you"
+    " application will be processed handled collected used candidate applicant recruitment"
+)
+# The employer's own name in "…in accordance with <employer>'s Candidate Privacy Policy".
+PRIVACY_OWNER = re.compile(
+    r"\bwith (?:[a-z0-9]+ ){1,6}?(?=(?:candidate |applicant |recruitment )?privacy\b)"
 )
 SALARY_WORDS = _words(
     "salary compensation pay expectation expectations desired expected what is are your annual"
@@ -848,6 +853,20 @@ EMPLOYER_TIES = (
     ("previously_interviewed_here", INTERVIEWED_HERE),
     ("previously_applied_here", APPLIED_HERE),
 )
+GENERAL_NO_IDS = frozenset(canonical for canonical, _pattern in EMPLOYER_TIES)
+
+
+def general_no(question: "Question", value) -> bool:
+    """Whether an answer about one employer holds for any employer: a plain no to a tie
+    with it (a relative there, someone he knows, a referral, an earlier interview or
+    application). A yes is about that employer alone."""
+    return (
+        question.canonical_id in GENERAL_NO_IDS
+        and question.polarity == POSITIVE
+        and (normalized(value).split() or [""])[0] in {"no", "none", "never"}
+    )
+
+
 WILLING = (
     r"(?:(?:are|would|will) you (?:be )?|i am )(?:(?:currently|also) )?"
     r"(?:willing|able|open|prepared|comfortable|okay|ok|happy|available)"
@@ -1031,10 +1050,12 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
         "truthful",
     } & set(words):
         return {"id": "certify_truthful"}
+    private = PRIVACY_OWNER.sub("with ", text).split()
     if (
-        _only(words, {"privacy"}, PRIVACY_WORDS)
-        and {"policy", "notice", "statement"} & set(words)
-        and {"agree", "consent", "acknowledge", "accept", "read", "reviewed"} & set(words)
+        _only(private, {"privacy"}, PRIVACY_WORDS)
+        and {"policy", "notice", "statement"} & set(private)
+        and {"agree", "consent", "acknowledge", "accept", "read", "reviewed", "understand"}
+        & set(private)
     ):
         return {"id": "privacy_policy_consent"}
     if _only(words, {"salary", "compensation", "pay", "rate"}, SALARY_WORDS):

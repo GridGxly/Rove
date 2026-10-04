@@ -816,6 +816,35 @@ def test_drafting_gates_sensitive_questions_end_to_end(state, monkeypatch):
     assert review[LEGAL[0]["key"]]["gate"] == "sensitive:citizenship"
     assert review[WRITING["key"]]["kind"] == "proposal"
     assert worker.use_drafts(app, {"answers": list(review.values())}, asked) == [WRITING["key"]]
+    # A second pass does not use the same draft twice.
+    assert worker.use_drafts(app, {"answers": list(review.values())}, asked) == []
+
+    def stored():
+        with workflow.db() as conn:
+            row = conn.execute(
+                "SELECT value,owner_message_id FROM application_answers WHERE field_key=?",
+                (WRITING["key"],),
+            ).fetchone()
+        return tuple(row)
+
+    assert stored()[0] == "Short." and stored()[1].startswith("auto-draft:")
+    # A blank an earlier pass left while the question looked optional gives way to a
+    # draft; the owner's own answer never does.
+    with workflow.db() as conn:
+        conn.execute(
+            "UPDATE application_answers SET value='skip', owner_message_id=? WHERE field_key=?",
+            ("auto-skip:" + WRITING["key"], WRITING["key"]),
+        )
+    assert worker.use_drafts(app, {"answers": list(review.values())}, asked) == [WRITING["key"]]
+    assert stored()[0] == "Short."
+    with workflow.db() as conn:
+        conn.execute(
+            "UPDATE application_answers SET value='Mine.', owner_message_id='m-owner' "
+            "WHERE field_key=?",
+            (WRITING["key"],),
+        )
+    assert worker.use_drafts(app, {"answers": list(review.values())}, asked) == []
+    assert stored() == ("Mine.", "m-owner")
 
 
 # --- the whole path in a real browser -------------------------------------------------

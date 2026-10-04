@@ -407,6 +407,36 @@ def test_a_general_no_holds_until_the_owner_or_rove_says_otherwise(state):
     assert answer(applied, YES_NO, recall=workflow.recall_answer, employer=other)[0] == "No"
 
 
+def test_a_no_on_one_companys_card_is_his_answer_for_every_company(state):
+    # What he asked for: answered once, never asked again somewhere else.
+    other = "ashbyhq.com/globex"
+    elsewhere = "Are you related to any current Globex employees?"
+    assert answer(elsewhere, YES_NO, recall=workflow.recall_answer, employer=other) == (None, None)
+    assert workflow.remember_answer(RELATED, YES_NO, "No", "m1", employer=ACME)
+    assert answer(elsewhere, YES_NO, recall=workflow.recall_answer, employer=other) == (
+        "No",
+        questions.REMEMBERED,
+    )
+    kept = {row["label"]: row["value"] for row in workflow.remembered_answers()}
+    assert kept[common_questions.BY_ID["related_to_employee"].label] == "No"
+    # A yes is about that company alone, and never replaces his general answer.
+    knows = "Do you know anyone who currently works at Acme?"
+    assert workflow.remember_answer(knows, YES_NO, "Yes", "m2", employer=ACME)
+    knows_other = "Do you know anyone who currently works at Globex?"
+    assert answer(knows_other, YES_NO, recall=workflow.recall_answer, employer=other) == (
+        None,
+        None,
+    )
+    assert workflow.remember_answer(RELATED, YES_NO, "Yes", "m3", employer=other)
+    third = "ashbyhq.com/initech"
+    assert answer(RELATED, YES_NO, recall=workflow.recall_answer, employer=third)[0] == "No"
+    # A legal question is never generalised this way.
+    legal = classify("Are you legally authorized to work in the United States?")
+    assert not questions.general_no(legal, "No")
+    assert questions.general_no(classify(RELATED), "No")
+    assert not questions.general_no(classify(RELATED), "Yes")
+
+
 # --- 7. U.S. person: asked once, then remembered -------------------------------------------
 US_PERSON = (
     "Are you a U.S. Person (U.S. citizen, U.S. national, lawful permanent resident, "
@@ -649,3 +679,54 @@ def test_a_question_marked_required_by_a_hashed_class_is_required(reader):
         if f.get("options")
     }
     assert groups == {"Are you authorized?": True, "Receive updates?": False}
+
+
+LONE_BOXES = """<title>Apply</title><form>
+<fieldset><label class="_required_f7cvd_91 title" for="q1">I certify this is true.</label>
+<div><span><input type="checkbox" id="q1-0" name="Yes"></span><label for="q1-0">Yes</label></div>
+</fieldset>
+<fieldset><label class="_required_f7cvd_91 title" for="q2">I understand my application will be
+processed in accordance with Northwind's Candidate Privacy Policy.</label>
+<div><span><input type="checkbox" id="q2-0" name="Yes"></span><label for="q2-0">Yes</label></div>
+</fieldset>
+<fieldset><label class="title" for="q3">Which teams?</label>
+<div><input type="checkbox" id="q3-0" name="teams"><label for="q3-0">Web</label></div>
+<div><input type="checkbox" id="q3-1" name="teams"><label for="q3-1">Mobile</label></div>
+</fieldset></form>"""
+
+
+def test_lone_boxes_that_share_a_name_are_separate_questions(reader):
+    # What the live board does: every lone checkbox is named "Yes".
+    groups = [
+        (" ".join(f["label"].split()), [o["label"] for o in f["options"]], f["required"])
+        for f in reader.read(LONE_BOXES)["fields"]
+        if f["kind"] == "checkbox_group"
+    ]
+    privacy = (
+        "I understand my application will be processed in accordance with Northwind's "
+        "Candidate Privacy Policy."
+    )
+    assert groups == [
+        ("I certify this is true.", ["Yes"], True),
+        (privacy, ["Yes"], True),
+        ("Which teams?", ["Web", "Mobile"], False),
+    ]
+    assert classify(privacy).canonical_id == "privacy_policy_consent"
+    assert classify(privacy).sensitivity == questions.SENSITIVE
+
+
+def test_a_new_pass_decides_again_what_an_earlier_pass_left_blank(state):
+    app = workflow.enqueue("https://jobs.example.com/blank")["application_id"]
+    with workflow.db() as conn:
+        conn.executemany(
+            "INSERT INTO application_answers VALUES(?,?,?,?)",
+            [
+                (app, "k1", "skip", "auto-skip:k1"),
+                (app, "k2", "Short.", "auto-draft:abc"),
+                (app, "k3", "Mine.", "m-owner"),
+            ],
+        )
+    workflow.forget_skips(app)
+    with workflow.db() as conn:
+        kept = [r[0] for r in conn.execute("SELECT field_key FROM application_answers ORDER BY 1")]
+    assert kept == ["k2", "k3"]
