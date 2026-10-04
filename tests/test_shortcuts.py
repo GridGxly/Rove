@@ -1,8 +1,10 @@
-"""Fixed requests in agent-control, answered by code through the Hermes gateway plugin.
+"""The fast lane in agent-control, answered by code through the Hermes gateway plugin.
 
 `rove.shortcuts` decides; `integrations/hermes/rove_shortcuts` is the plugin that asks it
-and posts the answer. Each fixed request from the owner gets exactly one reply and no
-model turn; anything else, from anyone, goes on to the model untouched.
+and posts the answer. Only exact forms are taken here: a message that is nothing but
+links, `/new` and `/reset`, and the few requests on the pinned help. Each gets exactly
+one reply and no model turn. Every other message, however it is worded and whoever
+wrote it, goes on to the model untouched; this lane never answers "not understood".
 """
 
 import asyncio
@@ -39,7 +41,12 @@ def load_plugin():
     return module
 
 
-# --- the matcher ------------------------------------------------------------------
+def eval_phrases() -> list[str]:
+    path = REPOSITORY / "tests/chat_eval/phrases.jsonl"
+    return [json.loads(line)["say"] for line in path.read_text().splitlines() if line.strip()]
+
+
+# --- the fast lane: exact forms only ---------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -47,47 +54,25 @@ def load_plugin():
     [
         ("status", "status"),
         ("Status?", "status"),
-        ("yo rove status please", "status"),
-        ("what's the status", "status"),
+        ("STATUS.", "status"),
         ("whats waiting", "waiting"),
         ("What’s waiting on me?", "waiting"),
-        ("waiting", "waiting"),
-        ("anything waiting for me", "waiting"),
         ("how many did you send today", "sends"),
-        ("sends", "sends"),
         ("How many did you send today??", "sends"),
         ("pause", "pause"),
-        ("Pause the feed.", "pause"),
-        ("resume", "resume"),
-        ("resume the feed", "resume"),
-        ("unpause", "resume"),
+        ("Resume!", "resume"),
         ("help", "help"),
-        ("what can I ask?", "help"),
         ("?", "help"),
         ("https://jobs.lever.co/acme/1", "paste"),
-        ("<https://jobs.lever.co/acme/1> first", "paste"),
-        ("apply to this one asap https://jobs.lever.co/acme/1", "paste"),
+        ("<https://jobs.lever.co/acme/1> https://jobs.lever.co/acme/2", "paste"),
         ("first", "first"),
         ("Move it up.", "first"),
+        ("/new", "reset"),
+        ("/reset", "reset"),
     ],
 )
-def test_fixed_requests_match_however_they_are_typed(text, kind):
-    assert shortcuts.match(text) == (kind, "")
-
-
-@pytest.mark.parametrize(
-    ("text", "company"),
-    [
-        ("why did you skip initech", "initech"),
-        ("Why did you skip Initech?", "Initech"),
-        ("why didn't you apply to Globex Corp", "Globex Corp"),
-        ("why didn’t you apply to Hooli", "Hooli"),
-        ("why was Vandelay Industries skipped?", "Vandelay Industries"),
-        ("did I apply to Acme", "Acme"),
-    ],
-)
-def test_the_company_question_keeps_the_name_as_typed(text, company):
-    assert shortcuts.match(text) == ("company", company)
+def test_exact_forms_take_the_fast_lane(text, kind):
+    assert shortcuts.match(text) == kind
 
 
 @pytest.mark.parametrize(
@@ -95,23 +80,29 @@ def test_the_company_question_keeps_the_name_as_typed(text, company):
     [
         "",
         "hi",
-        "yo",
-        "hey rove",
-        "what does the status of the acme application look like",
+        "yo rove status please",
+        "whats good",
+        "pause the feed",
+        "pause rn im busy",
         "status of acme",
-        "can you pause the application",
         "resume 0123456789ab",  # the worker's explicit form, never a feed resume
-        "is this a good fit https://jobs.lever.co/acme/1 or not, I am not sure about it",
-        "where do i go to school",
-        "why did you skip it, that seemed like a great fit for me honestly",
-        "why was the application stopped",
-        "what happened with the browser",
+        "hi apply to this https://jobs.lever.co/acme/1",
+        "https://jobs.lever.co/acme/1 first",
+        "why did you skip initech",
+        "y did u skip acme",
+        "put that one first",
         "!!!",
-        "first things first, how are you",
+        "👍",
     ],
 )
 def test_everything_else_goes_to_the_model(text):
     assert shortcuts.match(text) is None
+
+
+def test_no_phrase_table_reads_his_meaning():
+    for name in ("COMPANY", "FILLER"):
+        assert not hasattr(shortcuts, name), name
+    assert len(shortcuts.REQUESTS) <= 10
 
 
 # --- deciding one message -------------------------------------------------------
@@ -166,40 +157,57 @@ def test_only_the_owner_in_agent_control_is_ever_answered(state):
     assert state.logged == []
 
 
+def test_no_message_in_his_own_words_is_answered_or_turned_down_by_code(state):
+    """Every phrase of the chat evaluation that is not an exact form reaches the model."""
+    for number, text in enumerate(eval_phrases()):
+        decision = shortcuts.handle(message(text, id=f"e{number}"))
+        if shortcuts.match(text) is None:
+            assert decision == {"handled": False, "reply": "", "control": True}, text
+    with workflow.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM application_queue").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    ("text", "expected", "outcome"),
     [
-        ("status", lambda: chat.status()["say"]),
-        ("what's waiting on me", lambda: chat.waiting()["say"]),
-        ("how many did you send today", lambda: chat.sent_today()["say"]),
-        ("help", lambda: chat.help_reply()["say"]),
-        ("why did you skip Initech", lambda: chat.company_history("Initech")["say"]),
+        ("status", lambda: chat.status()["say"], "0 need him, 0 queued, 0 in progress"),
+        ("what's waiting on me", lambda: chat.waiting()["say"], "nothing waits on him"),
+        ("how many did you send today", lambda: chat.sent_today()["say"], "0 sent today"),
+        ("help", lambda: chat.help_reply()["say"], "showed the help"),
     ],
 )
-def test_each_request_gets_the_words_the_mcp_tool_would_give(state, text, expected):
+def test_each_request_gets_the_words_the_mcp_tool_would_give(state, text, expected, outcome):
     decision = shortcuts.handle(message(text))
     assert decision == {"handled": True, "reply": expected(), "control": True}
-    assert len(state.logged) == 1 and state.logged[0].startswith("shortcut · ")
-    assert "Initech" not in state.logged[0]  # what he asked about stays out of the log
+    assert len(state.logged) == 1
+    assert state.logged[0].startswith("shortcut · ") and f" · {outcome} · " in state.logged[0]
 
 
-def test_pause_and_resume_flip_the_switch(state):
-    assert shortcuts.handle(message("pause the feed"))["reply"].startswith("Paused.")
+def test_pause_and_resume_flip_the_switch_and_log_what_changed(state):
+    assert shortcuts.handle(message("pause"))["reply"].startswith("Paused.")
     stored = json.loads((state.root / "config/workflow.json").read_text())
     assert stored["feed_paused"] is True
-    assert shortcuts.handle(message("resume", id="7002"))["reply"].startswith("The feed is running")
+    assert shortcuts.handle(message("Resume", id="7002"))["reply"].startswith("The feed is running")
     assert json.loads((state.root / "config/workflow.json").read_text())["feed_paused"] is False
+    assert [line.split(" · ")[2] for line in state.logged] == ["feed paused", "feed resumed"]
+
+
+def test_new_and_reset_start_fresh_with_a_plain_line(state):
+    decision = shortcuts.handle(message("/new"))
+    assert decision == {"handled": True, "reply": "Fresh start.", "control": True, "reset": True}
 
 
 def test_a_paste_is_applied_once_and_answered_once(state):
-    pasted = message("https://jobs.lever.co/acme/1 first")
+    pasted = message("https://jobs.lever.co/acme/1")
     assert shortcuts.handle(pasted) == {
         "handled": True,
         "reply": "Queued. It goes next.",
         "control": True,
     }
+    assert " · queued his pasted link · " in state.logged[-1]
     # The same message again (Hermes retried, or the worker reads it): handled, silent.
     assert shortcuts.handle(pasted) == {"handled": True, "reply": "", "control": True}
+    assert " · already answered by the worker · " in state.logged[-1]
     worker_view = {"id": pasted["id"], "author": {"id": OWNER}, "content": pasted["content"]}
     assert inbound.owner_message(worker_view, "control", SETTINGS, {}) == ""
     with workflow.db() as conn:
@@ -214,7 +222,7 @@ def test_a_paste_is_applied_once_and_answered_once(state):
 def test_first_as_a_reply_moves_the_paste_up(state):
     shortcuts.handle(message("https://jobs.lever.co/acme/1", id="7101"))
     shortcuts.handle(message("https://jobs.lever.co/acme/2", id="7102"))
-    moved = shortcuts.handle(message("first", id="7103", reply_to="rove-line"))
+    moved = shortcuts.handle(message("FIRST!", id="7103", reply_to="rove-line"))
     assert moved["reply"] == "Moved it up. It goes next."
 
 
@@ -228,7 +236,7 @@ def test_a_failure_is_one_plain_line_and_one_log_line(state, monkeypatch):
     assert decision["reply"] == (
         "That did not work on my side just now. The details are in the system log."
     )
-    assert state.logged == ["shortcut · read the status · failed · RuntimeError"]
+    assert state.logged == ["shortcut · status · failed · RuntimeError"]
 
 
 def test_the_cli_prints_the_decision_before_it_posts_the_log_line(state, monkeypatch):
@@ -241,7 +249,7 @@ def test_the_cli_prints_the_decision_before_it_posts_the_log_line(state, monkeyp
     shortcuts.main()
     decision = json.loads(out.getvalue())
     assert decision["handled"] is True and decision["reply"] == chat.status()["say"]
-    assert order[0] == "closed" and order[1].startswith("shortcut · read the status")
+    assert order[0] == "closed" and order[1].startswith("shortcut · status · ")
     # Garbage in is no decision: the model answers.
     out = io.StringIO()
     out.close = lambda: None
@@ -479,3 +487,47 @@ def test_install_copies_the_plugin_writes_its_settings_and_enables_it(state, tmp
     assert called.read_text().split() == ["plugins", "enable", "rove_shortcuts"]
     assert done[-2] == "enabled rove_shortcuts in Hermes"
     assert "restart the gateway" in done[-1]
+    # The persona goes in beside the plugin; the one it replaces is kept.
+    persona = (REPOSITORY / "integrations/hermes/SOUL.md").read_text()
+    assert (hermes_home / "SOUL.md").read_text() == persona
+    (hermes_home / "SOUL.md").write_text("You are Hermes Agent.")
+    shortcuts.install(hermes_home=hermes_home, hermes=str(fake_hermes), executable=rove)
+    kept = list(hermes_home.glob("SOUL.md.before-rove-*"))
+    assert len(kept) == 1 and kept[0].read_text() == "You are Hermes Agent."
+    assert (hermes_home / "SOUL.md").read_text() == persona
+    done = shortcuts.install(hermes_home=hermes_home, hermes=str(fake_hermes), executable=rove)
+    assert any("already this checkout's persona" in line for line in done)
+
+
+def test_new_or_reset_starts_fresh_without_hermes_banner(monkeypatch):
+    plugin = load_plugin()
+
+    async def ask(message, settings):
+        return {"handled": True, "reply": "Fresh start.", "control": True, "reset": True}
+
+    monkeypatch.setattr(plugin, "load_settings", lambda: {"command": ["rove", "shortcut"]})
+    monkeypatch.setattr(plugin, "ask_rove", ask)
+    resets = []
+
+    class Gateway:
+        def __init__(self, adapter, platform):
+            self.adapters = {platform: adapter}
+
+        async def _handle_reset_command(self, incoming):
+            resets.append(incoming.text)
+            return "✨ Session reset! Starting fresh.\n◆ Model: ..."
+
+    @__import__("dataclasses").dataclass
+    class Event:
+        text: str
+        source: object
+        message_id: str = "8001"
+        reply_to_message_id: object = None
+        internal: bool = False
+
+    adapter = Adapter()
+    incoming = Event("/reset", event("x").source)
+    result = run(plugin.on_message(incoming, Gateway(adapter, incoming.source.platform)))
+    assert result == {"action": "skip", "reason": "answered by rove"}
+    assert resets == ["/new"]
+    assert adapter.sent == [("control", "Fresh start.")]  # Hermes' banner is never posted

@@ -1,0 +1,73 @@
+{"say": "yo apply to this rq https://jobs.lever.co/examplelabs/1a2b3c4d", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.lever.co/examplelabs/1a2b3c4d"}}]}
+{"say": "hi apply to this https://jobs.ashbyhq.com/initech/60afb634-0000-4000-8000-000000000001", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.ashbyhq.com/initech/60afb634-0000-4000-8000-000000000001"}}]}
+{"say": "apply https://boards.greenhouse.io/globex/jobs/5550001", "expect": [{"tool": "apply_to_link", "args": {"url": "https://boards.greenhouse.io/globex/jobs/5550001"}}]}
+{"say": "can u do this one https://jobs.lever.co/examplelabs/1a2b3c4d", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.lever.co/examplelabs/1a2b3c4d"}}]}
+{"say": "this one pls https://boards.greenhouse.io/globex/jobs/5550001", "expect": [{"tool": "apply_to_link", "args": {"url": "https://boards.greenhouse.io/globex/jobs/5550001"}}]}
+{"say": "https://jobs.lever.co/examplelabs/1a2b3c4d this one asap", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.lever.co/examplelabs/1a2b3c4d", "first": true}}]}
+{"say": "apply to both https://jobs.lever.co/examplelabs/1a2b3c4d https://boards.greenhouse.io/globex/jobs/5550001 do the second one first", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.lever.co/examplelabs/1a2b3c4d"}}, {"tool": "apply_to_link", "args": {"url": "https://boards.greenhouse.io/globex/jobs/5550001", "first": true}}]}
+{"say": "here https://apply.workable.com/hooli/j/7D8E9F0A1B/", "expect": [{"tool": "apply_to_link", "args": {"url": "https://apply.workable.com/hooli/j/7D8E9F0A1B/"}}]}
+{"say": "https://jobs.lever.co/examplelabs/1a2b3c4d do this first", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.lever.co/examplelabs/1a2b3c4d", "first": true}}]}
+{"say": "wanna try this one https://jobs.ashbyhq.com/initech/60afb634-0000-4000-8000-000000000001 i think its a good fit", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.ashbyhq.com/initech/60afb634-0000-4000-8000-000000000001"}}]}
+{"say": "queue this up https://boards.greenhouse.io/globex/jobs/5550001 and https://apply.workable.com/hooli/j/7D8E9F0A1B/", "expect": [{"tool": "apply_to_link", "args": {"url": "https://boards.greenhouse.io/globex/jobs/5550001"}}, {"tool": "apply_to_link", "args": {"url": "https://apply.workable.com/hooli/j/7D8E9F0A1B/"}}]}
+{"say": "my friend works here https://boards.greenhouse.io/globex/jobs/5550001 so def apply", "expect": [{"tool": "apply_to_link", "args": {"url": "https://boards.greenhouse.io/globex/jobs/5550001"}}]}
+{"say": "aplly to this https://apply.workable.com/hooli/j/7D8E9F0A1B/ thx", "expect": [{"tool": "apply_to_link", "args": {"url": "https://apply.workable.com/hooli/j/7D8E9F0A1B/"}}]}
+{"say": "send my stuff to https://jobs.ashbyhq.com/initech/60afb634-0000-4000-8000-000000000001", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.ashbyhq.com/initech/60afb634-0000-4000-8000-000000000001"}}]}
+{"say": "put me in for https://jobs.lever.co/examplelabs/1a2b3c4d too", "expect": [{"tool": "apply_to_link", "args": {"url": "https://jobs.lever.co/examplelabs/1a2b3c4d"}}]}
+{"say": "is this one even worth it https://jobs.lever.co/examplelabs/1a2b3c4d", "expect": "no_action"}
+{"say": "dont apply to this https://boards.greenhouse.io/globex/jobs/5550001 its a scam", "expect": "no_action"}
+{"say": "what do u think of https://jobs.ashbyhq.com/initech/60afb634-0000-4000-8000-000000000001", "expect": "no_action"}
+{"say": "should i apply to https://jobs.lever.co/examplelabs/1a2b3c4d?", "expect": "no_action"}
+{"say": "found this https://apply.workable.com/hooli/j/7D8E9F0A1B/ lmk if its legit before u do anything", "expect": "no_action"}
+{"say": "https://apply.workable.com/hooli/j/7D8E9F0A1B/ nah skip this one", "expect": "no_action"}
+{"say": "try tesla again i wanna see", "expect": [{"tool": "retry_application", "args": {"name": "tesla"}}]}
+{"say": "run the sierra one again", "expect": [{"tool": "retry_application", "args": {"name": "sierra"}}]}
+{"say": "go on walleye", "expect": [{"tool": "retry_application", "args": {"name": "walleye"}}]}
+{"say": "retry xai", "expect": [{"tool": "retry_application", "args": {"name": "xai"}}]}
+{"say": "can u give pinterest another shot", "expect": [{"tool": "retry_application", "args": {"name": "pinterest"}}]}
+{"say": "kick off belvedere again", "expect": [{"tool": "retry_application", "args": {"name": "belvedere"}}]}
+{"say": "try to apply to tesla again", "expect": [{"tool": "retry_application", "args": {"name": "tesla"}}]}
+{"say": "forget walleye", "expect": [{"tool": "park_application", "args": {"name": "walleye"}}]}
+{"say": "park the sierra one", "expect": [{"tool": "park_application", "args": {"name": "sierra"}}]}
+{"say": "skip pinterest for now", "expect": [{"tool": "park_application", "args": {"name": "pinterest"}}]}
+{"say": "drop xai im not interested anymore", "expect": [{"tool": "park_application", "args": {"name": "xai"}}]}
+{"say": "stop working on the tesla one", "expect": [{"tool": "park_application", "args": {"name": "tesla"}}]}
+{"say": "for the xai one put 40 hrs", "expect": [{"tool": "answer_application", "args": {"name": "xai", "answer": "40"}}]}
+{"say": "for tesla, 6 months", "expect": [{"tool": "answer_application", "args": {"name": "tesla", "answer": "6 months"}}]}
+{"say": "tesla start date is may 2027", "expect": [{"tool": "answer_application", "args": {"name": "tesla", "answer": "may 2027"}}]}
+{"say": "xai: i can do 30 hours a week", "expect": [{"tool": "answer_application", "args": {"name": "xai", "answer": "30"}}]}
+{"say": "answer the tesla one with 12 weeks", "expect": [{"tool": "answer_application", "args": {"name": "tesla", "answer": "12 weeks"}}]}
+{"say": "whats good", "expect": {"any": ["plain", [{"tool": "rove_status", "args": {}}]]}}
+{"say": "did u send any today", "expect": [{"tool": "sends_today", "args": {}}]}
+{"say": "how many apps went out today", "expect": [{"tool": "sends_today", "args": {}}]}
+{"say": "whats the status", "expect": [{"tool": "rove_status", "args": {}}]}
+{"say": "yo rove status please", "expect": [{"tool": "rove_status", "args": {}}]}
+{"say": "hows it going with the apps", "expect": [{"tool": "rove_status", "args": {}}]}
+{"say": "anything need me?", "expect": [{"tool": "whats_waiting", "args": {}}]}
+{"say": "what do u need from me", "expect": [{"tool": "whats_waiting", "args": {}}]}
+{"say": "wats waiting", "expect": [{"tool": "whats_waiting", "args": {}}]}
+{"say": "pause rn im busy", "expect": [{"tool": "pause_feed", "args": {}}]}
+{"say": "pause the feed", "expect": [{"tool": "pause_feed", "args": {}}]}
+{"say": "stop sending stuff from the feed for now", "expect": [{"tool": "pause_feed", "args": {}}]}
+{"say": "ok u can start the feed again", "expect": [{"tool": "resume_feed", "args": {}}]}
+{"say": "unpause", "expect": [{"tool": "resume_feed", "args": {}}]}
+{"say": "y did u skip acme", "expect": [{"tool": "company_history", "args": {"company": "acme"}}]}
+{"say": "why didnt u apply to globex", "expect": [{"tool": "company_history", "args": {"company": "globex"}}]}
+{"say": "did i apply to initech already", "expect": [{"tool": "company_history", "args": {"company": "initech"}}]}
+{"say": "whats up with hooli", "expect": [{"tool": "company_history", "args": {"company": "hooli"}}]}
+{"say": "what can u do", "expect": {"any": ["plain", [{"tool": "what_you_can_ask", "args": {}}]]}}
+{"say": "where do i go to school", "expect": [{"tool": "read_candidate_section", "args": {"section": "education"}}]}
+{"say": "wats my gpa", "expect": [{"tool": "read_candidate_section", "args": {"section": "education"}}]}
+{"say": "am i allowed to work in the us", "expect": [{"tool": "read_candidate_section", "args": {"section": "eligibility"}}]}
+{"say": "whats my email on file", "expect": [{"tool": "read_candidate_section", "args": {"section": "identity"}}]}
+{"say": "hi", "expect": "plain"}
+{"say": "thx", "expect": "plain"}
+{"say": "lol ok", "expect": "plain"}
+{"say": "can u submit the tesla one for me", "expect": "no_action"}
+{"say": "change my phone number to 555 0100", "expect": {"any": ["no_action", [{"tool": "propose_onboarding_section", "args": {"section": "identity"}}]]}}
+{"say": "find me some backend internships", "expect": {"any": [[{"tool": "search_job_feed", "args": {}}], [{"tool": "review_job_matches", "args": {}}]]}}
+{"say": "nah skip that one", "history": [{"role": "user", "content": "whats waiting"}, {"role": "assistant", "content": "1 needs you:\n\u2022 Tesla \u2014 Embedded Software Intern: 1 question only you can answer"}], "expect": [{"tool": "park_application", "args": {"name": "tesla"}}]}
+{"say": "try to apply now", "history": [{"role": "user", "content": "what happened with tesla"}, {"role": "assistant", "content": "\u2022 Tesla \u2014 Embedded Software Intern: preparation stopped \u2014 the page did not load"}], "expect": [{"tool": "retry_application", "args": {"name": "tesla"}}]}
+{"say": "ok apply to it", "history": [{"role": "user", "content": "is this worth it https://boards.greenhouse.io/globex/jobs/5550001"}, {"role": "assistant", "content": "It's a data intern role at Globex in Columbus; it fits your preferences."}], "expect": [{"tool": "apply_to_link", "args": {"url": "https://boards.greenhouse.io/globex/jobs/5550001"}}]}
+{"say": "the platform one", "history": [{"role": "user", "content": "run sierra again"}, {"role": "assistant", "content": "Which one: Sierra \u2014 Agent Intern; Sierra \u2014 Platform Intern?"}], "expect": [{"tool": "retry_application", "args": {"name": "platform"}}]}
+{"say": "put 40", "history": [{"role": "user", "content": "whats waiting"}, {"role": "assistant", "content": "3 need you:\n\u2022 Tesla \u2014 Embedded Software Intern: 1 question only you can answer\n\u2022 xAI \u2014 Software Engineer Intern: 2 questions only you can answer\n\u2022 Sierra \u2014 Agent Intern: your call on fit"}, {"role": "user", "content": "what does xai want"}, {"role": "assistant", "content": "xAI asks: 1) How many hours per week can you work? 2) Earliest start date?"}], "expect": {"any": ["ask", [{"tool": "answer_application", "args": {"name": "xai", "answer": "40"}}]]}}
+{"say": "do the second one first", "history": [{"role": "user", "content": "apply to these https://jobs.ashbyhq.com/initech/60afb634-0000-4000-8000-000000000001 https://apply.workable.com/hooli/j/7D8E9F0A1B/"}, {"role": "assistant", "content": "Queued. It goes next.\nQueued. 1 of your links is ahead of it; say `first` to move it up."}], "expect": [{"tool": "apply_to_link", "args": {"url": "https://apply.workable.com/hooli/j/7D8E9F0A1B/", "first": true}}]}

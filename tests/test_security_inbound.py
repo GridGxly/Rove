@@ -280,7 +280,7 @@ def test_the_owners_pasted_link_is_his_own_and_outranks_the_agents_copy(state, m
     assert source_of(app) == "agent" and workflow.get(app)["status"] == "NEEDS_USER"
     # The owner pastes the same link in agent-control: the wait ends, the link is his.
     posted.clear()
-    line = inbound.owner_message(owner_says(f"apply to this one <{link}>"), "control", SETTINGS, {})
+    line = inbound.owner_message(owner_says(f"<{link}>"), "control", SETTINGS, {})
     assert line == "Already queued. It goes next."
     assert source_of(app) == "owner_link" and workflow.get(app)["status"] == "QUEUED"
     assert workflow.intake_hold(workflow.get(app)) is None
@@ -334,21 +334,20 @@ def test_a_message_that_talks_about_a_link_is_not_a_pasted_link(content):
     assert inbound.pasted_links(content) == []
 
 
-def test_pasted_links_are_bare_or_come_with_a_few_apply_words():
+def test_only_a_message_of_nothing_but_links_is_queued_by_code():
+    """Code reads no meaning into words: any message with words goes to the model, whose
+    `apply_to_link` gives owner standing only to a link found in a message he wrote."""
     one = "https://boards.greenhouse.io/acme/jobs/1"
     assert inbound.pasted_links(one) == [one]
     assert inbound.pasted_links(f"<{one}>") == [one]
-    assert inbound.pasted_links(f"apply to this one please: {one}.") == [one]
-    assert inbound.pasted_links(f"can you queue {one}") == [one]
-    # However he words it, asking to apply is a paste.
-    assert inbound.pasted_links(f"hi apply to this {one}") == [one]
-    assert inbound.pasted_links(f"try to apply to acme i wanna see {one}") == [one]
-    assert inbound.pasted_links(f"can you apply to this one? {one}") == [one]
-    assert inbound.pasted_links(f"hey rove here's another {one}") == [one]
-    # Asking whether to apply is a question for the agent, not a paste.
-    assert inbound.pasted_links(f"should i apply to {one}?") == []
-    assert inbound.pasted_links(f"is it worth applying to {one}") == []
-    assert inbound.pasted_links(f"{one} {one}") == [one]
+    assert inbound.pasted_links(f"{one} {one}.") == [one]
+    for worded in (
+        f"apply to this one please: {one}",
+        f"hi apply to this {one}",
+        f"can you queue {one}",
+        f"should i apply to {one}?",
+    ):
+        assert inbound.pasted_links(worded) == []
     many = " ".join(f"https://jobs.lever.co/acme/{n}" for n in range(6))
     assert inbound.pasted_links(many) == []
 

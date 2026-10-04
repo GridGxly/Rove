@@ -5,10 +5,11 @@ starts a model turn (the `pre_gateway_dispatch` hook). This plugin hands each Di
 message to Rove's own code (`rove shortcut`, run with the repository's Python) and does
 what Rove decides:
 
-- a fixed request from the owner in agent-control (status, what's waiting, sends today,
-  pause, resume, help, a pasted job link, `first`, why did you skip a company): post
-  Rove's line in the channel and tell Hermes the message is handled, so no model turn
-  runs and nothing else answers it;
+- an exact fixed form from the owner in agent-control (a message that is only links,
+  `status`, `what's waiting`, `how many did you send today`, `pause`, `resume`, `help`,
+  `first`, `/new`, `/reset`): post Rove's line in the channel and tell Hermes the
+  message is handled, so no model turn runs and nothing else answers it (`/new` and
+  `/reset` start the chat fresh without Hermes' banner);
 - any other message from the owner in agent-control: start that chat fresh when it has
   been quiet for a while or its history has grown, then let the model answer;
 - everything else, or any failure here: do nothing, and Hermes carries on as before.
@@ -117,6 +118,16 @@ async def post(gateway, event, text: str) -> bool:
     return True
 
 
+async def start_fresh(event, gateway):
+    """Start the chat fresh through Hermes' own `/new` path, without its banner.
+
+    `/new` returns a "Session reset" notice with the model and endpoint; it is a reply
+    for the person who typed `/new`, so here it is dropped. Rove says its own short line
+    when he asked for the reset himself.
+    """
+    await gateway._handle_reset_command(dataclasses.replace(event, text="/new"))
+
+
 async def keep_short(event, gateway, session_store) -> bool:
     """Start the agent-control chat fresh after IDLE_RESET of quiet or a long history.
 
@@ -134,7 +145,7 @@ async def keep_short(event, gateway, session_store) -> bool:
         quiet = (now - updated).total_seconds()
         if quiet < IDLE_RESET and (entry.last_prompt_tokens or 0) < MAX_PROMPT_TOKENS:
             return False
-        await gateway._handle_reset_command(dataclasses.replace(event, text="/new"))
+        await start_fresh(event, gateway)
         logger.info(
             "rove_shortcuts: agent-control chat started fresh (quiet %.0fs, last prompt %s tokens)",
             quiet,
@@ -158,6 +169,8 @@ async def on_message(event, gateway=None, session_store=None, **kwargs):
         return None
     if decision.get("handled"):
         reply = str(decision.get("reply") or "")
+        if decision.get("reset") and gateway is not None:
+            await start_fresh(event, gateway)
         if reply:
             await post(gateway, event, reply)
         # Handled: by this reply, or (for a paste the worker reached first) by the worker's.

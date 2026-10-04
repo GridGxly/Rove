@@ -4,8 +4,10 @@
 handles the things that are not a plain reply to one application's hold:
 
 - a link the owner pastes in agent-control is queued as the owner's own link. Apart
-  from the owner's own terminal, this is the only place that source is given: the
-  model's MCP tool cannot give it, and neither can a page, a mail or anyone else.
+  from the owner's own terminal, this module is the only place that source is given:
+  for a message that is nothing but links, here; for a link he asked for in his own
+  words, through `chat.apply_to_link`, which gives it only to a link found in a
+  message he wrote. A page, a mail, a tool result or the model cannot give it.
 - the owner's Discord reply on a mail card in the recruiting channel confirms or drops a
   mail whose sender could not be verified.
 - `not rejected` in an application's thread takes back the last step a mail made.
@@ -19,25 +21,9 @@ from datetime import UTC, datetime, timedelta
 from . import workflow
 
 LINK = re.compile(r"<?(https?://[^\s<>]+)>?", re.IGNORECASE)
-# Words that may stand next to a pasted link and still mean "apply to this". Anything
-# else (a question, "do not", a comment about the link) leaves the message to the agent,
-# whose own queueing carries no owner authority.
-PASTE_WORDS = frozenset(
-    {
-        *("apply", "queue", "add", "start", "prepare", "do", "submit", "send", "go", "ahead"),
-        *("to", "for", "in", "the", "this", "that", "these", "one", "it", "here", "now", "next"),
-        *("job", "role", "posting", "link", "please", "pls", "and", "also", "too"),
-        *("me", "can", "could", "you", "first", "priority", "asap"),
-        *("hi", "hey", "hello", "yo", "rove", "ok", "okay", "here", "heres", "here's", "new"),
-        *("another", "now", "next", "for", "i", "want", "wanna", "it", "up", "thanks", "ty"),
-    }
-)
-# Next to a pasted link, any of these puts it ahead of his other pasted links.
-PRIORITY_WORDS = frozenset({"now", "first", "next", "priority", "asap"})
-# Alone in agent-control, or as a reply to Rove's line about a paste: move the latest paste up.
-FIRST_REPLIES = frozenset(
-    {"first", "move it up", "do this one first", "do that one first", "do it first"}
-)
+# `first` or `move it up`, exactly, alone in agent-control or as a reply to Rove's line
+# about a paste: move his latest paste up. Every other way of saying it is the model's.
+FIRST_REPLIES = frozenset({"first", "move it up"})
 # How long after a paste a bare `first` still means that paste.
 JUST_PASTED = timedelta(minutes=30)
 MAX_LINKS = 5
@@ -64,51 +50,23 @@ def words(text) -> str:
     return " ".join(str(text or "").strip().strip("`").rstrip(".!?").split()).lower()
 
 
-# A message with a link is a paste when it asks to apply, or says nothing else of substance.
-APPLY_WORDS = re.compile(r"\b(?:apply|applying|queue|add|submit)\b")
-# "don't apply", "skip this one": he is saying no, whatever else the message holds.
-REFUSAL_WORDS = re.compile(
-    r"\b(?:don'?t|dont|do not|not|never|no|stop|skip|cancel|remove|withdraw|park)\b"
-)
-# He is asking about the link, not asking for it: the agent answers instead.
-ASKING_WORDS = re.compile(
-    r"\b(?:should|worth|think|thoughts|opinion|why|what|how|is|are|does|did|good|fit)\b"
-)
-# "can you apply to this?" is a request even with a question mark.
-REQUEST_WORDS = re.compile(r"\b(?:can|could|will|would) (?:you|u)\b|\bplease\b|\bpls\b")
-MAX_PASTE_WORDS = 30
+def links_in(text) -> list[str]:
+    """Every link in a message, as written, without trailing punctuation."""
+    return [match.rstrip(".,;:!?)") for match in LINK.findall(str(text or ""))]
 
 
 def pasted_links(text) -> list[str]:
-    """The links of a message that is a pasted link.
+    """The links of a message that is nothing but links, in the order pasted.
 
-    It is one when the message is nothing but links and filler ("hi", "this one please"),
-    or when it asks to apply in his own words ("hi apply to this", "try to apply to acme i
-    wanna see"). A message that refuses ("don't apply"), asks about the link ("is this any
-    good?", "should i apply?") or merely mentions one ("the page said to open ...") is not
-    a paste: nothing is queued from text that does not ask for it.
+    This is the code's fast lane, and it decides nothing about meaning: a message with
+    any words in it goes to the model, which works out what he wants and, to apply,
+    calls a tool that checks the link is in a message he wrote (`chat.apply_to_link`).
     """
     text = str(text or "")
-    links = [match.rstrip(".,;:!?)") for match in LINK.findall(text)]
-    if not links or len(links) > MAX_LINKS:
-        return []
-    around = LINK.sub(" ", text).lower()
-    rest = re.findall(r"[a-z0-9']+", around)
-    if len(rest) > MAX_PASTE_WORDS or REFUSAL_WORDS.search(around):
-        return []
-    filler_only = all(word in PASTE_WORDS for word in rest)
-    asks_to_apply = bool(APPLY_WORDS.search(around)) and (
-        not ASKING_WORDS.search(around) or bool(REQUEST_WORDS.search(around))
-    )
-    if not (filler_only or asks_to_apply):
+    links = links_in(text)
+    if not links or len(links) > MAX_LINKS or re.search(r"[^\W_]", LINK.sub(" ", text)):
         return []
     return list(dict.fromkeys(links))
-
-
-def wants_first(text) -> bool:
-    """Whether a pasted link came with a word that asks for it first."""
-    rest = set(re.findall(r"[a-z0-9']+", LINK.sub(" ", str(text or "")).lower()))
-    return bool(rest & PRIORITY_WORDS)
 
 
 # --- the owner's line of pasted links ---------------------------------------------
@@ -290,7 +248,7 @@ def apply_control(message: dict) -> str:
     links = pasted_links(content)
     try:
         if links:
-            return queue_pasted(links, first=wants_first(content))
+            return queue_pasted(links)
         replied = bool((message.get("message_reference") or {}).get("message_id"))
         return move_up(replied=replied)
     except (ValueError, PermissionError) as error:

@@ -56,7 +56,10 @@ WORDS = {
     "pause_feed": "paused the feed",
     "resume_feed": "resumed the feed",
     "company_history": "looked up one company",
-    "answer_paste": "applied a pasted link or first",
+    "apply_to_link": "apply to a link",
+    "retry_application": "retry an application",
+    "park_application": "park an application",
+    "answer_application": "answer an application's question",
     "what_you_can_ask": "showed the help",
 }
 # One worker posts the lines in order, so a slow Discord never delays a tool's answer.
@@ -79,17 +82,37 @@ def failure_sentence(name: str, error: Exception) -> str:
     return f"Something broke on Rove's side while it {doing}. The details are in the system log."
 
 
+class Said(str):
+    """Words for the owner, carrying what actually happened for the system-log line."""
+
+    outcome: str = ""
+
+
+def said(result: dict) -> "Said":
+    """A chat answer as the tool's plain-text reply, with its outcome attached."""
+    words = Said(result.get("say") or "")
+    words.outcome = str(result.get("outcome") or "")
+    return words
+
+
 def logged(fn):
-    """The MCP face of a tool: one system-log line per call and plain failures."""
+    """The MCP face of a tool: one system-log line per call and plain failures.
+
+    The line says what the tool reported happened ("queued his link", "link not in his
+    messages, nothing queued"); a tool that reports nothing is logged as having
+    answered, never as having done something.
+    """
     name = fn.__name__
     doing = WORDS.get(name, name.replace("_", " "))
 
-    def finish(started: float, error: Exception | None):
+    def finish(started: float, error: Exception | None, result=None):
         seconds = f"{time.monotonic() - started:.1f} s"
-        if error is None:
-            post_line(f"{doing} · {seconds} · ok")
-        else:
+        if error is not None:
             post_line(f"{doing} · {seconds} · failed · {type(error).__name__}")
+        elif getattr(result, "outcome", ""):
+            post_line(f"{doing} · {result.outcome} · {seconds}")
+        else:
+            post_line(f"{doing} · {seconds} · answered")
 
     if inspect.iscoroutinefunction(fn):
 
@@ -101,8 +124,8 @@ def logged(fn):
             except Exception as error:  # noqa: BLE001 -- every failure becomes one sentence
                 finish(started, error)
                 raise ToolError(failure_sentence(name, error)) from None
-            finish(started, None)
-            return result
+            finish(started, None, result)
+            return str(result) if isinstance(result, Said) else result
 
         return run_async
 
@@ -114,8 +137,8 @@ def logged(fn):
         except Exception as error:  # noqa: BLE001 -- every failure becomes one sentence
             finish(started, error)
             raise ToolError(failure_sentence(name, error)) from None
-        finish(started, None)
-        return result
+        finish(started, None, result)
+        return str(result) if isinstance(result, Said) else result
 
     return run
 
@@ -351,58 +374,88 @@ def application_workflow_status() -> dict:
     return status()
 
 
-# The owner's everyday questions in agent-control. Each returns the words to send him:
-# plain lines written by code for his phone, which the agent passes on as they are. Plain
-# text, not JSON, so the model copies a sentence instead of unpicking an escaped string.
+# The owner's requests in agent-control. The model works out what he wants, however he
+# phrases it, and passes its reading as arguments; code checks the facts and acts. Each
+# returns the words to send him, written by code for his phone, as plain text the model
+# passes on as they are, and tells the system log what actually happened.
 
 
 @tool
 def rove_status() -> str:
     """Status: what Rove is working on, how many need him, queue size, sends today. Send as is."""
-    return chat.status()["say"]
+    return said(chat.status())
 
 
 @tool
 def whats_waiting() -> str:
     """What waits on him right now, and which channel has each card. Send as is."""
-    return chat.waiting()["say"]
+    return said(chat.waiting())
 
 
 @tool
 def sends_today() -> str:
     """How many applications Rove sent today, which ones, and the daily cap. Send as is."""
-    return chat.sent_today()["say"]
+    return said(chat.sent_today())
 
 
 @tool
 def pause_feed() -> str:
-    """Pause jobs from the feed; his own links and picks still go. Only on his ask. Send as is."""
-    return chat.pause_feed()["say"]
+    """Pause jobs from the feed; his own links and picks still go. Only when he asks. Send as is."""
+    return said(chat.pause_feed())
 
 
 @tool
 def resume_feed() -> str:
-    """Start jobs from the feed again after a pause. Only on his ask. Send as is."""
-    return chat.resume_feed()["say"]
+    """Start jobs from the feed again after a pause. Only when he asks. Send as is."""
+    return said(chat.resume_feed())
 
 
 @tool
 def company_history(company: str) -> str:
-    """What happened with one company: its applications and feed jobs skipped, with why. Send as is."""
-    return chat.company_history(company)["say"]
+    """What happened with one company: his applications there and feed jobs skipped, with
+    why. For "why did you skip X", "did I apply to X". Send as is."""
+    return said(chat.company_history(company))
 
 
 @tool
-def answer_paste() -> str:
-    """When his message is only job links (maybe with apply or first) or only `first`: applies
-    his own message as his and returns where it stands. Send as is. Empty: answer him yourself."""
-    return chat.answer_paste().get("say", "")
+def apply_to_link(url: str, first: bool = False) -> str:
+    """Apply to a job link he pasted: queue it as his. Call it when he wants the link done,
+    once per link; not when he only asks about it (worth it? legit? should I?) or turns it
+    down. url: the link exactly as in his message. first: true when he wants it before
+    his other links ("do this one first", "asap", "the second one first"). Only links he
+    pasted himself are queued. Send the reply as is."""
+    return said(chat.apply_to_link(url, first))
+
+
+@tool
+def retry_application(name: str) -> str:
+    """Try one of his applications again (`go` in its thread): "try tesla again", "run the
+    sierra one again", "go on walleye". name: the company or role words he used. With
+    several matches it returns their names to ask which. Send the reply as is."""
+    return said(chat.retry_application(name))
+
+
+@tool
+def park_application(name: str) -> str:
+    """Park one of his applications so it stops and waits (`park it` in its thread): "skip
+    the tesla one", "forget walleye", "park sierra". name: the company or role words.
+    Send the reply as is."""
+    return said(chat.park_application(name))
+
+
+@tool
+def answer_application(name: str, answer: str, question: str | None = None) -> str:
+    """Give his answer to an open question on one of his applications: "for tesla, 6
+    months", "for the xai one put 40 hrs". name: company or role words; answer: his
+    answer in his own words; question: words of the question when he named one. It asks
+    back when the question is unclear. Send the reply as is."""
+    return said(chat.answer_application(name, answer, question))
 
 
 @tool
 def what_you_can_ask() -> str:
     """The short list of things he can ask, with examples. Send as is."""
-    return chat.help_reply()["say"]
+    return said(chat.help_reply())
 
 
 def refresh_help_message():

@@ -1,16 +1,17 @@
-"""Fixed requests in agent-control, answered by code before any model turn.
+"""The fast lane in agent-control: exact forms answered by code before any model turn.
 
 The Hermes gateway runs the `rove_shortcuts` plugin (`integrations/hermes/rove_shortcuts`).
 For every message it receives, the plugin asks `rove shortcut` here, with the message
 on stdin. When the message is from the configured owner, in agent-control, and is one
-of the fixed requests below, this module answers it with the same functions the MCP
-tools use, and the plugin posts that line and tells Hermes the message is handled, so
-no model turn runs and nothing else answers it. Anything else falls through to the
-model as before.
+of the exact forms below, this module answers it with the same functions the MCP tools
+use, and the plugin posts that line and tells Hermes the message is handled, so no
+model turn runs and nothing else answers it.
 
-Matching is forgiving about case, punctuation, apostrophes and a greeting or "please"
-around the words, and strict about everything else: a sentence that only contains
-"status" is a question for the model, not this.
+This lane is for speed only and understands nothing. It takes a message that is
+nothing but links, `/new` or `/reset`, and a few exact requests (the ones on the pinned
+help); case, apostrophes and punctuation around them are ignored, and nothing else is.
+Every other message goes to the model, which works out what he means however he puts
+it. Nothing here ever answers "not understood".
 """
 
 import json
@@ -19,153 +20,69 @@ import sys
 import time
 
 from . import chat, inbound, workflow
-from .discord_feed import private_env
 
-# Words around a request that change nothing: "yo rove status please".
-FILLER = frozenset(
-    {"yo", "hey", "hi", "hello", "ok", "okay", "rove", "please", "pls", "plz", "thanks", "thx"}
-)
+# The exact requests, after `exact()`: lower case, no apostrophes, no punctuation.
 REQUESTS = {
-    "status": {
-        "status",
-        "status update",
-        "whats the status",
-        "what is the status",
-        "whats your status",
-        "give me the status",
-        "give me a status update",
-        "queue status",
-        "how is the queue",
-        "hows the queue",
-    },
-    "waiting": {
-        "waiting",
-        "whats waiting",
-        "what is waiting",
-        "whats waiting on me",
-        "whats waiting for me",
-        "what is waiting on me",
-        "what is waiting for me",
-        "anything waiting",
-        "anything waiting on me",
-        "anything waiting for me",
-        "what needs me",
-        "what needs my attention",
-    },
-    "sends": {
-        "sends",
-        "sent today",
-        "sends today",
-        "how many did you send today",
-        "how many did you send",
-        "how many did you sent today",
-        "how many sent today",
-        "how many applications today",
-        "how many did you apply to today",
-        "how many applications did you send today",
-    },
-    "pause": {"pause", "pause the feed", "pause feed", "pause the feed jobs", "pause feed jobs"},
-    "resume": {
-        "resume",
-        "resume the feed",
-        "resume feed",
-        "resume the feed jobs",
-        "unpause",
-        "unpause the feed",
-        "start the feed again",
-    },
-    "help": {
-        "help",
-        "what can i ask",
-        "what can i ask you",
-        "what can you do",
-        "what do you do",
-        "commands",
-        "",  # a message that is only "?"
-    },
+    "status": "status",
+    "whats waiting": "waiting",
+    "whats waiting on me": "waiting",
+    "how many did you send today": "sends",
+    "pause": "pause",
+    "resume": "resume",
+    "help": "help",
+    "": "help",  # a message that is only "?"
+    "first": "first",
+    "move it up": "first",
 }
-# "why did you skip Acme", "why didn't you apply to Acme", "why was Acme skipped",
-# "did I apply to Acme": the company is the rest of the sentence, a few words at most.
-COMPANY = (
-    re.compile(
-        r"^(?:why did you skip|why did you not apply to|why didn'?t you apply to"
-        r"|did i apply to|did you apply to|did we apply to)\s+(?P<company>[^?!.]+?)\s*[?!.]*$",
-        re.IGNORECASE,
-    ),
-    re.compile(r"^why was\s+(?P<company>[^?!.]+?)\s+skipped\s*[?!.]*$", re.IGNORECASE),
-)
-# What the system-log line says for each shortcut.
-WORDS = {
-    "status": "read the status",
-    "waiting": "listed what waits on the owner",
-    "sends": "counted today's sends",
-    "pause": "paused the feed",
-    "resume": "resumed the feed",
-    "help": "showed the help",
-    "company": "looked up one company",
-    "paste": "queued a pasted link",
-    "first": "moved a pasted link up",
-}
+RESETS = {"/new", "/reset"}  # Hermes' own commands, answered without its banner
 
 
-def normal(text) -> str:
-    """Lower case, no apostrophes or punctuation, filler words at the edges dropped."""
-    text = str(text or "").lower().replace("’", "'").replace("'", "")
-    tokens = re.findall(r"[a-z0-9]+", text)
-    while tokens and tokens[0] in FILLER:
-        tokens.pop(0)
-    while tokens and tokens[-1] in FILLER:
-        tokens.pop()
-    return " ".join(tokens)
+def exact(text) -> str:
+    """The message as an exact form: lower case, apostrophes and punctuation dropped."""
+    text = str(text or "").lower().replace("’", "").replace("'", "")
+    return " ".join(re.findall(r"[a-z0-9]+", text))
 
 
-def match(text) -> tuple[str, str] | None:
-    """(kind, argument) for a fixed request, None for anything the model should answer."""
+def match(text) -> str | None:
+    """The kind of an exact form, or None: then the model reads the message."""
     text = str(text or "").strip()
-    if not text or len(text) > 600:
+    if not text:
         return None
+    if text.lower() in RESETS:
+        return "reset"
     if inbound.pasted_links(text):
-        return ("paste", "")
-    if inbound.words(text) in inbound.FIRST_REPLIES:
-        return ("first", "")
-    if re.search(r"https?://", text, re.IGNORECASE):
-        return None  # a link with a question or a comment is the model's
-    plain = normal(text)
-    for kind, phrases in REQUESTS.items():
-        if plain in phrases and (plain or text.strip("? ") == ""):
-            return (kind, "")
-    sentence = " ".join(text.replace("’", "'").split())
-    for pattern in COMPANY:
-        found = pattern.match(sentence)
-        company = found["company"].strip(" \"'`*_") if found else ""
-        if 2 <= len(company) <= 60 and normal(company) and len(company.split()) <= 5:
-            return ("company", company)
-    return None
+        return "paste"
+    form = exact(text)
+    if form == "" and text.strip("?") != "":
+        return None  # only emoji or symbols: the model answers
+    return REQUESTS.get(form)
 
 
-def answer(kind: str, argument: str, message: dict) -> str:
-    """The words for one fixed request, from the functions the MCP tools use."""
+def answer(kind: str, message: dict) -> dict:
+    """{"say", "outcome"} for one exact form, from the functions the MCP tools use."""
     if kind == "status":
-        return chat.status()["say"]
+        return chat.status()
     if kind == "waiting":
-        return chat.waiting()["say"]
+        return chat.waiting()
     if kind == "sends":
-        return chat.sent_today()["say"]
+        return chat.sent_today()
     if kind == "pause":
-        return chat.pause_feed()["say"]
+        return chat.pause_feed()
     if kind == "resume":
-        return chat.resume_feed()["say"]
+        return chat.resume_feed()
     if kind == "help":
-        return chat.help_reply()["say"]
-    if kind == "company":
-        return chat.company_history(argument)["say"]
+        return chat.help_reply()
+    if kind == "reset":
+        return {"say": "Fresh start.", "outcome": "chat started fresh"}
     # A paste or `first`: applied once, by whichever reader gets there first ("" otherwise).
-    return inbound.control_line(message) or ""
-
-
-def owner_id() -> str:
-    env = private_env()
-    return env.get("DISCORD_OWNER_USER_ID") or env.get("DISCORD_ALLOWED_USERS", "").split(",")[0]
+    if kind == "first":
+        message = {**message, "content": "first"}  # the exact form, however it was typed
+    line = inbound.control_line(message) or ""
+    if kind == "paste":
+        outcome = "queued his pasted link" if line.startswith("Queued") else "pasted link"
+    else:
+        outcome = "moved his latest paste up" if line.startswith("Moved") else "first"
+    return {"say": line, "outcome": outcome if line else "already answered by the worker"}
 
 
 def decide(message: dict) -> tuple[dict, list[str]]:
@@ -177,7 +94,7 @@ def decide(message: dict) -> tuple[dict, list[str]]:
     """
     settings = workflow.config()
     channel = str(settings.get("control_channel_id") or "")
-    owner = owner_id()
+    owner = chat.owner_id()
     mine = bool(
         settings.get("enabled")
         and channel
@@ -189,16 +106,15 @@ def decide(message: dict) -> tuple[dict, list[str]]:
     )
     if not mine:
         return {"handled": False, "reply": "", "control": False}, []
-    found = match(message.get("content"))
-    if not found:
+    kind = match(message.get("content"))
+    if not kind:
         return {"handled": False, "reply": "", "control": True}, []
-    kind, argument = found
     shaped = {"id": message.get("id"), "content": message.get("content") or ""}
     if message.get("reply_to"):
         shaped["message_reference"] = {"message_id": str(message["reply_to"])}
     started = time.monotonic()
     try:
-        reply = answer(kind, argument, shaped)
+        result = answer(kind, shaped)
     except Exception as error:  # noqa: BLE001 -- he gets one plain line, the log gets the type
         return (
             {
@@ -206,13 +122,13 @@ def decide(message: dict) -> tuple[dict, list[str]]:
                 "reply": "That did not work on my side just now. The details are in the system log.",
                 "control": True,
             },
-            [f"shortcut · {WORDS[kind]} · failed · {type(error).__name__}"],
+            [f"shortcut · {kind} · failed · {type(error).__name__}"],
         )
     seconds = f"{time.monotonic() - started:.1f} s"
-    return (
-        {"handled": True, "reply": reply, "control": True},
-        [f"shortcut · {WORDS[kind]} · {seconds} · ok"],
-    )
+    decision = {"handled": True, "reply": result["say"], "control": True}
+    if kind == "reset":
+        decision["reset"] = True  # the plugin starts the chat fresh, without Hermes' banner
+    return decision, [f"shortcut · {kind} · {result['outcome']} · {seconds}"]
 
 
 def handle(message: dict) -> dict:
@@ -248,9 +164,11 @@ PLUGIN = "rove_shortcuts"
 
 
 def install(hermes_home=None, hermes=None, executable=None) -> list[str]:
-    """Copy the plugin into the Hermes plugins directory, write its settings, enable it.
+    """Copy the plugin into the Hermes plugins directory, write its settings, put this
+    checkout's persona in place (keeping the previous one), and enable the plugin.
 
-    Returns what was done, one line each. The gateway picks the plugin up on restart.
+    Returns what was done, one line each. The gateway picks it all up on restart; a
+    conversation already open keeps its old persona until it starts fresh.
     """
     import os
     import shutil
@@ -284,6 +202,17 @@ def install(hermes_home=None, hermes=None, executable=None) -> list[str]:
         json.dump(settings, handle, indent=2)
         handle.write("\n")
     done.append(f"wrote {path} (runs {executable} shortcut)")
+    # The chat's persona is versioned here too, beside the tools it names.
+    persona, soul = repo / "integrations/hermes/SOUL.md", home / "SOUL.md"
+    if soul.is_file() and soul.read_text() == persona.read_text():
+        done.append(f"{soul} is already this checkout's persona")
+    else:
+        if soul.is_file():
+            kept = soul.with_name(f"SOUL.md.before-rove-{time.strftime('%Y%m%d-%H%M%S')}")
+            shutil.copy2(soul, kept)
+            done.append(f"kept the previous persona as {kept}")
+        shutil.copyfile(persona, soul)
+        done.append(f"copied the persona to {soul}")
     hermes = hermes or str(Path.home() / ".local/bin/hermes")
     result = subprocess.run(
         [hermes, "plugins", "enable", PLUGIN], capture_output=True, text=True, check=False

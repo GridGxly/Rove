@@ -1,6 +1,6 @@
 name: rove_shortcuts
-version: "1.0.0"
-description: "Answers the owner's fixed requests in Rove's agent-control channel (status, what's waiting, sends today, pause, resume, help, a pasted job link, first, why did you skip a company) with Rove's own code before any model turn, and keeps that chat's history short. Everything else goes to the model as usual."
+version: "1.1.0"
+description: "Answers a few exact forms in Rove's agent-control channel (a message that is only job links, status, what's waiting, how many did you send today, pause, resume, help, first, /new, /reset) with Rove's own code before any model turn, and keeps that chat's history short. Everything else goes to the model, which reads it however it is phrased."
 author: "Rove"
 provides_hooks:
   - pre_gateway_dispatch

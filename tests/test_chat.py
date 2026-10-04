@@ -112,7 +112,7 @@ def test_each_call_writes_one_quiet_line_without_arguments_or_result(state, line
     assert "5550100199" in said  # the answer carries what the owner asked about
     assert len(lines) == 1
     line = lines[0]
-    assert re.fullmatch(r"looked up one company · \d+\.\d s · ok", line)
+    assert re.fullmatch(r"looked up one company · 1 records found · \d+\.\d s", line)
     assert "Example" not in line and "5550100199" not in line
 
 
@@ -265,10 +265,12 @@ def test_pause_and_resume_write_the_switch_and_keep_the_rest(state, monkeypatch)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert chat.resume_feed()["say"].startswith("The feed is running again")
     assert json.loads(path.read_text())["feed_paused"] is False
-    assert logged == [
-        "feed paused by the owner in agent-control",
-        "feed resumed by the owner in agent-control",
-    ]
+    # What changed is the tool's outcome, logged once by the tool's wrapper.
+    assert chat.pause_feed()["outcome"] == "feed paused"
+    assert chat.pause_feed()["outcome"] == "feed was already paused"
+    assert chat.resume_feed()["outcome"] == "feed resumed"
+    assert chat.resume_feed()["outcome"] == "feed was not paused"
+    assert logged == []
     assert not list((state / "config").glob(".workflow.json.*"))
 
 
