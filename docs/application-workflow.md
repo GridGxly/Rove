@@ -86,7 +86,11 @@ Each field is resolved in this order:
 3. an answer the owner gave to the same question on an earlier form, or, for a voluntary self-identification question (gender, race or ethnicity, veteran or disability status), the form's own decline option when exactly one option reads as a decline
 4. a Qwen draft, or a question for the owner
 
-Code chooses an option only when the value matches exactly one option, and it reads every filled value back. A value the site changed stops the run with a card naming the field. A complete page that shows Next or Continue is advanced and the next page is filled, for at most four pages.
+Code chooses an option only when the value matches exactly one option, and it reads every filled value back. A yes-or-no fact also matches the one option that opens with its yes or no and restates it ("No - I am not currently authorized"), when every option opens with yes or no and that option adds no condition of its own (a visa, sponsorship, "only if"). Among several "yes" options that say how the owner is authorized to work, the citizen's is chosen when the approved profile says he is a citizen; any other way is his to pick.
+
+A question is required when the form marks it: the `required` attribute, a trailing asterisk or "(required)", or a class on its title that says so, hashed or not (`required`, `is-required`, `_required_f7cvd_91`).
+
+Some questions are answered by rule from the approved profile: whether he returns to school after the internship (yes when the stated graduation is in a later year than the internship), a "U.S. Person" question in the rule's own words or as a stated definition that lists a citizen followed by "confirm one of the statuses" (yes for a citizen; any denial or exception in the wording leaves it to him). The owner's standing yes covers consent to be contacted about the application (calls, mail, text messages), and being considered for other roles at the employer. Whether he can work a posting's listed dates is never answered by rule: it depends on the posting. A certification that the application is true is one question however a form words it: his answer is asked once and kept. A value the site changed stops the run with a card naming the field. A complete page that shows Next or Continue is advanced and the next page is filled, for at most four pages.
 
 An optional field with no fact and no draft is left blank and listed in one line in the thread. Only required questions reach the owner.
 

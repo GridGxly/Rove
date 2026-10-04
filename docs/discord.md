@@ -158,8 +158,10 @@ Understanding him is the model's job; code checks facts and acts.
 - **Everything else goes to the model**, which works out what he wants and calls a tool with its reading as arguments:
 
 ```text
-apply_to_link(url, first)         "yo apply to this rq <link>", "both of these, the second one first"
-retry_application(name)           "try tesla again", "run the sierra one again", "go on walleye"
+apply_to_link(url, first)         "yo apply to this rq <link>", "both of these, the second one first";
+                                  with no link ("apply now", "do it"): the link he pasted last, put first
+retry_application(name)           "try tesla again", "run the sierra one again", "go on walleye";
+                                  one still in the queue is moved to the front ("do globex now")
 park_application(name)            "nah skip that one", "forget walleye"
 answer_application(name, answer)  "for tesla, 6 months", "for the xai one put 40 hrs"
 rove_status, whats_waiting, sends_today, pause_feed, resume_feed, company_history, what_you_can_ask

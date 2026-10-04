@@ -513,6 +513,7 @@ AUTHORIZED = re.compile(
     r"(?:right|authori[sz]ation|permission|eligibility)"
     r"|(?:legally |lawfully )?authori[sz]ed)"
     r" to (?:(?:legally|lawfully) )?(?:work|be employed)(?: (?:legally|lawfully))?"
+    r"(?: for (?:any|an|a|the|this|our) (?:employer|company|organization))?"
     rf"(?: in (?P<where>{WHERE}))?(?P<tail>(?: [a-z0-9]+)*)"
 )
 AUTHORIZED_TAIL = _words(
@@ -605,7 +606,7 @@ TRUTHFUL_WORDS = _words(
     " checking box submitting signing below have has been understand any false misleading"
     " misrepresentation omission falsification may be grounds for result rejection dismissal"
     " termination employment discharge refusal hire withdrawal offer disqualification or if"
-    " employed cause immediate lead"
+    " employed cause immediate lead omissions from consideration"
 )
 PRIVACY_WORDS = _words(
     "i have read and agree to the our privacy policy notice statement consent acknowledge"
@@ -620,7 +621,9 @@ SALARY_WORDS = _words(
 CONTACT_NOUNS = _words(
     "contact contacted text texts sms message messages call calls email emails communications"
 )
-CONTACT_VERBS = _words("agree consent opt may can allow like ok okay willing happy")
+CONTACT_VERBS = _words("agree agreement consent opt may can allow like ok okay willing happy")
+# The employer's own name in "…updates from <employer> regarding your application".
+CONTACT_SENDER = re.compile(r"\bfrom (?:[a-z0-9]+ ){1,8}?(?=(?:regarding|about|concerning)\b)")
 CONTACT_WORDS = _words(
     "i do you agree consent to be being contacted contact receive receiving by via text texts"
     " sms message messages messaging phone call calls email emails e mail from the company"
@@ -630,6 +633,20 @@ CONTACT_WORDS = _words(
     " okay opt in for communications related employment allow yes please send reach out mobile"
     " data rates apply talent network community pool join joining added add keep kept"
     " considered consider other notified notify are willing happy"
+    " agreement check indicate no of frequency vary stop reply out view here privacy policy"
+    " terms conditions"
+)
+# "I authorize the <employer's team> to consider me for other roles …": the whole label is
+# that one request. The team's name may be any words but a second request ("to run a
+# check and …"), and nothing after it may ask for another consent.
+CONSIDER_OTHER = re.compile(
+    r"(?:i (?:authorize|allow|agree|consent|would like|want)|please allow|do you (?:want|agree"
+    r"|consent|authorize)|would you like|may)"
+    r"(?: (?:for )?(?!and\b|to\b|or\b)[a-z0-9]+){0,8}? to (?:be )?consider(?:ed)?"
+    r"(?: (?:me|you|my (?:application|profile|resume|candidacy)))? for "
+    r"(?:(?:other|future|additional|similar|any) )+(?:[a-z]+ ){0,2}?"
+    r"(?:opportunities|roles|positions|openings|jobs)"
+    r"(?: (?!and\b|agree|authori|consent|certif|waiv|releas|acknowledg)[a-z0-9]+){0,18}"
 )
 MARKETING_WORDS = CONTACT_WORDS | _words(
     "marketing newsletter newsletters promotional promotions news offers product products"
@@ -796,6 +813,30 @@ US_PERSON_WORDS = _words(
 )
 
 
+# A form may state the definition first and then ask to confirm one of its statuses.
+US_PERSON_CONFIRM = re.compile(
+    r"(?:please )?(?:confirm|indicate|state|select|tell us) (?:whether|if|that) you "
+    r"(?:fall (?:into|within|under)|meet|satisfy|are in|hold|have) "
+    r"(?:at least )?(?:one|any) of (?:the|these) (?:(?:three|3|above|following|listed) )*"
+    r"(?:statuses|status|criteria|categories)(?: (?:above|listed|below))*$"
+)
+US_PERSON_DENIALS = _words("not non no neither nor none foreign unless except without")
+
+
+def us_person_asked(text: str, words: list[str]) -> bool:
+    """Whether a label that names "U.S. Person" asks if the applicant is one: the plain
+    question in the rule's own words, or its definition (which lists a citizen) followed
+    by a request to confirm one of its statuses. Any denial or exception in the wording
+    makes it another question, which is the owner's."""
+    if re.match(r"(?:are you|i am|do you qualify)\b", text) and set(words) <= US_PERSON_WORDS:
+        return True
+    return (
+        bool(US_PERSON_CONFIRM.search(text))
+        and "citizen" in words
+        and not set(words) & US_PERSON_DENIALS
+    )
+
+
 APPLIED_HERE = re.compile(
     r"have you (?:(?:ever|previously) )*applied(?: previously| before| in the past)?"
     r" (?:to|at|with|for)(?: [a-z0-9]+){1,6}"
@@ -818,6 +859,12 @@ WILLINGNESS = re.compile(
     r"willing(?:ness)? to (?:relocate|work|commute|travel)|open to relocation)\b"
 )
 RELOCATE = re.compile(r"\brelocat\w*\b")
+# What an internship form asks about the term after it: whether he goes back to school.
+RETURNING = re.compile(
+    r"(?:do you (?:intend|plan|expect) to|will you(?: be)?|are you (?:planning|intending|going) to)"
+    r" (?:return(?:ing)?|go(?:ing)? back) to (?:school|college|university|your studies"
+    r"|(?:a |an |your )?(?:(?:degree seeking|academic|degree|undergraduate|graduate) )*program)\b"
+)
 ONSITE = re.compile(r"\b(?:on ?site|in person|hybrid|office|offices)\b")
 STACK = re.compile(rf"{WILLING} (?:working |coding |programming |developing )?(?:with|in|using)\b")
 # Only a stated willingness takes the general default; "are you able to" claims an ability.
@@ -953,11 +1000,7 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
     gpa = GPA.fullmatch(text)
     if gpa:
         return {"id": "gpa", "detail": (gpa["scale"] or "").replace(" ", ".")}
-    if (
-        US_PERSON.search(text)
-        and re.match(r"(?:are you|i am|do you qualify)\b", text)
-        and set(words) <= US_PERSON_WORDS
-    ):
+    if US_PERSON.search(text) and us_person_asked(text, words):
         return {"id": "us_person"}
     if not sensitive_topic(name):
         # Ties to the employer: one question per employer however a form names it, so
@@ -1000,8 +1043,16 @@ def _strict(name: str, text: str, found: list[str]) -> dict | None:
         return {"id": "salary_expectation" + unit}
     # Acknowledgements the owner's rule covers. Their wording is checked word for word,
     # so they are plain even though "agree" and "consent" are sensitive words elsewhere.
-    if _only(words, CONTACT_NOUNS, CONTACT_WORDS) and CONTACT_VERBS & set(words):
+    contact = CONTACT_SENDER.sub("from ", text).split()
+    if _only(contact, CONTACT_NOUNS, CONTACT_WORDS) and CONTACT_VERBS & set(contact):
         return {"id": "contact_consent", "sensitivity": PLAIN, "default": "contact_consent"}
+    if CONSIDER_OTHER.fullmatch(text) and not {"not", "no", "never", "decline"} & set(words):
+        # "Consider me for other roles here too": the talent network by another name.
+        return {
+            "id": "talent_network_opt_in",
+            "sensitivity": PLAIN,
+            "default": "talent_network_opt_in",
+        }
     if _only(words, {"talent"}, CONTACT_WORDS) and {"network", "community", "pool"} & set(words):
         return {
             "id": "talent_network_opt_in",
@@ -1064,6 +1115,8 @@ def _loose(name: str, text: str) -> dict | None:
         # "Are you currently enrolled at <school>?" asks about that school, today.
         named = [w for w in enrolled["school"].split() if w not in ENROLLED_FILLER]
         return {"id": "enrollment_status", "detail": "at:" + " ".join(named) if named else ""}
+    if RETURNING.match(text) and not {"not", "no", "never"} & set(words):
+        return {"id": "returning_to_school"}
     if not WILLINGNESS.match(text):
         # Any other question about graduating: answered only by an option that states
         # the approved graduation month.
@@ -1452,6 +1505,8 @@ def profile_fact(
     fact = school_fact(question, profile, has_options, entry)
     if fact is not False:
         return fact
+    if canonical == "returning_to_school":
+        return returning_fact(profile)
     eligible = profile.get("eligibility") or {}
     if canonical == "work_authorization_us":
         values = _yes_no(eligible.get("us_work_authorized"))
@@ -1576,6 +1631,7 @@ EDUCATION_FACTS = frozenset(
         "current_school",
         "enrollment_status",
         "class_standing",
+        "returning_to_school",
     }
 )
 # Halves of one fact a form asks in two fields (city and state). A model draft never
@@ -1607,6 +1663,15 @@ def month_fact(question: Question, month: str, source: str, has_options: bool):
     if question.canonical_id != "graduation_date" or question.name in GRADUATION_DATE:
         return [when.strftime("%B %Y")], source
     return None
+
+
+def returning_fact(profile: dict):
+    """He goes back to school after an internship when the graduation applications state
+    is in a later year than the internship. Otherwise it is his to say."""
+    month = education.graduation(profile)
+    if not month or int(month[:4]) <= education.internship_year(""):
+        return None
+    return ["Yes"], f"education.schools.{education.primary_index(profile)}.graduation_month"
 
 
 def school_fact(question: Question, profile: dict, has_options: bool, entry: tuple | None):
@@ -2161,6 +2226,21 @@ BY_OPTIONS = frozenset({"degree", "major", "gpa"})
 FIRST_PAGE = 100  # Greenhouse's pickers load their lists a hundred at a time
 
 
+def authorized_as_citizen(labels: list[str], profile: dict) -> str | None:
+    """Among several "yes" options that say how he is authorized to work, the one for a
+    citizen, when the approved profile says he is one. Any other way is his to pick."""
+    yes = [o for o in labels if normalized(o).split()[:1] == ["yes"]]
+    if len(yes) < 2 or (profile.get("eligibility") or {}).get("us_citizen") is not True:
+        return None
+    mine = [
+        o
+        for o in yes
+        if re.search(r"\bcitizens?\b", normalized(o))
+        and not re.search(r"\b(?:non|not)\b", normalized(o))
+    ]
+    return mine[0] if len(mine) == 1 else None
+
+
 def choose(
     question: Question, labels: list[str], values: list, profile: dict, loose: bool, source=""
 ):
@@ -2179,8 +2259,36 @@ def choose(
         return gpa_choice(labels, values[0], scale)
     if canonical in {"class_standing", "enrollment_status"}:
         return first_listed(labels, values)  # the closest wording first
+    if canonical == "work_authorization_us" and values == ["Yes"]:
+        as_citizen = authorized_as_citizen(labels, profile)
+        if as_citizen is not None:
+            return as_citizen
     chosen = {match_option(labels, v, loose=loose) for v in values} - {None}
-    return chosen.pop() if len(chosen) == 1 else None
+    if len(chosen) == 1:
+        return chosen.pop()
+    return explained_option(labels, values) if not chosen else None
+
+
+# Words that make a "Yes - …" or "No - …" option say more than yes or no.
+EXPLAINED_CONDITIONS = _words(
+    "with if only but unless except pending require requires required need needs sponsor"
+    " sponsorship visa however until although provided"
+)
+
+
+def explained_option(labels: list[str], values: list) -> str | None:
+    """A yes-or-no fact against options that explain themselves ("No - I am not currently
+    authorized"): the one option that opens with the fact's word, when every option opens
+    with yes or no and that option adds no condition of its own."""
+    if len(values) != 1 or normalized(values[0]) not in {"yes", "no"}:
+        return None
+    opening = [(normalized(o).split() or [""])[0] for o in labels]
+    if len(labels) < 2 or not set(opening) <= {"yes", "no"}:
+        return None
+    mine = [o for o, first in zip(labels, opening, strict=True) if first == normalized(values[0])]
+    if len(mine) != 1 or set(normalized(mine[0]).split()) & EXPLAINED_CONDITIONS:
+        return None
+    return mine[0]
 
 
 # Questions a form's education block asks once per school.
@@ -2483,21 +2591,30 @@ def school_question(field: dict) -> bool:
 SCHOOL_SUFFIX = re.compile(r"\s+[-–—]\s+|,\s+|\s+\(")
 
 
+def option_name(text) -> str:
+    """A suggestion's name: its first line. A picker may show a country, a place or a
+    website on the lines under it."""
+    return next((line.strip() for line in str(text or "").splitlines() if line.strip()), "")
+
+
 def school_option(texts: list[str], school: str, places=()) -> int | None:
     """Which suggestion is the school: its exact name, else its name followed by a campus
     or place ("University of Example - Springfield, IL", "University of Example (UE)").
     With several campuses, the exact name first, then the one whose suffix names one of
-    `places` (the owner's city or state). Never the first suggestion for its own sake."""
+    `places` (the owner's city or state). Never the first suggestion for its own sake.
+    A suggestion of several lines is its first line; the rest (a country, a website) only
+    helps tell campuses apart."""
     wanted = normalized(school)
     if not wanted:
         return None
-    exact = [i for i, text in enumerate(texts) if normalized(text) == wanted]
+    names = [option_name(text) for text in texts]
+    exact = [i for i, name in enumerate(names) if normalized(name) == wanted]
     if exact:
         return exact[0] if len(exact) == 1 else None
     suffixes = {
-        i: parts[1]
-        for i, text in enumerate(texts)
-        if len(parts := SCHOOL_SUFFIX.split(str(text), maxsplit=1)) == 2
+        i: parts[1] + " " + " ".join(str(texts[i]).splitlines()[1:])
+        for i, name in enumerate(names)
+        if len(parts := SCHOOL_SUFFIX.split(name, maxsplit=1)) == 2
         and normalized(parts[0]) == wanted
     }
     if len(suffixes) == 1:
@@ -2516,6 +2633,6 @@ def other_option(texts: list[str]) -> int | None:
     found = [
         i
         for i, text in enumerate(texts)
-        if re.fullmatch(r"other(?: [a-z ]{0,30})?", normalized(text))
+        if re.fullmatch(r"other(?: [a-z ]{0,30})?", normalized(option_name(text)))
     ]
     return found[0] if len(found) == 1 else None

@@ -149,6 +149,41 @@ def test_first_puts_his_link_ahead_and_works_on_one_already_queued(channel):
         assert inbound.line_of_mine(conn)[0] == ids[link(1)]
 
 
+def test_apply_now_with_no_link_means_the_link_he_pasted_last_and_puts_it_first(channel):
+    # What he typed live: "apply <link>", then "apply now".
+    channel.append(message(f"apply {link(1)}", minutes_ago=5))
+    channel.append(message(f"apply {link(2)}", minutes_ago=2))
+    assert chat.apply_to_link(link(1))["say"] == "Queued. It goes next."
+    assert chat.apply_to_link(link(2))["say"].startswith("Queued. 1 of your links is ahead")
+    channel.append(message("apply now"))
+    result = chat.apply_to_link("", first=False)
+    assert result == {
+        "say": "Already queued. It goes next.",
+        "outcome": "link already tracked, put first",
+    }
+    ids = {url: app for app, url in _ids()}
+    with workflow.db() as conn:
+        assert inbound.line_of_mine(conn) == [ids[link(2)], ids[link(1)]]
+    # While another application holds the browser, the line says which one.
+    add("a00000000009", "Northwind — Intern", "PREPARING")
+    assert chat.apply_to_link()["say"] == (
+        "Already queued. Northwind — Intern is running now; it goes right after."
+    )
+
+
+def test_apply_now_with_no_recent_link_asks_for_one(channel):
+    channel.append(message(f"apply {link(1)}", minutes_ago=45))
+    channel.append(message("apply now"))
+    assert chat.apply_to_link("") == {
+        "say": "Paste the job link and I'll start on it.",
+        "outcome": "no link named and none pasted lately, nothing queued",
+    }
+    # A link in somebody else's message is never the one he means.
+    channel.append(message(f"apply {link(3)}", author="666"))
+    assert chat.apply_to_link("")["outcome"].startswith("no link named")
+    assert queued() == []
+
+
 def _ids():
     with workflow.db() as conn:
         return [tuple(r) for r in conn.execute("SELECT id,url FROM application_queue")]
@@ -173,6 +208,17 @@ def test_retry_by_name_does_what_go_does_in_its_thread(channel):
     # Only one Tesla is waiting, so "tesla" alone is enough.
     workflow.set_state("a00000000001", "DEFERRED")
     assert chat.retry_application("Tesla")["outcome"] == "retried one application"
+
+
+def test_retry_on_one_still_in_the_queue_moves_it_to_the_front(channel):
+    add("a00000000001", "Globex — Data Intern", "QUEUED")
+    add("a00000000002", "Initech — Web Intern", "QUEUED")
+    result = chat.retry_application("globex")
+    assert result["outcome"] == "moved one queued application to the front"
+    assert result["say"].startswith("Moved Globex — Data Intern to the front.")
+    assert workflow.get("a00000000001")["status"] == "QUEUED"
+    with workflow.db() as conn:
+        assert inbound.line_of_mine(conn)[0] == "a00000000001"
 
 
 def test_retry_asks_which_when_several_match_and_says_so_when_none_do(channel):

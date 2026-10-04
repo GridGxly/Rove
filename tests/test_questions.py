@@ -231,9 +231,15 @@ def test_profile_facts_answer_the_exact_question_and_pick_only_an_offered_option
     assert answer("When can you start?") == ("June 1, 2027", "profile.availability.earliest_start")
     graduation = ["December 2026", "Spring 2027", "December 2027", "Other"]
     assert answer("What is your expected graduation year?", graduation)[0] == "December 2027"
-    # A legal fact is matched to an option literally; a longer option is the owner's call.
+    # A legal fact is matched to an option literally, or to the one option that opens
+    # with its yes or no and restates it. An option that adds a condition of its own, or
+    # two that open the same way, is the owner's call.
+    authorized = "Are you legally authorized to work in the United States?"
     wordy = ["Yes, I am authorized", "No, I am not"]
-    assert answer("Are you legally authorized to work in the United States?", wordy) == (None, None)
+    assert answer(authorized, wordy) == ("Yes, I am authorized", "eligibility.us_work_authorized")
+    assert answer(authorized, ["Yes, with sponsorship", "No, I am not"]) == (None, None)
+    assert answer(authorized, ["Yes, as a citizen", "Yes, on a visa", "No"]) == (None, None)
+    assert answer(authorized, ["Authorized", "Yes, I am", "No, I am not"]) == (None, None)
     # An unknown fact is never guessed.
     assert answer("Are you a US citizen?", YES_NO) == (None, None)
     unknown = {**PROFILE, "eligibility": {**PROFILE["eligibility"], "sponsorship_future": None}}

@@ -395,6 +395,22 @@ def his_link(url) -> str | None:
     return close
 
 
+def latest_link() -> str | None:
+    """The link he pasted most recently, from his own messages of the last half hour."""
+    from . import inbound
+
+    cutoff = datetime.now(UTC) - inbound.JUST_PASTED
+    for message in owner_messages():  # newest first
+        stamp = str(message.get("timestamp") or "1970-01-01T00:00:00+00:00")
+        if datetime.fromisoformat(stamp) < cutoff:
+            break
+        for link in inbound.links_in(message.get("content")):
+            safe = public_link(link)
+            if safe:
+                return safe
+    return None
+
+
 def in_his_words(text) -> bool:
     """Whether every word of `text` is in one recent message of his."""
     wanted = set(re.findall(r"[a-z0-9]+", str(text or "").lower()))
@@ -406,8 +422,9 @@ def in_his_words(text) -> bool:
     )
 
 
-def apply_to_link(url: str, first: bool = False) -> dict:
-    """Queue a job link he asked for, as his own, when he pasted it himself."""
+def apply_to_link(url: str = "", first: bool = False) -> dict:
+    """Queue a job link he asked for, as his own, when he pasted it himself. With no link
+    named ("apply now", "start it"), it is the link he pasted last, and it goes first."""
     from . import inbound
 
     if not workflow.config().get("enabled"):
@@ -415,6 +432,14 @@ def apply_to_link(url: str, first: bool = False) -> dict:
             "say": "The application queue is switched off, so I can't queue links right now.",
             "outcome": "queue is switched off, nothing queued",
         }
+    if not str(url or "").strip():
+        url = latest_link() or ""
+        if not url:
+            return {
+                "say": "Paste the job link and I'll start on it.",
+                "outcome": "no link named and none pasted lately, nothing queued",
+            }
+        first = True  # "now" about the link he just pasted: ahead of his other links
     if not public_link(str(url or "").strip().strip("<>\"'`")):
         return {
             "say": "That isn't a full job link. Paste the https:// link itself.",
@@ -511,11 +536,17 @@ def retry_application(name: str) -> dict:
     """`go` on one of his applications that waits or was parked: prepare it again."""
     from . import inbound
 
-    done = act_on(name, "go", RETRYABLE, "retry")
+    # One still in the queue is not retried: his word moves it to the front.
+    done = act_on(name, "go", RETRYABLE | {"QUEUED"}, "retry")
     if "row" not in done:
         return done
     row = done["row"]
     where = inbound.where_it_stands(row["id"])
+    if row["status"] == "QUEUED":
+        return {
+            "say": f"Moved {title_of(row)} to the front. {where}",
+            "outcome": "moved one queued application to the front",
+        }
     return {"say": f"Going again on {title_of(row)}. {where}", "outcome": "retried one application"}
 
 

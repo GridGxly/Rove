@@ -418,19 +418,22 @@ def company_history(company: str) -> str:
 
 
 @tool
-def apply_to_link(url: str, first: bool = False) -> str:
+def apply_to_link(url: str = "", first: bool = False) -> str:
     """Apply to a job link he pasted: queue it as his. Call it when he wants the link done,
     once per link; not when he only asks about it (worth it? legit? should I?) or turns it
-    down. url: the link exactly as in his message. first: true when he wants it before
-    his other links ("do this one first", "asap", "the second one first"). Only links he
-    pasted himself are queued. Send the reply as is."""
+    down. url: the link exactly as in his message; leave it empty when his message has no
+    link and he means the one he just pasted ("apply now", "do it", "start it now", "go
+    ahead"). first: true when he wants it before his other links ("do this one first",
+    "asap", "now", "the second one first"). Only links he pasted himself are queued. Send
+    the reply as is."""
     return said(chat.apply_to_link(url, first))
 
 
 @tool
 def retry_application(name: str) -> str:
-    """Try one of his applications again (`go` in its thread): "try tesla again", "run the
-    sierra one again", "go on walleye". name: the company or role words he used. With
+    """Try one of his applications again (`go` in its thread), or start one that is
+    still queued ahead of the rest: "try tesla again", "run the sierra one again", "go on
+    walleye", "do the globex one now". name: the company or role words he used. With
     several matches it returns their names to ask which. Send the reply as is."""
     return said(chat.retry_application(name))
 

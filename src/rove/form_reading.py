@@ -95,6 +95,9 @@ READING_JS = r"""
    return held.length?[...light,...held].sort((a,b)=>a===b?0:before(a,b)?-1:1):light;};
  // An input name or id is never a question: cards[..][field0], question_12345, input-17.
  const machine=t=>{t=squash(t);return !!t&&!/\s/.test(t)&&(/[\[\]{}=_]/.test(t)||/^[a-z]+[-.:]?\d+$/i.test(t)||/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t)||/^[0-9a-f]{12,}$/i.test(t));};
+ // A class that marks its element required, hashed or not: `required`, `is-required`,
+ // `_required_f7cvd_91`.
+ const requiredClass=c=>/(^|[\s_-])required($|[\s_-])/i.test(String(c||''));
  // Human text inside `root`, in document order: before `stop`, after `after`, outside
  // `without`, and without option labels, other controls' labels, hidden text, required
  // markers or any piece `drop` matches.
@@ -108,7 +111,7 @@ READING_JS = r"""
      if(!t||!el||el.closest(SKIP)||!visible(el))continue;
      const l=el.closest('label');if(l&&l.control&&l!==o.own)continue;
      if(/^[*✱]+$/.test(t)||/^\(\s*required\s*\)$/i.test(t)){required=true;continue;}
-     if(/(^|[\s_-])required($|[\s_-])/i.test(el.getAttribute('class')||''))required=true;
+     if(requiredClass(el.getAttribute('class')))required=true;
      if(o.drop&&o.drop.test(t))continue;
      out.push(t);
    }
@@ -140,7 +143,7 @@ READING_JS = r"""
  const labelEls=e=>{const ls=[...(e.labels||[])];if(ls.length)return ls;const ids=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>byId(e,id)).filter(Boolean);if(ids.length)return ids;const l=nearestEl(e);return l?[l]:[];};
  // Required by its label (a class, a trailing asterisk or "(required)") or by the class of
  // the group that holds only this question.
- const requiredBy=e=>{if(labelEls(e).some(l=>/\brequired\b/i.test(l.className)||/(\*|\(\s*required\s*\))\s*$/i.test((l.innerText||'').trim())))return true;
+ const requiredBy=e=>{if(labelEls(e).some(l=>requiredClass(l.getAttribute('class'))||/(\*|\(\s*required\s*\))\s*$/i.test((l.innerText||'').trim())))return true;
    const box=e.parentElement&&e.parentElement.closest('.form-required,.is-required,.field-required');
    return !!box&&controlsIn(box).every(c=>c===e);};
  // The smallest container that holds only this question: its heading, or all its text
@@ -267,7 +270,7 @@ READING_JS = r"""
    const title=box.querySelector('legend')||(loose?[...box.querySelectorAll('label')].find(l=>owns(l,first)&&l.control!==first&&!members.includes(l.control)):null);
    const named=title?title.innerText.trim():(box.getAttribute('aria-label')||(box.getAttribute('aria-labelledby')||'').split(' ').map(id=>byId(box,id)?.innerText||'').join(' ')).trim();
    if(!named||machine(named))return null;
-   return {text:named,required:box.getAttribute('aria-required')==='true'||(!!title&&(/\brequired\b/i.test(title.className)||!!title.querySelector('[class*="required" i]')||/\*\s*$/.test(named)))};};
+   return {text:named,required:box.getAttribute('aria-required')==='true'||(!!title&&(requiredClass(title.getAttribute('class'))||!!title.querySelector('[class*="required" i]')||/\*\s*$/.test(named)))};};
  // The question a radio or checkbox group answers; never one option's text.
  const groupLabel=members=>{const first=members[0];
    const box=first.closest('fieldset,[role=radiogroup],[role=group]');

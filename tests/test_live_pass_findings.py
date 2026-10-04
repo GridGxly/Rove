@@ -148,6 +148,17 @@ def test_a_school_suggestion_is_the_name_or_the_name_with_a_campus():
     assert questions.school_option(["Florida State University", "Rollins College"], ucf) is None
     assert questions.other_option(["Rollins College", "Other"]) == 1
     assert questions.other_option(["Rollins College"]) is None
+    # A picker that shows a country and a website under each name (what a live board
+    # does): the name is the first line, and a longer name is another school.
+    detailed = [
+        "University of Central Florida College of Medicine\nUnited States\nmed.example.edu",
+        "University of Central Florida\nUnited States\nexample.edu",
+        "Universidad Central\nColombia\nexample.edu.co",
+        "Other\n\n",
+    ]
+    assert questions.school_option(detailed, ucf) == 1
+    assert questions.option_name(detailed[1]) == ucf
+    assert questions.other_option(detailed) == 3
 
 
 TYPEAHEAD = """<title>Apply</title><form>
@@ -196,6 +207,30 @@ def test_the_school_typeahead_types_the_name_and_takes_the_campus_near_home(
     assert pending == []
     assert filled[0]["value"] == "Example State University"
     assert reader.page.locator("#s").input_value() == "Example State University - Springfield, IL"
+
+
+DETAILED_TYPEAHEAD = TYPEAHEAD.replace(
+    "li.setAttribute('role', 'option'); li.textContent = name;",
+    "li.setAttribute('role', 'option'); "
+    "li.innerHTML = '<div><div>' + name + '</div><span>United States</span></div>"
+    "<div>' + name.toLowerCase().replace(/[^a-z]/g, '') + '.example.edu</div>';",
+)
+
+
+def test_the_school_typeahead_reads_the_name_above_a_country_and_a_website(
+    reader, state, monkeypatch
+):
+    # What the live board showed: each suggestion is a name with a country badge beside
+    # it and a website under it, so its text alone is the three run together.
+    html = DETAILED_TYPEAHEAD.replace(
+        "__SCHOOLS__",
+        '["Example State University College of Medicine", "Example State University", "Other"]',
+    )
+    assert "<span>United States</span>" in html
+    filled, pending = fill(reader, html, monkeypatch)
+    assert pending == []
+    assert filled[0]["value"] == "Example State University"
+    assert reader.page.locator("#s").input_value() == "Example State University"
 
 
 def test_a_school_not_listed_takes_other_or_waits_with_a_reason(reader, state, monkeypatch):
@@ -383,13 +418,38 @@ ITAR = (
 )
 
 
+# A form that states the definition, then asks to confirm one of its statuses.
+US_PERSON_STATED = (
+    "The individual performing this role will need to access material that legally requires "
+    "“U.S. Person” status. A “U.S. Person” must meet ONE of the following three criteria: "
+    "1) A U.S. citizen, 2) A legal permanent resident (also known as a green card holder), "
+    "OR 3) A refugee or successful asylee (someone who has completed the asylum process and "
+    "formally received a grant of asylum). To ensure eligibility for this role, please "
+    "confirm whether you fall into one of the three statuses above."
+)
+
+
+def test_a_us_person_definition_with_a_denial_or_exception_is_another_question():
+    twists = (
+        US_PERSON_STATED.replace("fall into one", "do not fall into one"),
+        US_PERSON_STATED.replace("1) A U.S. citizen, ", ""),
+        US_PERSON_STATED + " Select No unless you hold a license.",
+        "This role requires “U.S. Person” status. Are you a foreign national?",
+    )
+    for label in twists:
+        assert classify(label).canonical_id != "us_person", label
+        citizen = {**OWNER, "eligibility": {**OWNER["eligibility"], "us_citizen": True}}
+        assert answer(label, YES_NO, profile=citizen) == (None, None)
+
+
 def test_a_us_person_answer_comes_from_citizenship_or_is_asked_once(state):
-    for label in (US_PERSON, ITAR):
+    for label in (US_PERSON, ITAR, US_PERSON_STATED):
         question = classify(label)
         assert (question.canonical_id, question.sensitivity) == ("us_person", questions.SENSITIVE)
         assert questions.draft_gate({"label": label})["code"].startswith("sensitive:")
     citizen = {**OWNER, "eligibility": {**OWNER["eligibility"], "us_citizen": True}}
     assert answer(US_PERSON, YES_NO, profile=citizen) == ("Yes", "eligibility.us_citizen")
+    assert answer(US_PERSON_STATED, YES_NO, profile=citizen) == ("Yes", "eligibility.us_citizen")
     # Not a citizen, or not said: never a default, never a draft; his answer, kept once.
     not_citizen = {**OWNER, "eligibility": {**OWNER["eligibility"], "us_citizen": False}}
     assert answer(US_PERSON, YES_NO, profile=not_citizen) == (None, None)
@@ -442,3 +502,150 @@ def test_both_halves_of_a_fact_come_from_one_record():
     assert questions.pair_problems(PAIR, his) == []
     for label in ("City", "State"):
         assert owner_only(label), label
+
+
+# --- 9. a board form's own wordings (a second live pass) -----------------------------------
+AUTHORIZED_ANY_EMPLOYER = (
+    "Are you currently authorized to work for any employer in the United States?"
+)
+HOW_AUTHORIZED = [
+    "Yes - I have US work authorization as a Citizen or US Permanent Resident / Green Card Holder",
+    "Yes - I have US work authorization via a non-immigrant visa (e.g. F-1, H-1B, L-1, TN)",
+    "No - I am not currently authorized to work in the US",
+]
+TEXT_UPDATES = (
+    "Check Yes or No to indicate your agreement to receive text message updates from Northwind "
+    "and Example Group Technologies regarding your job application. Frequency may vary. "
+    "Message and data rates may apply. Reply STOP to opt out of future messaging. View our "
+    "privacy policy here: Privacy Policy and our terms and conditions here: Terms and Conditions"
+)
+TEXT_OPTIONS = [
+    "Yes - I consent to receiving text messages",
+    "No - I do not consent to receiving text messages",
+]
+OTHER_ROLES = (
+    "I authorize the Northwind Talent Acquisition team to consider me for other job "
+    "opportunities within Northwind in addition to the specific job I am applying for."
+)
+CERTIFY = (
+    "I certify the information provided in this application is true and correct to the best "
+    "of my knowledge. I understand any false statements or omissions may result in "
+    "disqualification from employment consideration or, if employed, termination."
+)
+RETURN_TO_SCHOOL = (
+    "Do you intend to return to a degree-seeking program at the conclusion of the internship "
+    "for at least 1 more term?"
+)
+FULL_TIME_DATES = "Will you be able to work full-time during the listed dates of the program?"
+
+
+def test_work_authorization_is_recognised_with_the_employer_before_the_place():
+    citizen = {**OWNER, "eligibility": {"us_work_authorized": True, "us_citizen": True}}
+    question = classify(AUTHORIZED_ANY_EMPLOYER)
+    assert question.canonical_id == "work_authorization_us"
+    assert question.sensitivity == questions.SENSITIVE
+    assert answer(AUTHORIZED_ANY_EMPLOYER, YES_NO, profile=citizen) == (
+        "Yes",
+        "eligibility.us_work_authorized",
+    )
+    # Two ways to say yes: a citizen's is his; without that fact, which one is his to say.
+    assert answer(AUTHORIZED_ANY_EMPLOYER, HOW_AUTHORIZED, profile=citizen) == (
+        HOW_AUTHORIZED[0],
+        "eligibility.us_work_authorized",
+    )
+    assert answer(AUTHORIZED_ANY_EMPLOYER, HOW_AUTHORIZED) == (None, None)
+    not_authorized = {**OWNER, "eligibility": {"us_work_authorized": False, "us_citizen": False}}
+    assert answer(AUTHORIZED_ANY_EMPLOYER, HOW_AUTHORIZED, profile=not_authorized) == (
+        HOW_AUTHORIZED[2],
+        "eligibility.us_work_authorized",
+    )
+    # An option that only denies citizenship is not the citizen's.
+    twisted = ["Yes - I am not a citizen but hold a visa", "Yes - through a visa", "No"]
+    assert answer(AUTHORIZED_ANY_EMPLOYER, twisted, profile=citizen) == (None, None)
+    # A lone yes that adds a condition is not a plain yes either.
+    conditional = ["Yes - with sponsorship", "No - I am not authorized"]
+    assert answer(AUTHORIZED_ANY_EMPLOYER, conditional, profile=citizen) == (None, None)
+    plain_pair = ["Yes - I am authorized to work in the US", "No - I am not authorized"]
+    assert answer(AUTHORIZED_ANY_EMPLOYER, plain_pair, profile=citizen)[0] == plain_pair[0]
+
+
+def test_text_updates_and_other_roles_take_the_owners_standing_yes():
+    assert classify(TEXT_UPDATES).canonical_id == "contact_consent"
+    assert answer(TEXT_UPDATES, TEXT_OPTIONS) == (
+        TEXT_OPTIONS[0],
+        "policy.default.contact_consent",
+    )
+    assert classify(OTHER_ROLES).canonical_id == "talent_network_opt_in"
+    assert answer(OTHER_ROLES, YES_NO)[0] == "Yes"
+    # A line that asks for more than contact is not this question.
+    for other in (
+        TEXT_UPDATES + " I also agree to the arbitration agreement.",
+        "I authorize Northwind to run a background check and consider me for other roles.",
+        "Do not consider me for other job opportunities within Northwind.",
+    ):
+        assert classify(other).canonical_id not in {"contact_consent", "talent_network_opt_in"}
+
+
+def test_a_certification_is_one_question_however_long_and_is_the_owners(state):
+    question = classify(CERTIFY)
+    assert (question.canonical_id, question.sensitivity) == (
+        "certify_truthful",
+        questions.SENSITIVE,
+    )
+    assert answer(CERTIFY, ["Yes"], kind="checkbox_group") == (None, None)
+    assert questions.draft_gate({"label": CERTIFY})["code"].startswith("sensitive:")
+    # His one answer is kept for every form's wording of it.
+    assert workflow.remember_answer(CERTIFY, YES_NO, "Yes", "m1")
+    shorter = "I certify that all information provided in this application is true and accurate."
+    assert answer(shorter, YES_NO, recall=workflow.recall_answer) == ("Yes", questions.REMEMBERED)
+
+
+def test_returning_to_school_comes_from_the_stated_graduation():
+    question = classify(RETURN_TO_SCHOOL)
+    assert question.canonical_id == "returning_to_school"
+    assert questions.draft_gate({"label": RETURN_TO_SCHOOL})["code"] == (
+        "profile_fact:returning_to_school"
+    )
+    year = questions.education.internship_year("")
+    later = {
+        **OWNER,
+        "education": {"schools": [{**UNIVERSITY, "graduation_month": f"{year + 2}-05"}]},
+    }
+    value, source = answer(RETURN_TO_SCHOOL, YES_NO, profile=later)
+    assert value == "Yes" and source.endswith(".graduation_month")
+    # Graduating the year of the internship: only he knows whether a term is left.
+    same = {**OWNER, "education": {"schools": [{**UNIVERSITY, "graduation_month": f"{year}-12"}]}}
+    assert answer(RETURN_TO_SCHOOL, YES_NO, profile=same) == (None, None)
+    # Asked the other way round, the fact does not answer it.
+    assert answer("Do you not plan to return to school?", YES_NO, profile=later) == (None, None)
+
+
+def test_working_the_postings_listed_dates_is_never_a_standing_yes():
+    # Whether he can work "the listed dates" depends on the posting's dates, which no
+    # rule here sees: it goes to the model, which reads the posting, or to him.
+    assert classify(FULL_TIME_DATES).canonical_id != "available_for_term"
+    assert answer(FULL_TIME_DATES, YES_NO) == (None, None)
+
+
+HASHED_REQUIRED = """<title>Apply</title><form>
+<fieldset class="_container_1258i_28">
+<label class="_heading_f7cvd_52 _required_f7cvd_91 title" for="q1">Are you authorized?</label>
+<div><span><input type="radio" id="q1-0" name="q1"></span><label for="q1-0">Yes</label></div>
+<div><span><input type="radio" id="q1-1" name="q1"></span><label for="q1-1">No</label></div>
+</fieldset>
+<fieldset class="_container_1258i_28">
+<label class="_heading_f7cvd_52 question-title" for="q2">Receive updates?</label>
+<div><span><input type="radio" id="q2-0" name="q2"></span><label for="q2-0">Yes</label></div>
+<div><span><input type="radio" id="q2-1" name="q2"></span><label for="q2-1">No</label></div>
+</fieldset></form>"""
+
+
+def test_a_question_marked_required_by_a_hashed_class_is_required(reader):
+    # What the live board does: the asterisk is drawn by CSS on a class like
+    # `_required_f7cvd_91`, so no text and no plain `required` class says it.
+    groups = {
+        f["label"]: f["required"]
+        for f in reader.read(HASHED_REQUIRED)["fields"]
+        if f.get("options")
+    }
+    assert groups == {"Are you authorized?": True, "Receive updates?": False}

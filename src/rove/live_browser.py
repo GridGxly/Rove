@@ -2056,7 +2056,14 @@ class RecruitingBrowser:
         for _ in range(10):
             with contextlib.suppress(PlaywrightError):
                 options.first.wait_for(state="visible", timeout=500)
-            texts = [t.strip() for t in options.all_text_contents()[:300]]
+            # Each suggestion with its lines kept: the name first, then whatever the
+            # picker shows under it (a country, a website).
+            texts = [
+                str(t).strip()
+                for t in options.evaluate_all(
+                    "els => els.slice(0, 300).map(e => e.innerText || e.textContent || '')"
+                )
+            ]
             found = (
                 questions.school_option(texts, school, places)
                 if school
@@ -2092,8 +2099,8 @@ class RecruitingBrowser:
                     "list has no Other choice. Pick it in the recruiting browser."
                 )
                 return False
-            index, self.picked_label = other, texts[other]
-        expected = texts[index]
+            index, self.picked_label = other, questions.option_name(texts[other])
+        expected = questions.option_name(texts[index])
         self.form.get_by_role("option").nth(index).click()
         evidence = locator.evaluate(
             "e=>[e.value||'', e.closest('.select__container')?.querySelector("
