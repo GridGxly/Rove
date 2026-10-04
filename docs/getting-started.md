@@ -18,15 +18,17 @@ node --version           # 22 or newer, for QMD
 ## 2. Clone and install
 
 ```bash
-git clone https://github.com/GridGxly/Rove.git
+git clone --branch docs-initial-setup https://github.com/GridGxly/Rove.git
 cd Rove
-uv sync
+uv sync --frozen --python 3.12
 uv run patchright install chromium
 ```
 
 The last command installs Patchright's Chromium build. The synthetic fixture and the browser tests use it. The recruiting browser is a copy of your own Google Chrome, built in step 12; Google Chrome must be installed at `/Applications/Google Chrome.app`.
 
 Keep hardware-specific changes in your own clone or fork.
+
+Use `docs-initial-setup` for this pre-alpha implementation. The current `main` branch contains only the initial commit. `--frozen` uses the dependency versions checked into this branch.
 
 ## 3. Keep live data outside Git
 
@@ -36,15 +38,15 @@ Do not copy a real resume, profile, receipt, mail or screenshot into the reposit
 
 ## 4. Local model and Hermes
 
-Install oMLX, download the model, and apply the settings in [Local runtime](local-runtime.md). Install Hermes and apply its settings and the 16K patch from the same page.
+Install oMLX, download the model, and apply the settings in [Local runtime](local-runtime.md#install-the-model-server). Use the exact served model name and keep the API on localhost. Run the [quick inference check](local-runtime.md#quick-inference-check) before configuring the rest of the stack. A model inventory response alone does not prove inference works.
 
 ```sh
-uv run rove start      # start the model server, then the Hermes gateway
-uv run rove status
-uv run rove stop
+uv run rove model start
+uv run rove model status
+uv run rove model stop   # release the model when you finish testing
 ```
 
-The model server listens on localhost only. Weights load on the first request.
+Install Hermes using its [source installation instructions](https://hermes-agent.nousresearch.com/docs/getting-started/installation/), then apply the settings and opt-in 16K patch in [Local runtime](local-runtime.md#hermes-integration-and-compatibility-patch). The listed source commit is the tested build; newer upstream builds need compatibility checks. Configure the Discord gateway in step 10 before starting it. `rove start` starts both the model and gateway, whereas `rove model start` starts only oMLX.
 
 ## 5. Prove the stack with synthetic data
 
@@ -111,6 +113,15 @@ The token and all server, channel and user IDs stay in local configuration and a
 
 Then configure the Hermes gateway for the same bot, owner and `agent-control` channel, as in [Local runtime](local-runtime.md#discord-gateway).
 
+Install the Rove shortcuts and start the configured gateway:
+
+```sh
+uv run rove gateway install-shortcuts
+uv run rove model start
+uv run rove gateway start
+uv run rove gateway status
+```
+
 ## 11. Write the configuration
 
 Create `config/workflow.json` and `config/feed.json` in the state root from the key tables in [Requirements](requirements.md#local-configuration). For the first runs:
@@ -118,6 +129,7 @@ Create `config/workflow.json` and `config/feed.json` in the state root from the 
 - set `enabled` to `true` in `workflow.json`
 - leave `submission_enabled`, `auto_submit` and `auto_use_drafts` unset
 - set `enabled` to `false` in `feed.json` until you want feed jobs queued
+- set `captcha_solver` to `manual` while checking preparation; the local vision solver remains experimental
 
 ## 12. Build the Rove Browser and install the services
 

@@ -219,6 +219,8 @@ Before a commit or push, inspect staged changes and run the repository's configu
 
 CI should scan committed changes for likely secrets. Before making the repository public, scan the reachable Git history and active branches as well as the current tree.
 
+This applies to personal applicant data as well as credentials. A clean current-tree guard does not establish a clean history: a phone number removed from a test can remain in older commits. Keep private backups outside the checkout, review the affected published references, and obtain the owner's approval before rewriting shared history. Leave the repository private until the publication review is complete.
+
 If a real secret is ever committed, revoke or rotate it first. Removing the file from the latest commit does not make the old value safe.
 
 ## Discord

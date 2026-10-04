@@ -52,9 +52,9 @@ Optional integrations should stay optional.
 ## Setup
 
 ```bash
-git clone https://github.com/GridGxly/Rove.git
+git clone --branch docs-initial-setup https://github.com/GridGxly/Rove.git
 cd Rove
-uv sync
+uv sync --frozen --python 3.12
 ```
 
 As implementation lands, keep verified test commands here or in [Getting started](docs/getting-started.md).

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>A local-first recruiting agent that finds internships, fills the applications, sends them, and keeps a record of what it sent.</strong>
+  <strong>A local-first recruiting assistant for job intake, application preparation, and auditable submission.</strong>
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@ Rove is not an official Erga project and is not affiliated with its maintainer. 
 7. Each application has its own Discord forum thread with the filled values, the drafts, the resume PDF, a screenshot when a run stops, and the result.
 8. An optional mail service reads a Zoho inbox and moves a sent application to OA, Interview, Offer or Rejected.
 
-Rove stops and asks me when it meets a CAPTCHA, a sign-in or account step, a question only I can answer, a conflict with my approved facts, or a submission whose result is unclear. An unclear submission is never retried by code.
+Rove tries recognised picture checks with a bounded local solver. It asks me when that fails, an account step needs approval, a fact is missing, approved facts conflict, or a submission result is unclear. Supported email codes come from the optional Zoho integration; SMS and authenticator MFA remain manual. An unclear submission is never retried by code.
 
 Discord is the remote control. The model, the vault, the database, resumes, the browser profile, credentials and the application history stay on my Mac.
 
@@ -68,17 +68,20 @@ Qwen handles judgment: job fit, unfamiliar questions, written answers, and mail 
 - [Memory and storage](docs/memory-and-storage.md): where each kind of data lives
 - [Requirements](docs/requirements.md): the full install checklist and configuration keys
 - [Getting started](docs/getting-started.md): setup in order
+- [Qwen visual benchmark](docs/visual-benchmark.md): recorded failures and the evidence required for the MVP
 - [Security](SECURITY.md) and [Prompt injection](docs/prompt-injection.md): the trust model
 
 The rest is listed in [docs/README.md](docs/README.md).
 
 ## Local model
 
-The model is [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) at 4-bit, served on localhost by oMLX. The tested build, settings and measurements are in [Local runtime](docs/local-runtime.md) and [Runtime measurements](docs/runtime-benchmarks.md).
+The reference checkpoint is [OrcaRouter's Qwen3.8-27B MLX conversion](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX) at 4-bit, served on localhost by oMLX as `Qwen3.8-27B-Uncensored-4bit`. The tested revision, settings and a [quick inference check](docs/local-runtime.md#quick-inference-check) are in [Local runtime](docs/local-runtime.md). [Runtime measurements](docs/runtime-benchmarks.md) separates model speed from workflow verification.
 
 ## Hardware
 
 I develop on a 14-inch MacBook Pro with an M5 Pro (18-core CPU, 20-core GPU), 48GB of unified memory and a 1TB SSD. The stack is tuned for that machine.
+
+This Mac has loaded the model and completed local inference. That establishes that 48GB can run the reference configuration, not that every desktop workload has enough headroom. Monitor memory pressure and swap during requests; model weight size alone is insufficient. A 64GB configuration has more capacity, but has not been tested here.
 
 You do not need the same Mac. On different hardware, expect to change the model or quantization, the context size and the retention settings in your own clone. [Will this run on my machine?](docs/hardware-check.md) has a prompt you can give another model or coding agent so it can read the repo, compare it with your hardware, and suggest a starting configuration without inventing benchmark numbers.
 
@@ -113,12 +116,12 @@ Read [SECURITY.md](SECURITY.md), [Browser automation](docs/browser-automation.md
 Rove is pre-alpha and has no one-command installer.
 
 ```bash
-git clone https://github.com/GridGxly/Rove.git
+git clone --branch docs-initial-setup https://github.com/GridGxly/Rove.git
 cd Rove
-uv sync
+uv sync --frozen --python 3.12
 ```
 
-Then follow [Getting started](docs/getting-started.md). Start with synthetic data and leave submission off until preparation works on your machine.
+`docs-initial-setup` contains the implementation and these instructions; the repository's `main` branch currently contains only the initial commit. Then follow [Getting started](docs/getting-started.md). Start with synthetic data and leave submission off until preparation works on your machine.
 
 If you want the original recruiting assistant without browser auto-application, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
 
@@ -126,12 +129,14 @@ If you want the original recruiting assistant without browser auto-application, 
 
 Rove runs my own search on one Mac. The pieces above are implemented and covered by an offline test suite. These limits matter most:
 
+The MVP acceptance gate is still unmet: zero verified full-game completions and zero confirmed submissions for the seven selected validation jobs. The latest Oracle test retrieved and accepted an email verification code, then stopped on form controls. It did not submit. Offline fixture success and local inference checks do not establish real application completion.
+
 - Forms are filled only on a fixed list of applicant-tracking hosts, and only when the form belongs to the same job as the queued link.
-- Three submission adapters exist: public Greenhouse boards, public Lever postings, and a generic adapter that confirms from the page alone. Where no enabled adapter matches, Rove fills the form and I press Submit.
-- Rove does not solve CAPTCHAs, automate MFA, or use proxies.
+- Public Greenhouse, public Lever and generic page-confirmation adapters are available, with additional board modules enabled separately in local configuration. Their fixtures establish specific behavior, not broad live success rates. Where no enabled adapter matches, Rove fills the form and I press Submit.
+- The local CAPTCHA solver is experimental; visual recognition has failed in recorded trials. Set `captcha_solver` to `manual` to leave picture checks to yourself. SMS/authenticator MFA remains manual, and Rove uses no proxies.
 - The `Accepted` and `Withdrawn` states are not set by code, and there are no reminders.
 
-[Application workflow](docs/application-workflow.md#limits) has the full list and the work in progress. The definition of done is in the [product requirements](docs/prd.md).
+[Application workflow](docs/application-workflow.md#limits) has the full list. The definition of done is in the [product requirements](docs/prd.md).
 
 Sending an application cannot be undone. Submission is off until you enable it in private configuration.
 
@@ -142,4 +147,3 @@ Focused issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTIN
 ## Author
 
 Built by [Ralph Clavens Love Noel](https://github.com/GridGxly).
-- [Qwen visual benchmark](docs/visual-benchmark.md): recorded game attempts and the evidence required for the MVP

@@ -129,6 +129,88 @@ def test_approved_county_disambiguates_city_and_zip_without_changing_profile():
     assert "county" not in profile["identity"]
 
 
+@pytest.mark.parametrize(
+    ("rows", "selected"),
+    [
+        (["Second, MO", "Second, KS"], "Second, KS"),
+        (["Second County, MO", "Second County, KS"], "Second County, KS"),
+        (["Second, MO"], None),
+        (["Second, KS", "Second, KS"], None),
+    ],
+)
+def test_county_grid_matches_the_approved_county_and_state(reader, rows, selected):
+    import json
+
+    seen = reader.read(
+        """<label for="county">County *</label>
+        <input id="county" role="combobox" aria-autocomplete="list"
+          aria-controls="counties" aria-expanded="false">
+        <div role="option" onclick="document.body.dataset.unrelated='clicked'">Second</div>
+        <div id="counties" role="grid"></div><script>
+        const input=document.querySelector('input'), grid=document.querySelector('#counties');
+        input.onkeyup=()=>{grid.innerHTML='';input.setAttribute('aria-expanded','true');
+          for(const text of """
+        + json.dumps(rows)
+        + """) {
+            const row=document.createElement('div');row.setAttribute('role','row');
+            row.textContent=text;row.onclick=()=>{document.body.dataset.picked=text;
+              input.value='Second';grid.innerHTML='';input.setAttribute('aria-expanded','false');};
+            grid.appendChild(row);
+          }};</script>"""
+    )
+    field = seen["fields"][0]
+    profile = {"identity": {"state_region": "Kansas", "country": "United States"}}
+    assert reader.select_combobox(reader.page.locator("input"), field, "Second", profile) is bool(
+        selected
+    )
+    assert reader.page.locator("body").get_attribute("data-picked") == selected
+    assert reader.page.locator("body").get_attribute("data-unrelated") is None
+    if selected:
+        assert reader.page.locator("input").get_attribute("aria-expanded") == "false"
+
+
+def read_grid_picker(reader, label, rows):
+    import json
+
+    return reader.read(
+        '<label for="answer">'
+        + label
+        + '</label><input id="answer" role="combobox" aria-autocomplete="list" '
+        'aria-controls="choices" aria-expanded="false" required>'
+        '<div role="option" onclick="document.body.dataset.unrelated=\'clicked\'">'
+        'Unrelated option</div><div id="choices" role="grid"></div><script>'
+        'const input=document.querySelector("input"),grid=document.querySelector("#choices");'
+        'const draw=()=>{grid.innerHTML="";input.setAttribute("aria-expanded","true");'
+        "for(const text of "
+        + json.dumps(rows)
+        + ') {const row=document.createElement("div");row.setAttribute("role","row");'
+        "row.textContent=text;row.onclick=()=>{document.body.dataset.picked=text;"
+        'input.value=text;grid.innerHTML="";input.setAttribute("aria-expanded","false");};'
+        "grid.appendChild(row);}};input.onfocus=draw;input.onkeyup=draw;"
+        'input.onkeydown=e=>{if(e.key==="ArrowDown")draw();};</script>'
+    )
+
+
+def test_unknown_linked_grid_reads_its_decline_option_before_asking_the_owner(reader, approved):
+    seen = read_grid_picker(reader, "Gender", ["Female", "Male", "Prefer not to say"])
+    filled, pending = reader._fill_page(reader.run["id"], seen, approved, {})
+    assert not pending
+    assert [(f["value"], f["source"]) for f in filled] == [
+        ("Prefer not to say", questions.DECLINED)
+    ]
+    assert reader.page.locator("body").get_attribute("data-picked") == "Prefer not to say"
+    assert reader.page.locator("body").get_attribute("data-unrelated") is None
+
+
+def test_numbered_month_answer_commits_the_named_month_option(reader):
+    from rove import dates
+
+    seen = read_grid_picker(reader, "Earliest Available Date Month", list(dates.MONTHS))
+    assert reader.select_combobox(reader.page.locator("input"), seen["fields"][0], "9", {})
+    assert reader.page.locator("body").get_attribute("data-picked") == "september"
+    assert reader.page.locator("input").get_attribute("aria-expanded") == "false"
+
+
 def test_location_selection_uses_county_answer_even_when_county_field_is_later(reader, approved):
     profile = {
         **approved,

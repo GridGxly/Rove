@@ -5,7 +5,7 @@ import re
 
 from patchright.sync_api import Error as PlaywrightError
 
-from . import questions
+from . import dates, questions
 
 # USPS Publication 28, Appendix B: https://pe.usps.com/text/pub28/28apb.htm
 US_REGIONS = dict(
@@ -135,6 +135,10 @@ def region_matches(parts: list[str], profile: dict) -> bool:
     return region not in known or region in region_names(str(state), profile)
 
 
+def county_name(value: str) -> str:
+    return re.sub(r"\s+(?:county|parish|borough)$", "", questions.normalized(value))
+
+
 def matches_county(parts: list[str], county: str, profile: dict) -> bool:
     """Use a county column before the observed state; rows without one add no evidence."""
     regions = region_names(str((profile.get("identity") or {}).get("state_region") or ""), profile)
@@ -142,10 +146,7 @@ def matches_county(parts: list[str], county: str, profile: dict) -> bool:
     if not boundary:
         return True
 
-    def normalized(value):
-        return re.sub(r"\s+(?:county|parish|borough)$", "", questions.normalized(value))
-
-    return normalized(county) in {normalized(part) for part in parts[:boundary]}
+    return county_name(county) in {county_name(part) for part in parts[:boundary]}
 
 
 def with_county(profile: dict, value) -> dict:
@@ -234,18 +235,25 @@ COMMITTED_JS = """({ref,values}) => {
 def matches(label: str, value: str, field: dict, profile: dict) -> bool:
     if questions.option_matches(label.strip(), value):
         return True
+    name = questions.plain_name(field.get("label", ""))
+    if name.endswith(" month") and dates.question_label(name):
+        month = dates.month_number(value)
+        return month is not None and dates.month_number(label) == month
     kind = questions.classify(field.get("label", "")).canonical_id
+    if kind == "county":
+        parts = label.split(",")
+        return county_name(parts[0]) == county_name(value) and region_matches(parts, profile)
     if kind == "postal_code":
         parts = label.split(",")
-        if questions.normalized(parts[0]) != questions.normalized(value) or not region_matches(
-            parts, profile
-        ):
-            return False
         identity = profile.get("identity") or {}
         if (
-            len(parts) > 1
-            and identity.get("city")
-            and (questions.normalized(parts[1]) != questions.normalized(identity["city"]))
+            questions.normalized(parts[0]) != questions.normalized(value)
+            or not region_matches(parts, profile)
+            or (
+                len(parts) > 1
+                and identity.get("city")
+                and questions.normalized(parts[1]) != questions.normalized(identity["city"])
+            )
         ):
             return False
         return not identity.get("county") or matches_county(parts[2:], identity["county"], profile)

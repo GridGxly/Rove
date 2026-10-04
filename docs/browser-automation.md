@@ -167,7 +167,17 @@ For a place picker the daemon types the approved city and waits up to six second
 
 A picker that refuses a known value is recorded as a browser control problem. It does not ask Qwen to invent another answer. The daemon keeps private evidence for a fix: what it typed, the options the picker listed, what the input kept, and a screenshot when no secret field is present. Missing address facts also stay out of model drafting.
 
+County grids may list a county with its state, such as "Example County, KS". Rove
+matches the approved county name and rejects a different displayed US state. More
+than one matching row remains unresolved. Failed picker evidence includes the linked
+rows' text and visible/selected state, including a list that changed before selection.
+
 When no value is known, the daemon opens the list once to read its options so Qwen and the owner see the real choices.
+
+That read includes rows in the input's linked grid. It lets the standing policy use
+the form's own decline option for self-identification instead of asking for a
+demographic fact. A named month control may match an approved numeric month to the
+same month written out; duplicate matching options still stop selection.
 
 ### Multi-page forms
 

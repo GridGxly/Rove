@@ -1475,6 +1475,15 @@ class RecruitingBrowser:
                     "label": field["label"],
                     "typed": typed,
                     "options_seen": [str(t)[:120] for t in seen[:25]],
+                    "option_rows": pickers.options(self.form, locator).evaluate_all(
+                        """rows => rows.slice(0,25).map(row => ({
+                         tag:row.tagName, role:row.getAttribute('role'),
+                         text:row.textContent.slice(0,200),
+                         visible_text:row.innerText.slice(0,200),
+                         visible:!!row.getClientRects().length,
+                         selected:row.getAttribute('aria-selected')
+                        }))"""
+                    ),
                     "committed": locator.input_value()[:200],
                     "at": workflow.now(),
                 },
@@ -2262,6 +2271,7 @@ class RecruitingBrowser:
         row = pickers.exact_row(options, expected)
         if row is None:
             self.picker_reason = "The location list changed before selection; read it again."
+            self.picker_diagnostic(field, city or value, texts, locator)
             locator.press("Escape")
             return False
         row.click()
@@ -3264,7 +3274,7 @@ class RecruitingBrowser:
                 locator.click()
                 locator.press("ArrowDown")
                 try:
-                    options = self.form.get_by_role("option")
+                    options = pickers.options(self.form, locator)
                     options.first.wait_for(state="visible", timeout=3000)
                     choices = options.all_text_contents()[:300]
                 except PlaywrightError:

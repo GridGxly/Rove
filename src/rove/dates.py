@@ -186,6 +186,11 @@ def _month_of(words: list[str]) -> int | None:
     return found.pop() if len(found) == 1 else None
 
 
+def month_number(value) -> int | None:
+    """The unambiguous month named by a number, name, or both."""
+    return _month_of(_words(value))
+
+
 def option_for(options: list[dict], value) -> dict | None:
     """The one option of a month, day or year dropdown for the date the value names."""
     part, parts = part_of(options), parse(value)

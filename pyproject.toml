@@ -73,8 +73,8 @@ source = ["src/rove", "*/site-packages/rove"]
 [tool.coverage.report]
 # The floor only goes up. After a change that raises total coverage, set this to the new
 # total minus two points (one decimal) in the same pull request; never lower it.
-# 2026-10-04: tests and e2e together measured 87.75 % (branch).
-fail_under = 85.8
+# 2026-10-04: the full suite measured 87.90 % with branch coverage.
+fail_under = 85.9
 precision = 1
 skip_covered = true
 show_missing = true

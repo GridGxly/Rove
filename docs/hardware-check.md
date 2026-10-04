@@ -6,6 +6,8 @@ If your hardware is different, it is worth checking the whole stack before downl
 
 The full stack is the local Qwen model, Hermes, Erga, a dedicated Chrome for applications, Discord, Obsidian, QMD retrieval, SQLite, and optional Zoho mail tracking. A machine that can load the model may still be cramped once the rest is running.
 
+The 48GB reference Mac has loaded the configured 27B 4-bit model and completed inference. It has also shown memory pressure under normal desktop load. The [runtime measurements](runtime-benchmarks.md) include both observations and a short reproducible check. Measure pressure and swap growth throughout a request, not just afterward; retained swap and process RSS alone do not identify the model's peak Metal allocations. A 64GB machine has more capacity but has not been tested, and extra RAM does not establish better visual recognition or application correctness.
+
 You can use the prompt below with ChatGPT, Claude, Gemini, Grok, or another agent that can read a public GitHub repository. A coding agent with local computer access can usually do a better job because it can inspect the hardware directly.
 
 If your model cannot open GitHub links, give it the current `AGENTS.md`, `README.md`, `docs/requirements.md`, `docs/memory-and-storage.md`, `docs/getting-started.md`, `docs/how-it-works.md`, `docs/local-runtime.md`, `docs/runtime-benchmarks.md`, this file, and any runtime or config files it asks for.

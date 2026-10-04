@@ -22,6 +22,21 @@ The model's root weights are MLX affine 4-bit, group size 64, totaling 16,054,54
 
 Sources: [model](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX), [oMLX release](https://github.com/jundot/omlx/releases/tag/v0.6.4), [Hermes installation](https://hermes-agent.nousresearch.com/docs/getting-started/installation), [Erga](https://github.com/Adr1an04/erga-mcp), [QMD](https://github.com/tobi/qmd).
 
+## Install the model server
+
+1. Download the macOS DMG matching your OS from the [tested oMLX release](https://github.com/jundot/omlx/releases/tag/v0.6.4), copy oMLX to Applications, and open it once. Its app-managed CLI lives at `~/.omlx/bin/omlx`; Rove's component commands expect that installation.
+2. Download the reference snapshot outside the checkout. The root of this snapshot is the tested 4-bit model; the excluded folders contain alternative quantizations. The command also keeps the external `mtp` head. [Hugging Face's CLI guide](https://huggingface.co/docs/huggingface_hub/guides/cli) documents the downloader.
+
+   ```sh
+   uvx --from huggingface-hub hf download orcarouter/Qwen3.8-27B-Uncensored-MLX \
+     --revision 14963e70f886455cf93090ac95bdbf4c8730cbe1 \
+     --local-dir ~/.omlx/models/Qwen3.8-27B-Uncensored-4bit \
+     --exclude '*-bit/*'
+   ```
+
+3. In oMLX, select `~/.omlx/models` as the model directory and apply the settings below. The downloaded folder name must produce the served ID `Qwen3.8-27B-Uncensored-4bit`, which Rove currently fixes in code. Keep `trust_remote_code` off. Configure authentication in oMLX; Rove reads the API key from its private settings or `ROVE_MODEL_API_KEY`, so do not paste it into a command or a public config example.
+4. Run `uv run rove model start`, then the inference check below. `model status` lists available models; it does not generate a response or establish that the weights fit under load.
+
 ## oMLX settings
 
 Private settings live in `~/.omlx/settings.json` and `~/.omlx/model_settings.json`. Weights live under `~/.omlx/models`, outside Git.
@@ -261,6 +276,53 @@ For overlapping memory measurements, `uv run rove smoke --hold-seconds 60` keeps
 The feed, workflow, browser and mail services are separate from these commands. See [Requirements](requirements.md#services).
 
 ## Verification and benchmarks
+
+### Quick inference check
+
+From the installed checkout, start only the model with `uv run rove model start`, then
+run this small synthetic request before installing the scheduled services. On an
+existing install, wait for active workflow work to finish. The lock prevents a worker
+request from overlapping this check. No applicant facts, browser, mail, or submission
+are used. Run this on macOS, where the benchmark's OS memory counters are supported.
+
+```sh
+uv run python - <<'PY'
+import json
+from rove.benchmark import request
+from rove.runtime import private_lock, state_root, write_private
+
+messages = [
+    {"role": "system", "content": "Use only the supplied synthetic facts. Return JSON with job_id (a single letter), product (an integer), and applicant_street_address (a string if supplied, otherwise JSON null). No commentary."},
+    {"role": "user", "content": "Choose the only role meeting all requirements: remote, paid, no more than 20 hours per week. Role A: remote, unpaid, 16 hours. Role B: onsite, paid, 16 hours. Role C: remote, paid, 18 hours. Compute 7 times 9 for product. No applicant address is supplied. /no_think"},
+]
+with private_lock(state_root() / "workflow.lock"):
+    result = request(messages, max_tokens=96,
+                     extra={"response_format": {"type": "json_object"}})
+    try:
+        answer = json.loads(result["text"])
+    except json.JSONDecodeError:
+        answer = None
+    result["verified"] = answer == {
+        "job_id": "C", "product": 63, "applicant_street_address": None
+    }
+    from datetime import UTC, datetime
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    output = state_root() / "benchmarks" / ("runtime-check-" + stamp + ".json")
+    write_private(output, result)
+print(json.dumps({key: result[key] for key in
+                 ("verified", "ttft_seconds", "latency_seconds", "usage")}, indent=2))
+print("Private evidence:", output)
+raise SystemExit(0 if result["verified"] else 1)
+PY
+```
+
+A successful check exits zero and reports `verified: true`. A wrong or malformed
+answer exits nonzero and remains in the private evidence file. This is a short text
+inference check, not a 16K context, visual recognition, Hermes, or end-to-end application
+certification. Stop oMLX with `uv run rove model stop` when finished if you want to
+release its memory; that does not unload the separate workflow services.
+
+### Offline checks and longer measurements
 
 ```sh
 uv run pytest -q

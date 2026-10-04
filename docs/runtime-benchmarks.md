@@ -53,4 +53,17 @@ The broader four-minute workflow/retrieval window included 101 normal and 19 war
 
 A temporary 30-second idle TTL triggered an actual model unload and freed 17.87GB. The final TTL is restored to 600 seconds. Normal requests reload an idle model. Keep one active request and the 16K ceiling while collecting further real-workload evidence.
 
-These measurements used the synthetic, prepare-only workflow. Real submission, applicant onboarding, CAPTCHA and MFA handling, and recruiting mail were outside this certification. Timing of real applications has not been measured yet.
+These measurements used the synthetic, prepare-only workflow. Real submission, applicant onboarding, CAPTCHA and MFA handling, and recruiting mail were outside this certification. They are not measurements of completed real applications.
+
+## Short inference check — October 4, 2026
+
+The same 48GB M5 Pro Mac ran two small synthetic text requests with the reference model, temperature zero, thinking off, JSON object mode and a 96-token output ceiling. The exercise asks for a role satisfying three supplied constraints, an arithmetic result, and an unknown address. No real applicant facts or browser actions are involved.
+
+| Request | Input/output tokens | First token | Total | Actual result |
+| --- | --- | --- | --- | --- |
+| Initial prompt | 116 / 32 | 4.21 s | 6.63 s | Correct role and arithmetic; address left unknown. Strict format check failed because the result used `Role C` and `"unknown"` instead of the checker's expected letter and JSON null. The prompt had not specified those types explicitly. |
+| Explicit field types | 133 / 21 | 2.81 s | 4.13 s | Correct role, arithmetic and JSON null; exact check passed. This is a changed prompt, not a retry under an identical protocol. |
+
+Neither request reported cached prompt tokens. OS counters were sampled at the start, every two seconds and the end: five samples for the first request included normal and warning pressure; all three samples for the second showed normal pressure. Swap decreased by about 48 MiB and 24 MiB respectively, from a pre-existing total near 18 GiB. These sparse, brief observations establish neither sustained stability nor the cause of earlier pressure. Raw responses, both outcomes and memory samples remain in private benchmark files.
+
+oMLX's earlier load log on this date reported 16.12 GB for the model. That is a loading measurement, not peak inference memory. The [quick inference check](local-runtime.md#quick-inference-check) reproduces the explicit-type exercise. It proves a small local request can complete; it does not certify the full context window, visual reasoning, Hermes tools, or real submission. A 64GB machine has not been benchmarked here.

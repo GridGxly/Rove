@@ -193,7 +193,9 @@ One job is sent once. A send takes the key of its posting link and the key of th
 
 ### Accounts
 
-When a board needs an account, the card offers `create account`. After that reply the browser daemon fills the email from the profile and a generated password, ticks the terms checkbox, fills text fields it can resolve from the profile such as the name, clicks the create control, and stores the credential encrypted on the Mac. Later sign-in pages on that host are completed with the stored account. Email verification, CAPTCHA, MFA and identity checks stay with the owner in the recruiting browser.
+When a board needs an account, the card offers `create account`. After that reply the browser daemon fills the email from the profile and a generated password, ticks the terms checkbox, fills text fields it can resolve from the profile such as the name, clicks the create control, and stores the credential encrypted on the Mac. Later sign-in pages on that host are completed with the stored account.
+
+With Zoho connected, supported email verification codes are read by the broker and entered without exposing them to Qwen, Discord or remembered answers. Sender authentication, recipient and freshness must match. Unsupported mail verification and SMS/authenticator MFA remain manual. The bounded local picture-check solver may try recognised challenges; unresolved CAPTCHA and identity steps stay with the owner. Account approval and browser destination checks still apply.
 
 ## Sending
 
@@ -277,7 +279,7 @@ Unattended sending is an owner policy in private `config/workflow.json`. It is o
 
 `auto_submit` sends a complete package on the tick that prepared it. The thread shows "Auto-submit is on · sending it once" and then the result. No card is posted to the action-needed channel for a package that completes.
 
-Two keys pace it. `max_submissions_per_day` (default 10) counts the submission attempts recorded on the current UTC date. `min_minutes_between_submissions` (default 8) is the gap since the last attempt. While either limit applies, the worker starts no new feed job. An application the owner resumed and a link the owner pasted are worked anyway.
+Two keys pace it. `max_submissions_per_day` (default 30) counts the submission attempts recorded on the current UTC date. `min_minutes_between_submissions` (default 0) is the gap since the last attempt. The separate platform gap defaults to 90 seconds. While a cap or gap applies, the worker starts no new feed job. An application the owner resumed and a link the owner pasted are worked anyway. See the exact settings in [Requirements](requirements.md#configworkflowjson).
 
 Everything in [When Rove stops for the owner](#when-rove-stops-for-the-owner) still stops an unattended run, except the ready-to-submit card.
 
@@ -371,6 +373,8 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 
 ## Limits
 
+The seven selected validation jobs still have zero confirmed submissions, and the visual stress test has zero verified full-game completions. The October 4 Oracle debugging passes demonstrated email-code retrieval and acceptance, then encountered form-control failures. No Submit attempt was made. These observations do not establish autonomous end-to-end success.
+
 - Forms are filled only on boards in the table and on hosts the owner let in, and only for the same job as the queued link (see [Where a form may be filled](#where-a-form-may-be-filled)). A posting on an employer page whose Apply control leads to a board's own job page, not an embed, is not yet matched to that job and stops for the owner.
 - `lever_v1`'s handling of a CAPTCHA-rejected send follows Lever's reported wording and has not been observed in a live run. Lever's inline field messages use a class the shared error read does not cover, so a Lever form kept open by a field error without the verification sentence is recorded as unclear.
 - Multi-page support advances after a complete page through recognized navigation controls such as Next, Continue, Proceed, Save and Continue, or Review. Each browser pass handles at most eight pages; the worker resolves up to eight new question batches under the draft policy. Repeated unresolved questions and manual steps stop the pass.
@@ -378,13 +382,5 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 - Code refuses automatic drafts for legal or sensitive questions, unknown personal facts and unreadable labels. A required fact missing from the approved profile or remembered answers still needs the owner.
 - Mail tracking reads the Inbox of one Zoho account. Mail about a job that was not applied to through Rove is ignored.
 - The `Accepted` and `Withdrawn` states are not set by code. There are no reminders or calendar entries.
-- Only the replies listed in [Discord](discord.md#replies) are understood. A sentence is not interpreted.
+- Workflow-card replies follow the forms listed in [Discord](discord.md#replies). Natural-language requests in `agent-control` go through Hermes and the narrow Rove tools; code validates their arguments against owner messages and application state.
 - One application is worked at a time.
-
-## In progress
-
-These are being built now and are not described above. Each will be documented here when it lands.
-
-- Adapters for Paylocity, Workable, JazzHR and BambooHR
-- Scored intake with a daily digest
-- Per-platform pacing

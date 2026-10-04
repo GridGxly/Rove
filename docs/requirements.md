@@ -10,6 +10,8 @@ Apple Silicon macOS is the only tested platform. The reference machine is a 14-i
 
 Different hardware may need a smaller context window, another quantization or another model. See [Will this run on my machine?](hardware-check.md) before downloading a large model.
 
+The 48GB reference Mac has completed local inference, but has also shown memory pressure under desktop workloads. Leave room for the OS, model caches and browser; the weight download size is not peak memory use. No 64GB configuration has been measured. Use the [quick inference check](local-runtime.md#quick-inference-check) first, then measure your target context and the full stack.
+
 ## Software
 
 | Component | Used for | Where the code expects it |
@@ -30,6 +32,15 @@ Different hardware may need a smaller context window, another quantization or an
 Rove's Python dependencies are locked in `uv.lock`: `httpx`, `pydantic`, `mcp`, `pyyaml`, `psutil`, `patchright` and `cryptography`. [Local runtime](local-runtime.md) lists the tested versions of everything above.
 
 QMD's requirements can change. At the time of writing, the Hermes QMD skill needed Node.js 22 or newer and SQLite with extension support, and its first run downloaded about 2GB of helper models. QMD 2.8.3's packaged SQLite worked on the tested machine without a separate install. Check the current upstream instructions when you set it up.
+
+Install the tested QMD package into the path Rove's adapter uses:
+
+```sh
+npm install --prefix ~/.local/share/rove/qmd @tobilu/qmd@"2.8.3"
+~/.local/share/rove/qmd/node_modules/.bin/qmd --version
+```
+
+This is a scoped local installation, separate from the checkout. [QMD's installation guide](https://github.com/tobi/qmd) covers its upstream requirements. Build the approved-profile index with `rove memory index` after onboarding, as described in [Getting started](getting-started.md#8-onboarding).
 
 ## Local model
 
