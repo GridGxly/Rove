@@ -61,7 +61,11 @@ As implementation lands, keep verified test commands here or in [Getting started
 
 ## Checks
 
-Every push and pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Each job below is a required check, and each runs the command beside it, so a red check tells you what to run locally. Run `uv sync` first; the browser checks also need `uv run patchright install chromium` once.
+Pushes to `main` and `docs-initial-setup`, and every pull request, run
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). Each job below publishes a
+separate check. GitHub branch protection or a ruleset must require those checks before
+merging; the workflow file alone does not enforce that. Run `uv sync` first; the browser
+checks also need `uv run patchright install chromium` once.
 
 | Check | What it holds | Run it locally |
 | --- | --- | --- |
@@ -80,6 +84,8 @@ A plain `uv run pytest` runs everything except `smoke`, which builds and install
 
 What the suite enforces on every run:
 
+- **Isolation.** Real httpx transports may reach only loopback fixtures. An attempted external request fails teardown even if application code caught its exception; external services use explicit mock transports. Private paths and keys are synthetic.
+- **Employer receipt.** The performance and installed-wheel fixture sends actual form data and resume bytes to a validating local server. An empty POST, wrong value, missing field, duplicate field or repeated submission must fail. A timing row alone is not a successful application.
 - **Order.** Tests run in a random order (pytest-randomly). The seed is printed at the top; `-p randomly --randomly-seed=N` repeats a run and `-p no:randomly` turns shuffling off while you debug. A test that passes only in one order has an isolation bug.
 - **Browser tests are found, not remembered.** A test that starts a Chromium, directly or through a fixture or helper under `tests/`, is marked `e2e` when the suite is collected (`tests/ci_marks.py`). A test without the marker that still starts one fails and names itself; add `@pytest.mark.e2e` to it.
 - **Hangs fail fast.** Each test has 120 seconds (pytest-timeout).

@@ -17,7 +17,7 @@ The goal is not "apply to everything." The goal is a reliable local workflow tha
 - prepare an evidence-backed resume
 - research a company when a written answer needs context
 - fill application forms in a dedicated browser
-- stop when a fact, approval, CAPTCHA, MFA step, or sensitive question needs the user
+- try picture checks with the bounded local solver; stop when a fact, approval, unresolved CAPTCHA, MFA step, or sensitive question needs the user
 - preserve exactly what was submitted
 - track OAs, interviews, offers, rejections, and follow-up afterward
 

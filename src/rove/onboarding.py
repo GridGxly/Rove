@@ -7,7 +7,6 @@ never registered as an MCP tool. Unknown answers remain null, not guessed defaul
 import hashlib
 import json
 import os
-import tempfile
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Literal
@@ -16,7 +15,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from .jobs import database
-from .runtime import state_root
+from .runtime import state_root, write_private_bytes
 
 Text = Annotated[str, Field(min_length=1, max_length=3000)]
 Month = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
@@ -203,16 +202,7 @@ def digest(value: dict) -> str:
 
 
 def atomic_private(path: Path, text: str):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, temporary = tempfile.mkstemp(dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    write_private_bytes(path, text.encode())
 
 
 def onboarding_db():

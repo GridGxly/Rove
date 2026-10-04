@@ -70,15 +70,18 @@ def test_block_pages_are_recognized_and_never_treated_as_forms(tmp_path, monkeyp
         browser.close()
 
 
-def test_same_value_accepts_a_phone_in_any_national_or_international_form():
-    from rove.live_browser import same_value
+def test_phone_formatting_does_not_hide_a_different_value_or_country_code():
+    from rove.live_browser import same_field_value, same_value
 
-    assert same_value("2025550123", "+1 (202) 555-0123")
-    assert same_value("+1 202-555-0123", "2025550123")
-    assert same_value("12025550123", "202-555-0123")
-    assert not same_value("2025550123", "8632589846")
-    assert same_value("Ralph", "Ralph ")
-    assert not same_value("Ralph", "Ralp")
+    field = {"kind": "tel", "label": "Phone"}
+    assert same_field_value(field, "2025550198", "+1 (202) 555-0198")
+    assert same_field_value(field, "+1 202-555-0198", "2025550198")
+    assert not same_field_value(field, "2025550198", "+44 2025550198")
+    assert not same_field_value(field, "2025550198", "2025550199")
+    assert not same_value("Reference 2025550198", "Wrong 2025550198")
+    assert not same_value("1234567", "9991234567")
+    assert same_value("Alex", "Alex ")
+    assert not same_value("Alex", "Ale")
 
 
 def test_place_labels_are_recognised_with_or_without_qualifiers():

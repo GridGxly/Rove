@@ -16,7 +16,7 @@ from test_browser_guards import Site
 from test_frames import freeze_resume
 from test_unattended_failure_modes import enabled_worker, posts, the_card
 
-from rove import gates, live_browser, mail, worker, workflow
+from rove import captcha, gates, live_browser, mail, worker, workflow
 
 board = live.board
 site = test_browser_guards.site
@@ -52,6 +52,7 @@ const views = {
     <form id="pin"><fieldset class="pin-code-fieldset">${pin}</fieldset>
     <button type="submit">Verify</button></form><p id="bad"></p>`,
   form: `<form id="application-form">
+    <label>Country code<input role="combobox" name="countryCode" value="+1" disabled></label>
     <label for="f">First name</label><input id="f" name="first" required>
     <label for="e">Email</label><input id="e" name="email" required>
     <label for="r">Resume</label><input id="r" name="resume" type="file">
@@ -139,13 +140,17 @@ def test_after_the_owner_solves_it_rove_carries_on_in_the_same_tab_with_the_mail
     run_id, _result = at_the_picture_check(runtime, site, state_root)
     asked = []
 
-    def mailbox(senders, since, digits, names=()):
-        asked.append((list(senders), digits, list(names)))
+    def mailbox(senders, since, digits, *, recipient):
+        asked.append((list(senders), digits, recipient))
         return CODE
 
     monkeypatch.setattr(mail, "verification_code", mailbox)
     runtime.page.evaluate("() => document.documentElement.setAttribute('data-solved', '1')")
     runtime.page.locator("#pin-code-1").wait_for()
+    # An earlier rejected entry is still visible when the owner resumes. Each digit
+    # must be replaced, not appended to or ignored by a maxlength=1 control.
+    for index in range(1, 7):
+        runtime.page.locator(f"#pin-code-{index}").fill("0")
     assert runtime.challenge(run_id) == {"open": True, "showing": False, "moved": True}
     # The tab is read where he left it: a fresh load would bring the first step back.
     resumed = runtime.open(site + JOB, in_place=True)
@@ -157,6 +162,7 @@ def test_after_the_owner_solves_it_rove_carries_on_in_the_same_tab_with_the_mail
     assert [f["label"] for f in result["filled"]] == ["First name", "Email", "Resume"]
     # One box per digit, the site's own senders, and the code is written nowhere.
     assert asked[0][1] == (6, 6) and len(asked) == 1
+    assert asked[0][2] == "alex@example.invalid"
     with workflow.db() as conn:
         kinds = [
             r["kind"]
@@ -172,6 +178,165 @@ def test_after_the_owner_solves_it_rove_carries_on_in_the_same_tab_with_the_mail
     # Without `in_place` the same call starts from a fresh load of the posting.
     again = runtime.open(site + JOB)
     assert again["url"].endswith(JOB) and again["application_links"]
+
+
+def test_hidden_response_and_closed_challenge_do_not_claim_progress(board, site):
+    runtime, _base, state_root = board
+    run_id, _result = at_the_picture_check(runtime, site, state_root)
+    runtime.page.evaluate("""() => {
+      document.querySelector('#check').innerHTML='';
+      const response=document.createElement('textarea');
+      response.name='h-captcha-response'; response.style.display='none';
+      document.body.appendChild(response);
+    }""")
+    assert runtime.challenge(run_id) == {"open": True, "showing": False, "moved": False}
+    runtime.page.evaluate("""() => {
+      document.querySelector('#primary-email').outerHTML=
+        '<input id="verification-code" aria-label="Verification code">';
+    }""")
+    assert runtime.challenge(run_id)["moved"] is True
+
+
+def test_challenge_rendered_after_hidden_response_is_still_caught(board, site):
+    runtime, _base, state_root = board
+    delayed = CAREERS.replace(
+        b"document.getElementById('check').innerHTML =",
+        b"document.body.insertAdjacentHTML('beforeend', "
+        b'\'<textarea name="h-captcha-response" style="display:none"></textarea>\');'
+        b"setTimeout(() => { document.getElementById('check').innerHTML =",
+    ).replace(
+        b"'/hcaptcha.com/challenge\"></iframe>';",
+        b"'/hcaptcha.com/challenge\"></iframe>'; }, 1600);",
+    )
+    Site.pages[JOB] = delayed
+    opened = runtime.open(site + JOB)
+    run_id = opened["run_id"]
+    runtime.follow(run_id, opened["observation_id"], opened["application_links"][0]["ref"])
+    freeze_resume(state_root, run_id)
+    result = runtime.prepare(run_id)
+    assert result["captcha"] is True
+    assert runtime.challenge(run_id)["moved"] is False
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"action":"click","points":[[-1,20]]}',
+        '{"action":"click","points":[[true,20]]}',
+        '{"action":"click","points":[[500,500]],"url":"https://example.com"}',
+        '{"action":"script","code":"alert(1)"}',
+        '{"action":"click","points":[]}',
+        '{"action":"click","points":[["NaN",20]]}',
+        '{"action":"click","points":[["oops",20]]}',
+        '[{"action":"wait"},{"action":"wait"}]',
+    ],
+)
+def test_local_solver_rejects_unbounded_actions(raw):
+    with pytest.raises(ValueError):
+        captcha.action(raw)
+
+
+def test_local_solver_limits_provider_hosts():
+    assert captcha.provider("https://newassets.hcaptcha.com/captcha/v1/challenge.html")
+    assert captcha.provider("https://www.google.com/recaptcha/api2/bframe")
+    assert not captcha.provider("https://hcaptcha.com.attacker.example/frame")
+    assert not captcha.provider("https://jobs.example.com/hcaptcha.com/challenge")
+    assert not captcha.provider("http://newassets.hcaptcha.com/challenge")
+    assert captcha.action('{"action":"click","points":[[250,500]]}') == {
+        "action": "click",
+        "points": [(0.25, 0.5)],
+    }
+    assert captcha.action('[{"action":"drag","start":[148,"519"],"end":[375,"537"]}]') == {
+        "action": "drag",
+        "start": (0.148, 0.519),
+        "end": (0.375, 0.537),
+    }
+
+
+def test_loading_step_ignores_hidden_chat_upload_and_catches_late_challenge(board, site):
+    runtime, _base, _state_root = board
+    Site.pages[JOB] = b"""<!doctype html><input aria-label="Email"><button>Next</button>"""
+    runtime.open(site + JOB)
+    before = runtime.where()
+    runtime.page.evaluate("""() => {
+      document.body.innerHTML='<input type="file" style="display:none">'
+        +'<div role="progressbar">Loading</div>';
+      setTimeout(()=>{
+        document.querySelector('[role=progressbar]').remove();
+        document.body.insertAdjacentHTML('beforeend',
+          '<iframe width="320" height="420" src="/hcaptcha.com/challenge"></iframe>');
+      }, 1800);
+    }""")
+    assert runtime.form.evaluate(live_browser.BUSY_JS) is False
+    runtime.next_step(before, runtime.form.url)
+    assert runtime.form.evaluate(captcha.SHOWING_JS) is True
+
+
+def test_solver_submits_selection_once_without_submitting_the_next_puzzle(board, site, monkeypatch):
+    runtime, _base, _state_root = board
+    Site.pages[JOB] = b"""<!doctype html>
+    <iframe width="320" height="420" src="/hcaptcha.com/challenge"></iframe>"""
+    Site.pages["/hcaptcha.com/challenge"] = b"""<!doctype html><h2>Select the blue square</h2>
+    <button id="tile" onclick="document.querySelector('#verify').textContent='Verify'">Blue</button>
+    <button id="verify" onclick="document.body.innerHTML=
+      '<h2>Select the red circle</h2><button>Next</button>'">Skip</button>"""
+    runtime.open(site + JOB)
+    frame = runtime.page.frames[-1]
+    monkeypatch.setattr(captcha, "provider", lambda url: url.endswith("/hcaptcha.com/challenge"))
+    before = frame.evaluate(captcha.SCENE_JS)
+    frame.locator("#tile").click()
+    assert frame.evaluate(captcha.SCENE_JS) == before
+    captcha.verify_selection(runtime.page, frame)
+    assert frame.evaluate(captcha.SCENE_JS) != before
+    assert frame.get_by_text("Select the red circle").is_visible()
+
+
+def test_a_chat_upload_on_a_posting_is_not_the_application_form():
+    assert not worker.form_page(
+        {
+            "fields": [{"kind": "file", "label": ""}],
+            "application_links": [{"label": "APPLY NOW"}],
+        }
+    )
+    assert worker.form_page({"fields": [{"kind": "file", "label": "Resume / CV"}]})
+
+
+def test_local_solver_continues_through_the_code_step_without_a_handoff(board, site, monkeypatch):
+    runtime, _base, state_root = board
+    # A synthetic provider frame takes a real mouse click and advances its parent.
+    # Only the vision decision and provider identity are stubbed; browser execution,
+    # completion checks, code entry, form filling and the resulting package are real.
+    Site.pages[JOB] = CAREERS.replace(
+        b"const solved = setInterval",
+        b"addEventListener('message',e=>{if(e.data==='verified')"
+        b"document.documentElement.setAttribute('data-solved','1');});"
+        b"const solved = setInterval",
+    )
+    Site.pages[JOB + "/hcaptcha.com/challenge"] = b"""<!doctype html>
+    <style>body{margin:0}button{width:320px;height:420px}</style>
+    <button onclick="parent.postMessage('verified','*')">
+      Verify the synthetic picture check</button>"""
+    monkeypatch.setattr(
+        captcha, "provider", lambda url: url == site + JOB + "/hcaptcha.com/challenge"
+    )
+    decisions = []
+
+    def decide(image, timeout):
+        decisions.append(len(image))
+        return {"action": "click", "points": [(0.5, 0.5)]}
+
+    monkeypatch.setattr(captcha, "decide", decide)
+    monkeypatch.setattr(mail, "verification_code", lambda *_a, **_kw: CODE)
+    opened = runtime.open(site + JOB)
+    run_id = opened["run_id"]
+    runtime.follow(run_id, opened["observation_id"], opened["application_links"][0]["ref"])
+    freeze_resume(state_root, run_id)
+    result = runtime.prepare(run_id)
+    assert result["status"] == "READY_FOR_REVIEW"
+    assert not result.get("captcha") and not result["pending"]
+    assert len(decisions) == 1
+    assert runtime.page.locator("html").get_attribute("data-rove-submit-armed") is None
+    assert CODE not in everything_written(state_root)
 
 
 def test_a_tab_left_to_the_owner_takes_his_own_press_until_rove_drives_it_again(
@@ -211,7 +376,7 @@ def test_a_code_that_never_comes_or_is_refused_leaves_the_step_to_the_owner(
     runtime.page.evaluate("() => document.documentElement.setAttribute('data-solved', '1')")
     runtime.page.locator("#pin-code-1").wait_for()
     for answer in (None, "000000"):
-        monkeypatch.setattr(mail, "verification_code", lambda *a, answer=answer: answer)
+        monkeypatch.setattr(mail, "verification_code", lambda *a, answer=answer, **kw: answer)
         runtime.open(site + JOB, in_place=True)
         result = runtime.prepare(run_id)
         (waiting,) = result["pending"]
@@ -228,8 +393,12 @@ def test_only_a_mailed_code_is_roves_to_enter():
     assert not gates.code_step("Promo code", one)
     assert not gates.code_step("Enter the verification code we sent to your email.", {"count": 0})
     form = "https://fa-abcd-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/job/1"
-    assert gates.code_senders(form, form) == ["oraclecloud.com", "oracle.com"]
-    assert gates.code_senders("https://careers.example.com/jobs/1") == ["example.com"]
+    assert gates.code_senders(form, form) == [
+        "fa-abcd-saasfaprod1.fa.ocs.oraclecloud.com",
+        "oracle.com",
+    ]
+    assert gates.code_senders("https://careers.example.com/jobs/1") == ["careers.example.com"]
+    assert gates.code_senders("https://careers.example.co.uk/jobs/1") == ["careers.example.co.uk"]
 
 
 # --- the worker: one card, then carrying on by itself -------------------------------------

@@ -329,10 +329,10 @@ def test_questions_are_sorted_into_writing_choice_short_answer_and_owner_only():
     assert kind(unread, {"kind": "text"}) == "owner"
     assert kind(question("Transcript", "k9", reason=fastpath.UNAPPROVED_FILE)) == "owner"
     assert kind(question("Transcript", "k10"), {"kind": "file"}) == "owner"
-    # A value code knew and the control refused stays with the model: a draft has settled
-    # those before.
+    # Old records without mechanical failure metadata retain the usual classification.
     refused = question("Location", "k11", reason="No unique matching dropdown option")
     assert kind(refused, {"kind": "text"}) == "short"
+    assert kind({**refused, "control_issue": True}, {"kind": "text"}) == "control"
     # Ordinary questions that only sound close stay with the model.
     for label in (
         "Are you able to work in our office five days a week?",
@@ -360,6 +360,26 @@ def test_a_drafting_call_is_needed_only_for_writing_a_choice_or_a_short_answer()
         counts = fastpath.drafting_counts([*pending, extra], [field] if field else None)
         assert counts[name] == 1 and counts["owner_only"] == 2 and fastpath.needs_model(counts)
     assert not fastpath.needs_model(fastpath.drafting_counts([]))
+    manual = {"label": "The code the site mailed you", "key": "mailed-code", "manual": True}
+    assert not fastpath.needs_model(fastpath.drafting_counts([manual]))
+    control = question("Country", "k-control", control_issue=True)
+    assert not fastpath.needs_model(fastpath.drafting_counts([control]))
+    for label in ("Address Line 1 *", "Address Line 2", "County *", "ZIP Code *"):
+        assert fastpath.question_kind(question(label, "address")) == "owner"
+
+
+def test_a_known_answer_with_a_broken_control_is_not_sent_for_drafting(state, monkeypatch):
+    pending = [question("Country", "a" * 12, control_issue=True)]
+    actions, drafted = prepare_worker(monkeypatch, pending, [])
+    app = queued(state, "control")
+    result = worker.process(app)
+    assert result["status"] == "NEEDS_USER"
+    assert not drafted
+    assert actions == ["open", "prepare"]
+    hold = workflow.latest_hold(app)
+    assert "only you can answer" not in hold["reason"]
+    assert "known answer" in hold["reason"]
+    assert "known answer" in workflow.question_lines(workflow.numbered(hold["questions"]))
 
 
 def test_filled_fields_are_counted_by_who_supplied_the_value(state, monkeypatch):
@@ -477,6 +497,29 @@ def test_a_block_page_is_never_reviewed_as_the_posting(state, monkeypatch):
         "fill",
         "hold",
     ]
+
+
+def test_resuming_a_form_keeps_posting_text_out_of_the_form_fields(state, monkeypatch):
+    prepare_worker(monkeypatch, [], [])
+    app = queued(state, "resumed")
+    reasoning.keep_posting(app, POSTING, "https://jobs.example.com/resumed")
+    workflow.record(app, "needs_action", {"headline": "Answers needed"})
+    reviewed, opened = [], []
+
+    def browser(action, **kwargs):
+        if action == "open":
+            opened.append(kwargs)
+            return {**FORM, "text": "First name\nLast name\nPrivate applicant form values"}
+        return {"pending": [], "filled": [], "fields": []}
+
+    monkeypatch.setattr(worker, "browser_call", browser)
+    monkeypatch.setattr(
+        reasoning, "review_job", lambda app, page, text: reviewed.append(text) or dict(FIT)
+    )
+    worker.process(app)
+    assert opened[0]["in_place"] is True
+    assert reviewed == [POSTING]
+    assert reasoning.stored_posting(app) == POSTING
 
 
 def drafting_rows() -> list[dict]:

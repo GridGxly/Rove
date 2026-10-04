@@ -23,6 +23,7 @@ rove = "rove.cli:main"
 [dependency-groups]
 dev = [
     "mypy>=2.4,<3",
+    "pillow>=12,<13",
     "pylint>=4.1,<5",
     "pytest>=8,<10",
     "pytest-cov>=7,<8",
@@ -63,6 +64,8 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["rove"]
 branch = true
+# Patchright's synchronous API switches greenlets; the worker also uses threads.
+concurrency = ["greenlet", "thread"]
 
 [tool.coverage.paths]
 source = ["src/rove", "*/site-packages/rove"]
@@ -70,8 +73,8 @@ source = ["src/rove", "*/site-packages/rove"]
 [tool.coverage.report]
 # The floor only goes up. After a change that raises total coverage, set this to the new
 # total minus two points (one decimal) in the same pull request; never lower it.
-# 2026-10-03: tests and e2e together measured 83.0 % (branch).
-fail_under = 81.0
+# 2026-10-04: tests and e2e together measured 87.75 % (branch).
+fail_under = 85.8
 precision = 1
 skip_covered = true
 show_missing = true

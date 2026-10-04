@@ -1338,6 +1338,10 @@ def _submit(browser, application_id: str, package_hash: str, owner_message_id: s
         )
         # Bounded: the adapter waits for its own signal, then the page is read once.
         adapter.await_result(browser.form, current, CONFIRMATION_TIMEOUT_MS)
+        if browser.form.evaluate(live_browser.CAPTCHA_SHOWING_JS) and browser.resolve_captcha():
+            # Only the already-approved send is armed. Never press Submit a second time;
+            # let the site's existing CAPTCHA callback finish that one request.
+            adapter.await_result(browser.form, current, CONFIRMATION_TIMEOUT_MS)
         browser.form.wait_for_load_state("domcontentloaded", timeout=LOAD_TIMEOUT_MS)
         after = browser.observe()
         checks = adapter.confirmed(package["url"], after, responses, before=current)

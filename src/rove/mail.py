@@ -276,6 +276,7 @@ class Zoho:
                     "limit": limit,
                     "sortBy": "date",
                     "sortorder": "false",
+                    "includeto": "true",
                 },
             )
             or []
@@ -1193,34 +1194,43 @@ def redact_codes(text: str) -> str:
 
 
 def verification_code(
-    sender_hosts, since, digits: tuple[int, int] = (4, 8), names=()
+    sender_hosts, since, digits: tuple[int, int] = (4, 8), *, recipient: str
 ) -> str | None:
     """The newest one-time code mailed by an expected sender after `since`, or None.
 
     `sender_hosts` are the employer's or applicant system's domains for the account being
     made. A message counts only when its sender's domain is one of them (or under one of
     them) and Zoho's own authentication verdict says that domain really sent it, the same
-    rule that lets a mail change the record. An employer may send from a domain of its
-    own that no address names: with `names` (the employer as the application knows it),
-    a message from any other authenticated domain counts when its sender name or its
-    subject names the employer. Only Inbox mail received after `since` (an aware
+    rule that lets a mail change the record. A display name or subject naming the
+    employer cannot authorize an unrelated sender domain. The To address must include
+    the frozen application's recipient; missing recipient metadata is not a match.
+    Only Inbox mail received
+    after `since` (an aware
     datetime, or milliseconds since the epoch) is read, newest first; Spam is never read
     for codes. The code comes from that message's text alone: no link is followed,
     nothing is written, and the code is never logged.
     """
     hosts = [str(host or "").lower().strip(".") for host in sender_hosts or ()]
+    recipient = str(recipient or "").strip().lower()
+    if not re.fullmatch(r"[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+", recipient):
+        raise ValueError("Name the application's approved email recipient")
     if not hosts or any(
         "." not in host or registrable(host) in SHARED_SITE_DOMAINS for host in hosts
     ):
         raise ValueError("Name the employer's or the applicant system's own mail domains")
     since_ms = int(since.timestamp() * 1000) if isinstance(since, datetime) else int(since)
-    wanted = [n for n in (normalize(name) for name in names or ()) if len(n) >= 4]
     settings, creds = config(), credentials()
     if not settings.get("enabled") or not creds:
         return None
     with Zoho(creds) as zoho:
         folder = zoho.inbox_folder()
         for item in reversed(new_messages(zoho, folder, since_ms)):
+            recipients = {
+                address.lower()
+                for _, address in getaddresses([html.unescape(str(item.get("toAddress") or ""))])
+            }
+            if recipient not in recipients:
+                continue
             address = sender_address(item.get("fromAddress"))
             domain = address.rpartition("@")[2]
             if not domain or registrable(domain) in SHARED_SITE_DOMAINS:
@@ -1231,7 +1241,7 @@ def verification_code(
                 or (registrable(domain) == registrable(host) and host not in ATS_DOMAINS)
                 for host in hosts
             )
-            if not expected and not wanted:
+            if not expected:
                 continue
             message_id = str(item.get("messageId") or "")
             try:
@@ -1242,11 +1252,6 @@ def verification_code(
                 continue
             if not authentication(raw, address, settings.get("authserv_ids") or ())["passed"]:
                 continue
-            if not expected:
-                # Another domain: only when the mail itself says it is the employer's.
-                said = normalize(f"{display_name(item, raw)} {squash(item.get('subject'))}")
-                if not any(f" {name} " in f" {said} " for name in wanted):
-                    continue
             code = find_code(plain_text(zoho.content(folder, message_id)), digits)
             if code:
                 return code

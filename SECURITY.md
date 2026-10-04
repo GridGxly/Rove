@@ -146,7 +146,7 @@ Keep these manual unless a future reviewed design explicitly adds support.
 
 ### MFA
 
-Email verification is passed through a narrow broker: a code a site mails to the owner's application address is read from his own mailbox, only from the site's own authenticated sender and only for the step that asked for it, and it is never logged or stored. SMS codes, authenticator apps, security keys, CAPTCHA, and unusual identity checks pause for manual action. After a CAPTCHA the owner solved, Rove continues in the same tab without being told.
+Email verification is passed through a narrow broker: a code a site mails to the owner's application address is read from his own mailbox, only from the site's own authenticated sender and only for the step that asked for it, and it is never logged or stored. SMS codes, authenticator apps, security keys and unusual identity checks pause for manual action. CAPTCHA challenges first get a bounded attempt with the existing local vision model: only a recognised provider frame is captured, and only coordinates inside that frame may be clicked or dragged. Model output cannot declare success or interact with the application itself. Unsupported or unsuccessful challenges pause for manual action; Rove resumes only after the challenge clears and the application advances.
 
 ## Obsidian vault boundaries
 

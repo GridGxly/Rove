@@ -124,6 +124,7 @@ def measured(tmp_path_factory):
         with contextlib.closing(sqlite3.connect(root / "state" / "recruiting.sqlite3")) as db:
             cards = db.execute("SELECT COUNT(*) FROM owner_notices").fetchone()[0]
     result = {"rows": rows, "waits": waits, "discord": discord, "cards": cards, "wall": wall}
+    result["receipt"] = json.loads((root / "employer-receipt.json").read_text())
     result["values"] = values(result)
     keep(table, result)
     return result
@@ -180,6 +181,11 @@ def test_the_fixture_application_is_sent(measured):
     assert sum(1 for r in rows if r["stage"] == "pass") == 3
     assert sum(1 for r in rows if r["stage"] == "submission" and r["ok"]) == 1
     assert all(r["ok"] for r in rows if r["stage"] in {"pass", "submission", "submit", "verify"})
+    receipt = measured["receipt"]
+    assert receipt["fields"]["email"] == "alex@example.invalid"
+    assert receipt["fields"]["clearance"] == "No"
+    assert receipt["fields"]["visa"] == "No"
+    assert len(receipt["resume_sha256"]) == 64
 
 
 @pytest.mark.parametrize("key", sorted(TIME_BUDGETS))

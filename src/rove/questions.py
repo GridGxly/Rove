@@ -370,6 +370,7 @@ IDENTITY_NAMES = {
     "|cell phone number|telephone|telephone number|phone number including country code"
     "|phone no|mobile no",
     "phone_type": "contact phone type|phone type|phone number type",
+    "phone_country_code": "country code|phone country code|telephone country code|dialing code",
     "location_city": "city|location city|current city",
     "state_region": "state|state region|state province|state province region",
     "country": "country|country region|country region of residence|country of residence"
@@ -440,7 +441,10 @@ IDENTITY_NAMES = {
 # history or on a developer form they mean something else.
 COMMON_NAMES = {
     "street_address": "address|street address|address line 1|street address line 1|home address"
-    "|mailing address|current address|residential address|address 1",
+    "|mailing address|current address|residential address|address 1|address1",
+    "address_line_2": "address line 2|street address line 2|address 2|address2|apartment or suite",
+    "address_line_3": "address line 3|street address line 3|address 3|address3",
+    "county": "county|county of residence|residential county",
     "languages_spoken": "languages spoken|spoken languages|what languages do you speak"
     "|which languages do you speak|languages you speak|what languages are you fluent in"
     "|which languages are you fluent in|fluent languages|languages you are fluent in",
@@ -1559,6 +1563,14 @@ def profile_fact(
         return ([str(identity[key])], "identity." + key) if identity.get(key) else None
     if canonical == "phone_type":
         return ["Mobile"], "default.phone_type"
+    if canonical == "phone_country_code":
+        phone = re.sub(r"\D", "", str(identity.get("phone") or ""))
+        if (len(phone) == 11 and phone.startswith("1")) or (
+            len(phone) == 10
+            and normalized(identity.get("country")) in {"us", "usa", "united states"}
+        ):
+            return ["+1"], "identity.phone"
+        return None
     if canonical == "full_name":
         parts = [
             identity.get(k)
@@ -2267,7 +2279,13 @@ def draft_gate(question: dict | None) -> dict | None:
             "words": "This asks for a fact about your education, so only your profile or "
             "your own answer fills it.",
         }
-    if classified.known and classified.canonical_id in PAIRED_FACTS:
+    if classified.known and classified.canonical_id in PAIRED_FACTS | {
+        "street_address",
+        "address_line_2",
+        "address_line_3",
+        "postal_code",
+        "county",
+    }:
         return {
             "code": f"profile_fact:{classified.canonical_id}",
             "words": "This is part of your address, so only your profile or your own answer "

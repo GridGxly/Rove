@@ -162,6 +162,7 @@ def fake_zoho(monkeypatch, messages, contents, headers=None, spam=(), attachment
             return httpx.Response(200, json={**ok, "data": folders})
         if request.url.path == f"/api/accounts/{ACCOUNT}/messages/view":
             params = request.url.params
+            assert params["includeto"] == "true"
             assert params["folderId"] in (FOLDER, SPAM) and params["sortorder"] == "false"
             start, limit = int(params["start"]), int(params["limit"])
             listed = messages if params["folderId"] == FOLDER else list(spam)
@@ -219,6 +220,7 @@ def message(message_id, sender, subject, received_ms):
     return {
         "messageId": message_id,
         "folderId": FOLDER,
+        "toAddress": "Alex &lt;alex@inbox.example.org&gt;",
         "fromAddress": sender,
         "sender": sender.split("<")[0].strip() or sender,
         "subject": subject,
@@ -1355,11 +1357,21 @@ def test_a_verification_code_comes_only_from_a_verified_sender_after_the_moment(
     headers = {m["messageId"]: zoho_headers(m["fromAddress"]) for m in messages}
     headers["2003"] = zoho_headers(board, checks="dmarc=fail header.from=<{address}>")
     calls = fake_zoho(monkeypatch, messages, contents, headers)
-    assert mail.verification_code(["greenhouse-mail.io"], since) == "Q8rVfX2c"
-    assert mail.verification_code(["greenhouse-mail.io"], NOW_MS + 1500) is None
-    assert mail.verification_code(["example.com"], since) is None  # not the sender asked for
+    assert (
+        mail.verification_code(["greenhouse-mail.io"], since, recipient="alex@inbox.example.org")
+        == "Q8rVfX2c"
+    )
+    assert (
+        mail.verification_code(
+            ["greenhouse-mail.io"], NOW_MS + 1500, recipient="alex@inbox.example.org"
+        )
+        is None
+    )
+    assert (
+        mail.verification_code(["example.com"], since, recipient="alex@inbox.example.org") is None
+    )  # not the sender asked for
     with pytest.raises(ValueError, match="own mail domains"):
-        mail.verification_code(["gmail.com"], since)
+        mail.verification_code(["gmail.com"], since, recipient="alex@inbox.example.org")
     # Nothing is posted, written or recorded, and no link is ever opened.
     assert posted == [] and not (state / "mail/messages").exists()
     with mail.mail_db() as conn:
@@ -1368,18 +1380,67 @@ def test_a_verification_code_comes_only_from_a_verified_sender_after_the_moment(
     assert not any("/folders/" + SPAM in path for _, _, path in calls)
 
 
-def test_a_code_from_the_employers_own_domain_counts_only_when_the_mail_names_the_employer(
+def test_code_sender_for_a_country_domain_does_not_trust_other_employers(state, monkeypatch):
+    from rove import gates
+
+    configure(state)
+    recorder(monkeypatch)
+    messages = [
+        message("2201", "careers@example.co.uk", "Your verification code", NOW_MS + 1000),
+        message("2202", "alerts@other.co.uk", "Your verification code", NOW_MS + 2000),
+    ]
+    contents = {
+        "2201": "Your verification code is 482913",
+        "2202": "Your verification code is 777777",
+    }
+    headers = {m["messageId"]: zoho_headers(m["fromAddress"]) for m in messages}
+    fake_zoho(monkeypatch, messages, contents, headers)
+    domains = gates.code_senders("https://jobs.example.co.uk/apply")
+    assert (
+        mail.verification_code(domains, NOW_MS, (6, 6), recipient="alex@inbox.example.org")
+        == "482913"
+    )
+
+
+@pytest.mark.parametrize("recipient", ["other@inbox.example.org", "", "Not Provided"])
+def test_newer_code_to_another_alias_or_missing_recipient_is_never_used(
+    state, monkeypatch, recipient
+):
+    configure(state)
+    recorder(monkeypatch)
+    sender = "codes@accounts.example.com"
+    messages = [
+        message("2210", sender, "Your verification code", NOW_MS + 1000),
+        {
+            **message("2211", sender, "Your verification code", NOW_MS + 2000),
+            "toAddress": recipient,
+        },
+    ]
+    contents = {
+        "2210": "Your verification code is 482913",
+        "2211": "Your verification code is 777777",
+    }
+    calls = fake_zoho(monkeypatch, messages, contents)
+    assert (
+        mail.verification_code(["example.com"], NOW_MS, recipient="alex@inbox.example.org")
+        == "482913"
+    )
+    assert not any("/2211/" in path for _, _, path in calls)
+
+
+def test_a_code_needs_an_expected_domain_even_when_an_authenticated_sender_claims_the_employer(
     state, monkeypatch
 ):
-    # A board may send its codes from the employer's own mail domain, which no address
-    # of the application names. The mail must then say whose it is, and be verified.
+    # Authentication proves control of a domain, not that its claimed company is real.
     configure(state)
     recorder(monkeypatch)
     since = datetime.fromtimestamp(NOW_MS / 1000, UTC)
     own = "careers@northwind.example"
     messages = [
         message("2101", own, "Northwind Credit Union: your verification code", NOW_MS + 1000),
-        message("2102", "alerts@bank.example", "Your verification code", NOW_MS + 2000),
+        message(
+            "2102", "alerts@bank.example", "Northwind Credit Union verification code", NOW_MS + 2000
+        ),
         message("2103", "someone@gmail.com", "Northwind verification code", NOW_MS + 3000),
     ]
     contents = {
@@ -1389,21 +1450,28 @@ def test_a_code_from_the_employers_own_domain_counts_only_when_the_mail_names_th
     }
     stored = {
         "2101": zoho_stored_headers(own, "Northwind Credit Union Careers"),
-        "2102": zoho_stored_headers("alerts@bank.example", "Example Bank"),
+        "2102": zoho_stored_headers("alerts@bank.example", "Northwind Credit Union Careers"),
         "2103": zoho_stored_headers("someone@gmail.com", "Northwind"),
     }
     fake_zoho(monkeypatch, messages, contents, stored)
     board = ["board.example", "boardmail.example"]
-    # Without the employer's name only the board's own domains count.
-    assert mail.verification_code(board, since, (6, 6)) is None
-    # With it: the employer's verified mail, never another service's code that arrived
-    # later, and never a public mailbox that only claims the name.
-    assert mail.verification_code(board, since, (6, 6), ["Northwind Credit Union"]) == "482913"
-    assert mail.verification_code(board, since, (6, 6), ["Globex"]) is None
-    assert mail.verification_code(board, since, (6, 6), ["nw"]) is None  # too short to tell
+    # A familiar name in either the sender or subject grants no authority.
+    assert mail.verification_code(board, since, (6, 6), recipient="alex@inbox.example.org") is None
+    # Only an independently expected domain may contribute its authenticated code.
+    assert (
+        mail.verification_code(
+            [*board, "northwind.example"], since, (6, 6), recipient="alex@inbox.example.org"
+        )
+        == "482913"
+    )
     failing = zoho_stored_headers(own, checks="dmarc=fail header.from=<{address}>")
     fake_zoho(monkeypatch, messages, contents, {**stored, "2101": failing})
-    assert mail.verification_code(board, since, (6, 6), ["Northwind Credit Union"]) is None
+    assert (
+        mail.verification_code(
+            [*board, "northwind.example"], since, (6, 6), recipient="alex@inbox.example.org"
+        )
+        is None
+    )
 
 
 def test_a_message_zoho_no_longer_has_is_passed_over_not_retried_forever(state, monkeypatch):

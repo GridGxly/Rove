@@ -42,6 +42,8 @@ def db():
       CREATE TABLE IF NOT EXISTS owner_commands(
         message_id TEXT PRIMARY KEY, application_id TEXT NOT NULL, kind TEXT NOT NULL,
         payload TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS owner_command_effects(
+        message_id TEXT PRIMARY KEY, effects TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS workflow_checkpoints(channel_id TEXT PRIMARY KEY, message_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS application_answers(
         application_id TEXT NOT NULL, field_key TEXT NOT NULL, value TEXT NOT NULL,
@@ -1309,6 +1311,8 @@ def question_lines(pairs, limit: int = 10) -> str:
             label = clip(question["label"], 120)
         options = question.get("options") or []
         line = f"{number}. {label}"
+        if question.get("control_issue"):
+            line += " — known answer; the browser could not select it"
         if options:
             line += "  (" + clip(" / ".join(str(o) for o in options[:6]), 100) + ")"
         lines.append(line)
@@ -1525,8 +1529,13 @@ def event_embeds(application_id: str, kind: str, data: dict) -> list:
         return []  # a wait or a cosmetic miss: the system log has it, the thread does not
     if kind == "mailed_code":
         return ["→ Entered the code the site mailed to your address"]
+    if kind == "captcha_attempt":
+        return [
+            "→ Tried the picture check locally · "
+            + ("cleared" if data.get("outcome") == "cleared" else "needs help")
+        ]
     if kind == "captcha_cleared":
-        return ["→ You solved the picture check · carrying on"]
+        return ["→ Picture check cleared · carrying on"]
     if kind == "owner_answer":
         label = clip(data.get("label") or "the question", 90)
         if data.get("proposal_hash"):
@@ -2404,6 +2413,16 @@ def status() -> dict:
 
 def field_key(field: dict) -> str:
     identity = {k: field.get(k) for k in ("label", "name", "id", "kind", "options")}
+    name, element_id = field.get("name"), field.get("id")
+    # Oracle redraws fields as lastName-15, lastName-27, etc. The declared field name
+    # still identifies the same question; a render counter must not discard answers.
+    if (
+        field.get("kind") not in {"radio", "checkbox", "radio_group", "checkbox_group", "choice"}
+        and name
+        and element_id
+        and re.fullmatch(re.escape(name) + r"-\d+", element_id)
+    ):
+        identity["id"] = name
     if field.get("occurrence"):
         # A later twin of another question on the same form: its section and its place
         # among the twins tell it apart. A field without a twin keys as it always has.

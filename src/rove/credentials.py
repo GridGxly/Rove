@@ -7,7 +7,6 @@ the only reader is the browser daemon when it fills a sign-in form.
 
 import contextlib
 import json
-import os
 import re
 import secrets
 import string
@@ -16,7 +15,7 @@ from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
 
-from .runtime import state_root
+from .runtime import private_lock, state_root, write_private_bytes
 
 ALPHABET = string.ascii_letters + string.digits + "!@#$%^&*-_=+"
 REDACTED = "[redacted]"
@@ -42,9 +41,7 @@ def _paths():
 def _fernet() -> Fernet:
     key_path, _ = _paths()
     if not key_path.is_file():
-        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(Fernet.generate_key())
+        write_private_bytes(key_path, Fernet.generate_key())
     key_path.chmod(0o600)
     return Fernet(key_path.read_bytes())
 
@@ -58,10 +55,15 @@ def _load() -> dict:
 
 def _save(data: dict):
     _, store_path = _paths()
-    fd = os.open(store_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(_fernet().encrypt(json.dumps(data).encode()))
-    store_path.chmod(0o600)
+    write_private_bytes(store_path, _fernet().encrypt(json.dumps(data).encode()))
+
+
+@contextlib.contextmanager
+def _locked():
+    """Serialize the entire read/modify/write, including first creation of the key."""
+    key, _ = _paths()
+    with private_lock(key.with_name("lock")):
+        yield _load()
 
 
 def account_host(url: str) -> str:
@@ -69,6 +71,8 @@ def account_host(url: str) -> str:
 
 
 def generate_password(length: int = 20) -> str:
+    if type(length) is not int or not 4 <= length <= 1024:
+        raise ValueError("Password length must be between 4 and 1024")
     while True:
         candidate = "".join(secrets.choice(ALPHABET) for _ in range(length))
         if (
@@ -82,40 +86,42 @@ def generate_password(length: int = 20) -> str:
 
 def store(host: str, username: str, password: str, application_id: str) -> dict:
     """Save one account; returns safe metadata only."""
-    data = _load()
-    data[host] = {
-        "username": username,
-        "password": password,
-        "created_at": datetime.now(UTC).isoformat(),
-        "application_id": application_id,
-        "verified": False,
-    }
-    _save(data)
+    with _locked() as data:
+        data[host] = {
+            "username": username,
+            "password": password,
+            "created_at": datetime.now(UTC).isoformat(),
+            "application_id": application_id,
+            "verified": False,
+        }
+        _save(data)
     return {"host": host, "username": username, "stored": True}
 
 
 def lookup(host: str) -> dict | None:
-    return _load().get(host)
+    with _locked() as data:
+        return data.get(host)
 
 
 def mark_verified(host: str):
-    data = _load()
-    if host in data:
-        data[host]["verified"] = True
-        _save(data)
+    with _locked() as data:
+        if host in data:
+            data[host]["verified"] = True
+            _save(data)
 
 
 def summary() -> list[dict]:
     """Safe listing for the owner: hosts and usernames, never secrets."""
-    return [
-        {
-            "host": host,
-            "username": item["username"],
-            "created_at": item["created_at"],
-            "verified": item.get("verified", False),
-        }
-        for host, item in _load().items()
-    ]
+    with _locked() as data:
+        return [
+            {
+                "host": host,
+                "username": item["username"],
+                "created_at": item["created_at"],
+                "verified": item.get("verified", False),
+            }
+            for host, item in data.items()
+        ]
 
 
 def scrub(text, extra=()) -> str:
@@ -126,8 +132,9 @@ def scrub(text, extra=()) -> str:
     """
     text = str(text)
     known = [str(s) for s in extra if s]
-    with contextlib.suppress(Exception):  # an unreadable store must not block the scrub
-        known += [str(item["password"]) for item in _load().values() if item.get("password")]
+    # An unreadable store must not block scrubbing the driver's value-bearing logs.
+    with contextlib.suppress(Exception), _locked() as data:
+        known += [str(item["password"]) for item in data.values() if item.get("password")]
     for secret in sorted(set(known), key=len, reverse=True):
         text = text.replace(secret, REDACTED)
     text = TYPED_VALUE.sub(lambda match: f'{match.group(1)}("{REDACTED}")', text)

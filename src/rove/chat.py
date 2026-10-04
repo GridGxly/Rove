@@ -12,7 +12,6 @@ hashes, field keys or state names.
 
 import hashlib
 import json
-import os
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -20,7 +19,7 @@ from urllib.parse import urlsplit
 
 from . import workflow
 from .jobs import plain, plain_company, public_link
-from .runtime import state_root
+from .runtime import private_lock, state_root, write_private
 
 LISTED = 6  # names in one answer before "and N more"
 
@@ -49,15 +48,10 @@ def channel(settings: dict, key: str, name: str) -> str:
 def set_setting(key: str, value) -> None:
     """Change one key of the private workflow config, written whole and swapped in."""
     path = state_root() / "config/workflow.json"
-    stored = json.loads(path.read_text()) if path.exists() else {}
-    stored[key] = value
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        json.dump(stored, handle, indent=2)
-        handle.write("\n")
-    os.replace(temporary, path)
+    with private_lock(path.with_suffix(".lock")):
+        stored = json.loads(path.read_text()) if path.exists() else {}
+        stored[key] = value
+        write_private(path, stored)
 
 
 # --- what Rove counts ---------------------------------------------------------

@@ -97,6 +97,8 @@ REVIEWED_EMAILS = {
     "no-reply@ashbyhq.com": "Ashby's role sender, as recruiting mail shows it",
     "no-reply@lever.co": "a job board's role sender in a mail test, no person",
     "hr@evil.pages.dev": "a lookalike sender the mail tests must refuse",
+    "careers@example.co.uk": "synthetic role sender for the .co.uk boundary test; never contacted",
+    "alerts@other.co.uk": "synthetic unrelated role sender; offline test, never contacted",
 }
 
 
@@ -118,6 +120,23 @@ def test_no_absolute_path_from_a_machine():
         where(path, text, m) for path, text in text_files().items() for m in pattern.finditer(text)
     ]
     assert found == [], "write ~/... or a placeholder such as /Users/example/..."
+
+
+def test_phone_literals_in_tests_use_reserved_fictional_numbers():
+    """Catch personal NANP numbers copied into a regression while debugging a live form."""
+    phone = re.compile(r"\+?1?[\s(.-]*[2-9][0-9]{2}[\s).\-]*[2-9][0-9]{2}[\s.\-]*[0-9]{4}")
+    found = []
+    for path in (ROOT / "tests").glob("test_*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and phone.fullmatch(node.value)
+            ):
+                digits = re.sub(r"\D", "", node.value)[-10:]
+                if digits[3:8] != "55501":
+                    found.append(f"{path.name}:{node.lineno}")
+    assert not found, f"Use reserved 555-0100 through 555-0199 phone examples: {found}"
 
 
 # ---------------------------------------------------------------------------------------

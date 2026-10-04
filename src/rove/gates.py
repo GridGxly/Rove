@@ -2,10 +2,8 @@
 
 Two of them, and who takes each:
 
-- A picture check (a CAPTCHA). Only the owner passes it, in the recruiting browser. Rove
-  never solves one and never works around one: it says so on one card, leaves the tab as
-  it is, and carries on by itself in that same tab once the check is gone and the page
-  has moved on.
+- A picture check (a CAPTCHA). Rove first tries its bounded local vision solver. An
+  unsupported or unsuccessful challenge becomes one card, preserving the open tab.
 - A code the site mails to the owner's application address to prove the address is his.
   Rove reads it from his own mailbox, from the site's own sender only, and types it. A
   code sent by text message or made by an authenticator app is never Rove's to enter.
@@ -41,11 +39,12 @@ CODE_BOXES_JS = r"""() => {
     ...[...(e.labels || [])].map(l => l.innerText)].join(' ').toLowerCase();
   const CODE = new RegExp('one-time-code|pin[-_ ]?code|verification[-_ ]?code|' +
     'security[-_ ]?code|passcode|\\botp\\b|\\bcode\\b');
+  const NOT_OTP = /(?:country|postal|zip|area|dial(?:ing)?|referral|promo(?:tional)?)[-_ ]?code/i;
   const boxes = [...document.querySelectorAll('input')].filter(e =>
-    visible(e) && !e.disabled && !e.readOnly &&
+    visible(e) &&
     ['text', 'tel', 'number', 'password', '']
       .includes((e.getAttribute('type') || '').toLowerCase()) &&
-    CODE.test(named(e)));
+    CODE.test(named(e)) && !NOT_OTP.test(named(e)));
   const segmented = boxes.length >= 4 && boxes.length <= 8;
   if (!(boxes.length === 1 || segmented)) return {count: 0, segmented: false};
   boxes.forEach((e, i) => e.setAttribute('data-rove-code', String(i)));
@@ -84,28 +83,29 @@ def code_step(text: str, boxes: dict) -> bool:
     )
 
 
-def registrable(host: str) -> str:
-    labels = [label for label in str(host or "").lower().strip(".").split(".") if label]
-    return ".".join(labels[-2:])
-
-
 def code_senders(*urls: str) -> list[str]:
     """The mail domains a site's own code may come from: the domain its form is on, the
     one its board mails from, and the employer's when the posting is on the employer's
     own site. Never a public mailbox provider (the mail module refuses those)."""
     hosts: list[str] = []
     for url in urls:
-        domain = registrable(urlsplit(str(url or "")).hostname or "")
+        domain = (urlsplit(str(url or "")).hostname or "").lower().strip(".")
         if not domain:
             continue
-        for host in (domain, *BOARD_SENDERS.get(domain, ())):
+        aliases = [
+            sender
+            for board, senders in BOARD_SENDERS.items()
+            if domain == board or domain.endswith("." + board)
+            for sender in senders
+        ]
+        for host in (domain, *aliases):
             if host not in hosts:
                 hosts.append(host)
     return hosts
 
 
 CAPTCHA_WORDS = (
-    "The site shows a picture check that only a person may pass. Open the recruiting browser "
+    "The picture check needs help after Rove's automatic attempt. Open the recruiting browser "
     "and solve it. If you see no check there, press the page's Next: the check comes up after "
     "that press. I carry on by myself in the same tab; nothing was sent."
 )
@@ -121,8 +121,8 @@ def captcha_words(after: str = "") -> str:
     if not label:
         return CAPTCHA_WORDS
     return (
-        f"This site checks for a person once “{label}” is pressed, with a picture check that "
-        f"only you may pass. In the recruiting browser, press “{label}” on this application's "
+        "Rove could not clear this picture check automatically. "
+        f"In the recruiting browser, press “{label}” on this application's "
         "tab and solve the check that comes up. I carry on by myself in the same tab; nothing "
         "was sent."
     )

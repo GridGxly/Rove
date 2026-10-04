@@ -118,6 +118,7 @@ Configuration is a handful of private JSON files and one env file under `config/
 | `feed_max_age_days` | `21` | Queued feed jobs older than this are parked. `0` keeps them. |
 | `browser_app` | unset | Leave unset for the Rove Browser. `shared-chrome` runs `/Applications/Google Chrome.app` itself, with the old profile and a warning in `system-log` at every daemon start. |
 | `max_open_tabs` | `5` | Tabs kept open in the Rove Browser. |
+| `captcha_solver` | `local` | Try the existing local vision model on a recognised CAPTCHA frame, with bounded interactions; `manual` leaves the check to the owner. Requires the model server to accept image input. |
 | `human_pacing` | `true` | Paced typing, clicks and navigation. |
 | `unslop_path` | none | A local Unslop clone whose scanners replace the built-in Unslop list. |
 | `model_transport` | `hermes` | How the worker sends its prompts: through the Hermes harness, or `direct` as one request to the model server (for measurement). |

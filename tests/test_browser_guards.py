@@ -1035,6 +1035,7 @@ def test_only_public_https_urls_are_allowed_destinations(state, monkeypatch):
 class FakePage:
     def __init__(self):
         self.shots = []
+        self.frames = []
 
     def is_closed(self):
         return False
@@ -2455,8 +2456,9 @@ def running_chrome(runtime, tmp_path):
         chrome.wait(10)
 
 
+@pytest.mark.parametrize("status", ["PREPARING", "QUEUED"])
 def test_a_dropped_devtools_session_reconnects_and_keeps_the_open_tabs(
-    board, site, monkeypatch, tmp_path
+    board, site, monkeypatch, tmp_path, status
 ):
     """The Rove Browser stays up while the daemon's DevTools session dies (a laptop sleep):
     the next call reconnects to the same browser, adopts the tab back, and goes on."""
@@ -2468,6 +2470,9 @@ def test_a_dropped_devtools_session_reconnects_and_keeps_the_open_tabs(
         opened = ask_daemon(runtime, action="open", url=site + "/acme/jobs/610")["result"]
         run_id = opened["run_id"]
         assert logged == []
+        # A reply queues the same job before the worker runs it. A daemon restart in
+        # that interval must preserve the form just as it preserves active work.
+        workflow.set_state(run_id, status)
         # The session dies; the browser and its tab do not.
         runtime.playwright.stop()
         assert not runtime.alive()

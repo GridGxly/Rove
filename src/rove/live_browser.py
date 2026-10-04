@@ -32,6 +32,7 @@ from patchright.sync_api import sync_playwright
 from . import (
     boards,
     browser_app,
+    captcha,
     dates,
     form_frames,
     form_reading,
@@ -157,15 +158,26 @@ def mark_handled(route):
         route._rove_handled = True
 
 
-def same_value(expected: str, actual: str) -> bool:
-    """A typed value counts when the site kept it, reformatted it, or prefixed its country code."""
+def same_value(expected: str, actual: str, *, phone: bool = False) -> bool:
+    """Compare text exactly apart from whitespace; normalize only declared phone fields."""
     expected, actual = str(expected or ""), str(actual or "")
     if expected == actual or " ".join(expected.split()) == " ".join(actual.split()):
         return True
-    digits_expected, digits_actual = re.sub(r"\D", "", expected), re.sub(r"\D", "", actual)
-    if len(digits_expected) >= 10 and len(digits_actual) >= 10:
-        return digits_expected[-10:] == digits_actual[-10:]
-    return len(digits_expected) >= 7 and digits_actual.endswith(digits_expected)
+    if not phone or not all(re.fullmatch(r"[+()\d\s.-]+", s) for s in (expected, actual)):
+        return False
+    numbers = [re.sub(r"\D", "", s) for s in (expected, actual)]
+    national = [n[1:] if len(n) == 11 and n.startswith("1") else n for n in numbers]
+    return len(national[0]) >= 7 and national[0] == national[1]
+
+
+def same_field_value(field: dict, expected: str, actual: str) -> bool:
+    if dates.is_date_box(field):
+        return dates.same_date(expected, actual)
+    phone = (
+        field.get("kind") == "tel"
+        or questions.classify(field.get("label", "")).canonical_id == "phone"
+    )
+    return same_value(expected, actual, phone=phone)
 
 
 def public_address(value: str) -> bool:
@@ -380,7 +392,7 @@ __READING__
  const shadowText=SHADOW?ROOTS.map(r=>[...r.children].filter(visible).map(c=>c.innerText||'').join('\n')).join('\n'):'';
  return {title:document.title,http_status:(performance.getEntriesByType('navigation')[0]||{}).responseStatus||0,text:(shadowText?document.body.innerText+'\n'+shadowText:document.body.innerText).slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
  final_controls:deepAll('button,input[type=submit],a,[role=button]').filter(visible).filter(e=>FINAL.test((e.innerText||e.value||'').trim())).map((e,i)=>{e.setAttribute('data-rove-submit',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};}),
- ats_markers:{captcha_challenge:[...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"],.g-recaptcha,.h-captcha,.cf-turnstile')].some(e=>{const r=e.getBoundingClientRect();return visible(e)&&r.width>=200&&r.height>=60;}),
+ ats_markers:{captcha_challenge:(__CAPTCHA__)().showing,
  already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
  greenhouse_confirmation:!!document.querySelector('div.confirmation div.confirmation__content'),
  lever_submit_success:!!document.querySelector('h3[data-qa="msg-submit-success"]'),
@@ -388,6 +400,7 @@ __READING__
  __BOARDS__
   status_region:messages('__STATUS__'),form_error:messages('__ERROR__'),...(assessment?{assessment}:{})}};
 }""".replace("__MESSAGES__", MESSAGES_JS)
+    .replace("__CAPTCHA__", captcha.SIGNAL_JS)
     .replace("__READING__", form_reading.READING_JS)
     .replace("__STATUS__", STATUS_SELECTOR)
     .replace("__ERROR__", ERROR_SELECTOR)
@@ -685,19 +698,6 @@ UPLOAD_MARKED_JS = "t => document.documentElement.getAttribute('data-rove-upload
 CHOSEN_JS = (
     "e => e.closest('.select__container')?.querySelector('.select__single-value')?.innerText || ''"
 )
-# The visible suggestion that names the typed place, in a dropdown without ARIA roles.
-SUGGESTION_JS = """(city) => {
-  const norm = s => (s || '').toLowerCase();
-  const wanted = norm(city);
-  const candidates = [...document.querySelectorAll(
-    '[role=option],[role=listbox] *,li,[class*="option" i],[class*="suggestion" i],[class*="result" i],[class*="menu" i] *')]
-    .filter(e => e.getClientRects().length && !['INPUT','TEXTAREA'].includes(e.tagName))
-    .filter(e => { const t = (e.innerText || '').trim(); return t.length > 0 && t.length < 160 && norm(t).includes(wanted); });
-  if (!candidates.length) return false;
-  candidates.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
-  candidates[0].setAttribute('data-rove-suggestion', '1');
-  return true;
-}"""
 RENDERED_JS = "() => (" + FIELDS_JS + ")() || document.body.innerText.trim().length > 200"
 # A button group shows the option as pressed: the one named by `label`.
 CHOICE_PRESSED_JS = (
@@ -709,10 +709,9 @@ CHOICE_PRESSED_JS = (
 )
 # A visible loading indicator means the shell painted before the form: keep waiting.
 BUSY_JS = """() => {
-  if (document.querySelector('input:not([type=hidden]),select,textarea')) return true;
   const busy = document.querySelectorAll(
     '[role=progressbar],[aria-busy=true],[class*="spinner" i],[class*="loading" i],[class*="loader" i]');
-  return ![...busy].some(el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+  return ![...busy].some(el => { const r = el.getBoundingClientRect(); if(!r.width||!r.height)return false; for(let e=el;e;e=e.parentElement){const s=getComputedStyle(e);if(s.visibility==='hidden'||Number(s.opacity)===0)return false;} return true; });
 }"""
 # The declining control of a cookie banner, recognised by the banner's own wording. Accept is never chosen.
 CONSENT_JS = """() => {
@@ -737,25 +736,12 @@ CONSENT_JS = """() => {
 
 # How long a code the site mails may take to arrive.
 CODE_WAIT_SECONDS = 120
-# A picture check that is on screen: its challenge frame is shown at a size to be worked.
-CAPTCHA_SHOWING_JS = """() => [...document.querySelectorAll(
-  'iframe[src*="recaptcha/api2/bframe"],iframe[src*="hcaptcha.com"],' +
-  'iframe[src*="challenges.cloudflare.com"],iframe[src*="turnstile"]')]
-  .some(e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
-    return !!e.getClientRects().length && s.visibility !== 'hidden' && r.width >= 200
-      && r.height >= 60 && r.bottom > 0 && r.top < innerHeight; })"""
-# Addresses that are the page's own content, not a place on the network.
+# Shared detection and semantic progress checks exclude CAPTCHA response fields.
+CAPTCHA_SHOWING_JS = captcha.SHOWING_JS
 LOCAL_CONTENT = ("blob:", "data:")
-# The page's address and how many controls and dialogs it shows, and whether that changed.
-PAGE_STATE = (
-    "[location.href, document.querySelectorAll("
-    "'input:not([type=hidden]),select,textarea,[role=dialog],dialog[open]').length]"
-)
-WHERE_JS = f"() => {PAGE_STATE}"
-MOVED_JS = (
-    f"before => {{ const now = {PAGE_STATE}; "
-    "return now[0] !== before[0] || now[1] !== before[1]; }"
-)
+PAGE_STATE = captcha.PAGE_STATE
+WHERE_JS = captcha.WHERE_JS
+MOVED_JS = captcha.MOVED_JS
 
 
 class RecruitingBrowser:
@@ -1092,7 +1078,7 @@ class RecruitingBrowser:
                 dict(r)
                 for r in conn.execute(
                     "SELECT id,url FROM application_queue WHERE run_id IS NOT NULL AND status IN "
-                    "('NEEDS_USER','READY_FOR_REVIEW','MANUAL_TAKEOVER','PREPARING',"
+                    "('QUEUED','NEEDS_USER','READY_FOR_REVIEW','MANUAL_TAKEOVER','PREPARING',"
                     "'SUBMITTING','UNKNOWN_SUBMISSION')"
                 )
                 if only is None or r["id"] == only
@@ -1444,11 +1430,39 @@ class RecruitingBrowser:
         # clicked, and again before each click below.
         self.require_public_page()
         self.dismiss_consent()
+        self.resume_expired_session()
         self.clear_overlays()
         try:
             self.page.wait_for_function(BUSY_JS, timeout=timeout)
         except PlaywrightError:
             pass
+
+    def resume_expired_session(self):
+        """Resume this job's expired session once per control, without a model call."""
+        target = self.run.get("target_url")
+        if not target or not same_job(target, self.page.url):
+            return
+        for label in ("continue working", "resume application"):
+            text = self.page.locator("body").inner_text()
+            if not re.search(
+                r"(?:page|session) (?:has |will |is |automatically )*(?:expired|expire|end)"
+                r"|end your session automatically|are you still with us",
+                text,
+                re.IGNORECASE,
+            ):
+                break
+            buttons = self.page.get_by_role("button", name=re.compile("^" + label + "$", re.I))
+            visible = [b for b in buttons.all() if b.is_visible() and b.is_enabled()]
+            if len(visible) != 1:
+                continue
+            self.require_public_page()
+            with self.step_armed():
+                self.click(visible[0])
+            with contextlib.suppress(PlaywrightError):
+                visible[0].wait_for(state="hidden", timeout=5000)
+            self.note("Resumed the application's session", "session resumed · " + label)
+            if not same_job(target, self.page.url):
+                break
 
     def picker_diagnostic(self, field: dict, typed: str, seen: list, locator):
         """Private evidence when a picker refuses our value: what it listed and kept."""
@@ -1464,7 +1478,7 @@ class RecruitingBrowser:
                     "at": workflow.now(),
                 },
             )
-            self.page.screenshot(path=str(directory / f"picker-{field['key']}.png"))
+            safe_screenshot(self.page, directory / f"picker-{field['key']}.png")
 
     def retype_phone(self, observation: dict) -> bool:
         """The site rejected the phone: try the other format once."""
@@ -1516,7 +1530,14 @@ class RecruitingBrowser:
         while True:
             with contextlib.suppress(PlaywrightError):
                 _frame, data = self.read_form()
-                if any(data.get(k) for k in ("fields", "application_links", "auth_controls")):
+                if (
+                    data.get("ats_markers", {}).get("captcha_challenge")
+                    or (form_frames.holds_form(data))
+                    or any(
+                        data.get(k)
+                        for k in ("application_links", "auth_controls", "final_controls")
+                    )
+                ):
                     return True
             if time.monotonic() >= deadline:
                 return False
@@ -1645,6 +1666,10 @@ class RecruitingBrowser:
             raise ValueError("No live job page. Open a link first.")
         self.require_public_page()  # nothing is read from a page a redirect led off-site
         frame, data = self.read_form()
+        if data.get("ats_markers", {}).get("captcha_challenge"):
+            self.run["captcha_state"] = frame.evaluate(WHERE_JS)
+            if getattr(self, "operating", 0) and self.resolve_captcha():
+                frame, data = self.read_form()
         main = self.page.main_frame
         if (
             frame is main
@@ -1712,19 +1737,19 @@ class RecruitingBrowser:
                 data.get("text", ""), frame.evaluate(gates.CODE_BOXES_JS)
             )
         # Secrets/identity steps are kept out of saved screenshots and model context.
-        if passwords or (
-            not data.get("code_step")
-            and any(questions.manual_only(f["label"]) for f in data["fields"])
+        if (
+            passwords
+            or data.get("code_step")
+            or any(questions.manual_only(f["label"]) for f in data["fields"])
         ):
             data["text"] = data["text"][:1500]
             data["fields"] = [{k: v for k, v in f.items() if k != "value"} for f in data["fields"]]
-            data["manual_takeover_required"] = True
+            data["manual_takeover_required"] = not data.get("code_step", False)
         else:
             image = state_root() / f"applications/{self.run['id']}/browser.png"
             try:
-                self.page.screenshot(path=str(image), full_page=False)
-                image.chmod(0o600)
-                data["screenshot"] = str(image)
+                if safe_screenshot(self.page, image):
+                    data["screenshot"] = str(image)
             except PlaywrightError as error:
                 # Evidence, not a precondition: an error page or a renderer that is gone
                 # cannot be captured, and the observation is still what the run needs.
@@ -1840,6 +1865,9 @@ class RecruitingBrowser:
             raise PermissionError("Existing submission or uncertain attempt blocks reopening")
         if run_id in self.pages and not self.pages[run_id].is_closed():
             self.page, self.run = self.pages[run_id], self.runs[run_id]
+            # A new preparation is an explicit retry or a verified continuation. Within
+            # one preparation, repeated observations must not keep asking the model.
+            self.run.pop("captcha_attempted_at", None)
             with self.guarded(self.page):
                 if in_place and self.inside_application(target):
                     self.settle()
@@ -1896,9 +1924,29 @@ class RecruitingBrowser:
         return result
 
     def where(self) -> list:
-        """The page as it stands before a click: its address and how many controls and
-        dialogs it shows. A page that swaps its view changes one of them."""
+        """The address and visible form identities, excluding hidden challenge controls."""
         return self.form.evaluate(WHERE_JS)
+
+    def resolve_captcha(self) -> bool:
+        """One local attempt per challenge step; a failure preserves the open tab."""
+        if workflow.config().get("captcha_solver", "local") != "local":
+            return False
+        state = self.where()
+        if self.run.get("captcha_attempted_at") == state:
+            return False
+        self.run["captcha_state"] = state
+        self.run["captcha_attempted_at"] = state
+        self.save()
+        outcome = captcha.solve(
+            self.page,
+            self.form,
+            self.beat,
+            evidence=state_root() / f"applications/{self.run['id']}/captcha.png",
+        )
+        workflow.record(self.run["id"], "captcha_attempt", {"outcome": outcome})
+        workflow.system_line(self.run["id"], f"local picture check · {outcome}")
+        self.save()
+        return outcome == "cleared"
 
     def inside_application(self, target: str) -> bool:
         """Whether the tab is past the posting and still inside this job's application:
@@ -1917,7 +1965,10 @@ class RecruitingBrowser:
         if page is None or page.is_closed():
             return {"open": False, "showing": False, "moved": False}
         try:
-            frame = page.main_frame
+            held_frame = self.frames.get(run_id)
+            frame = (
+                held_frame[0] if held_frame and not held_frame[0].is_detached() else page.main_frame
+            )
             showing = bool(frame.evaluate(CAPTCHA_SHOWING_JS))
             state = frame.evaluate(WHERE_JS)
         except PlaywrightError:
@@ -1925,7 +1976,34 @@ class RecruitingBrowser:
         held_at = (self.runs.get(run_id) or {}).get("captcha_state")
         return {"open": True, "showing": showing, "moved": bool(held_at) and state != held_at}
 
-    def enter_mailed_code(self, run_id: str) -> bool:
+    def refresh_mailed_code(self):
+        """Request one fresh email code when a resumed tab's recorded request is stale."""
+        asked = self.run.get("code_asked_at")
+        if not asked:
+            return
+        try:
+            age = datetime.now(UTC) - datetime.fromisoformat(asked)
+        except (TypeError, ValueError):
+            return
+        if age < timedelta(minutes=10) or not self.form.evaluate(gates.CODE_BOXES_JS).get("count"):
+            return
+        buttons = self.form.get_by_role(
+            "button", name=re.compile(r"^(?:send new code|resend(?: verification)? code)$", re.I)
+        )
+        visible = [
+            button for button in buttons.all() if button.is_visible() and button.is_enabled()
+        ]
+        if len(visible) != 1:
+            return
+        # Save before the click: an interrupted or ambiguous request must not cause a
+        # resend loop. Mail from before this timestamp cannot supply the new code.
+        self.run["code_asked_at"] = workflow.now()
+        self.save()
+        with self.step_armed():
+            self.click(visible[0])
+        self.note("Requested a fresh email code", "The previous request was over ten minutes old.")
+
+    def enter_mailed_code(self, run_id: str, recipient: str) -> bool:
         """Type the code the site just mailed to the owner's application address.
 
         The code is read from his own mailbox, from the site's own sender, and only mail
@@ -1938,31 +2016,32 @@ class RecruitingBrowser:
         boxes = self.form.evaluate(gates.CODE_BOXES_JS)
         if not boxes.get("count"):
             return False
+        self.refresh_mailed_code()
         asked = self.run.get("code_asked_at")
         since = (
             datetime.fromisoformat(asked) if asked else datetime.now(UTC) - timedelta(minutes=15)
         )
         senders = gates.code_senders(self.page.url, self.run.get("target_url", ""))
         digits = (boxes["count"], boxes["count"]) if boxes["segmented"] else (4, 8)
-        # The employer as this application knows it, for mail from a domain of its own.
-        names = [mail.company_name(workflow.get(run_id))]
         code = None
         deadline = time.monotonic() + CODE_WAIT_SECONDS
         while code is None:
             self.beat()
             with contextlib.suppress(mail.ZohoFailure, OSError):
-                code = mail.verification_code(senders, since, digits, names)
+                code = mail.verification_code(senders, since, digits, recipient=recipient)
             if code is not None or time.monotonic() >= deadline:
                 break
             self.page.wait_for_timeout(5000)  # the page keeps running while Rove waits
         if not code:
             return False
-        state = self.form.evaluate(form_reading.FORM_STATE_JS)
+        self.secrets.add(code)
+        state = self.where()
         url = self.form.url
         if boxes["segmented"]:
             for index, digit in enumerate(code[: boxes["count"]]):
                 box = self.form.locator(f'[data-rove-code="{index}"]')
                 box.click()
+                box.fill("")  # a resumed/rejected code must not retain its previous digits
                 box.press_sequentially(digit, delay=90)
         else:
             self.type_value(self.form.locator('[data-rove-code="0"]'), code)
@@ -1971,10 +2050,12 @@ class RecruitingBrowser:
             if go:
                 self.click(self.form.locator('[data-rove-code-go="1"]'))
             self.next_step(state, url)
-        self.run["code_asked_at"] = None
-        workflow.record(run_id, "mailed_code", {"host": urlsplit(self.page.url).hostname})
         after = self.form.evaluate(gates.CODE_BOXES_JS)
-        return not after.get("count")
+        accepted = not after.get("count")
+        if accepted:
+            self.run["code_asked_at"] = None
+            workflow.record(run_id, "mailed_code", {"host": urlsplit(self.page.url).hostname})
+        return accepted
 
     def moved_on(self, before: list) -> bool:
         """Whether the page is no longer the one a click was made on."""
@@ -2050,7 +2131,7 @@ class RecruitingBrowser:
             self.settle()
             result = self.observe()
             if not (
-                result["fields"]
+                form_frames.holds_form(result)
                 or result["application_links"]
                 or result["auth_controls"]
                 or result.get("blocked")
@@ -2096,6 +2177,8 @@ class RecruitingBrowser:
 
     def select_combobox(self, locator, field, value, profile) -> bool:
         """Select a unique visible exact option; text input alone is not selection."""
+        from . import pickers
+
         if field.get("selected") and option_matches(str(field["selected"]), value):
             # The form already shows this choice (its default, or a parsed resume put it
             # there): it is recorded, never reopened or toggled.
@@ -2115,53 +2198,18 @@ class RecruitingBrowser:
         city = str(identity.get("city") or "") if place else ""
         if place:
             # Pickers list "City, ST, Country": typing the city alone surfaces it.
-            locator.fill(city or value)
+            pickers.search(locator, city or value)
+        elif field.get("autocomplete") in {"list", "both"} and locator.is_editable():
+            pickers.search(locator, pickers.search_value(str(value), field, profile))
         else:
             locator.press("ArrowDown")
-        options = self.form.get_by_role("option")
+        options = pickers.options(self.form, locator)
         try:
             options.first.wait_for(state="visible", timeout=4000)
         except PlaywrightError:
             self.picker_diagnostic(field, city or value, [], locator)
-            if place:
-                # A custom suggestion list without ARIA roles: click the suggestion that
-                # names our city, else take the first one; accept only when the committed
-                # text still names the city.
-                city = str(profile["identity"].get("city") or "")
-                try:
-                    found = False
-                    for _ in range(12):
-                        # Place pickers geocode after a pause: poll for the suggestion.
-                        self.page.wait_for_timeout(500)
-                        if city and self.form.evaluate(SUGGESTION_JS, city):
-                            found = True
-                            break
-                    if found:
-                        self.click(
-                            self.form.locator('[data-rove-suggestion="1"]').first,
-                            timeout=4000,
-                        )
-                    else:
-                        locator.press("ArrowDown")
-                        locator.press("Enter")
-                except PlaywrightError:
-                    pass
-                committed = normalized(locator.input_value())
-                if city and normalized(city) in committed:
-                    return True
-                if not committed:
-                    # No suggestion list at all: a plain input keeps what we type.
-                    locator.fill(value)
-                    locator.press("Tab")
-                    if city and normalized(city) in normalized(locator.input_value()):
-                        return True
-                with contextlib.suppress(Exception):
-                    # Private evidence for the next fix: what the picker showed.
-                    self.page.screenshot(
-                        path=str(
-                            state_root() / f"applications/{self.run['id']}/typeahead-failed.png"
-                        )
-                    )
+            if place and pickers.custom_city(self.form, locator, city, profile):
+                return True
             locator.press("Escape")
             return False
         wanted = {normalized(value)}
@@ -2172,25 +2220,22 @@ class RecruitingBrowser:
             parts = [identity[k] for k in ("city", "state_region", "country") if identity.get(k)]
             wanted |= {normalized(", ".join(parts)), normalized(", ".join(parts[:2]))}
         texts = options.all_text_contents()
-        matches = [i for i, text in enumerate(texts) if normalized(text) in wanted]
+        matches = [
+            i
+            for i, text in enumerate(texts)
+            if normalized(text) in wanted or pickers.matches(text, value, field, profile)
+        ]
         if not matches and place and city:
             # A place picker geocodes after a pause and may list "Loading" first: poll until
             # an option starts with our city, preferring one that also names our state.
-            state = normalized(str(identity.get("state_region") or ""))
             for _ in range(12):
                 texts = options.all_text_contents()
-                starts = [
-                    i
-                    for i, text in enumerate(texts)
-                    if normalized(text).startswith(normalized(city))
-                ]
-                with_state = [i for i in starts if state and state in normalized(texts[i])]
-                matches = (with_state or starts)[:1]
+                matches = pickers.city_options(texts, city, profile)
                 if matches:
                     break
                 self.page.wait_for_timeout(500)
         if not matches:
-            locator.fill(value)
+            pickers.search(locator, pickers.search_value(str(value), field, profile))
             try:
                 options.filter(has_text=value).first.wait_for(timeout=5000)
             except PlaywrightError:
@@ -2198,13 +2243,28 @@ class RecruitingBrowser:
                 locator.press("Escape")
                 return False
             texts = options.all_text_contents()
-            matches = [i for i, text in enumerate(texts) if normalized(text) in wanted]
+            matches = [
+                i
+                for i, text in enumerate(texts)
+                if normalized(text) in wanted or pickers.matches(text, value, field, profile)
+            ]
         if len(matches) != 1:
             self.picker_diagnostic(field, city or value, texts, locator)
             locator.press("Escape")
             return False
         expected = texts[matches[0]]
         options.nth(matches[0]).click()
+        # An ARIA grid can commit directly into its input and close itself. Check this
+        # before reopening it, which discards that signal in some typeaheads.
+        try:
+            self.form.wait_for_function(
+                pickers.COMMITTED_JS,
+                arg={"ref": field["ref"], "values": [expected, value]},
+                timeout=1000,
+            )
+            return True
+        except PlaywrightError:
+            pass
         if place and city:
             # A place picker commits the suggestion into the input, or shows it as the
             # chosen value beside an emptied input: either text is the proof.
@@ -2238,7 +2298,9 @@ class RecruitingBrowser:
         # input or seeing a shared country dial code does not.
         locator.click()
         locator.press("ArrowDown")
-        selected = self.form.get_by_role("option", name=expected, exact=True)
+        selected = pickers.options(self.form, locator).filter(
+            has_text=re.compile(r"^\s*" + re.escape(expected.strip()) + r"\s*$")
+        )
         try:
             selected.wait_for(state="visible", timeout=3000)
             verified = (
@@ -2345,20 +2407,7 @@ class RecruitingBrowser:
             index = next(i for i, o in enumerate(field["options"]) if o["label"] == label)
             # The reference is the radio, or the role wrapper that stands in for a hidden one.
             member = self.form.locator(f'[data-rove-field="{int(field["member_refs"][index])}"]')
-            try:
-                member.check(timeout=3000)
-            except PlaywrightError as error:
-                if overlays.blocked_click(error):
-                    raise  # something sits on top of the form: cleared, then tried again
-                if not member.evaluate(form_reading.CHECKED_JS):
-                    # Styled radios hide the input; its associated label is the visible target.
-                    target = member.get_attribute("id")
-                    label_for = self.form.locator(f'label[for="{target}"]') if target else None
-                    with contextlib.suppress(PlaywrightError):
-                        if label_for is not None and label_for.count():
-                            label_for.first.click(timeout=3000)
-                        else:
-                            member.click(timeout=3000, force=True)
+            self.set_box(member, True)
             return bool(member.evaluate(form_reading.CHECKED_JS))
         container = self.form.locator(f'[data-rove-choice="{int(field["ref"])}"]')
         button = container.get_by_role("button", name=label, exact=True)
@@ -2738,8 +2787,7 @@ class RecruitingBrowser:
         self.run["popups_asked"] = count
         with contextlib.suppress(PlaywrightError, OSError):
             shot = directory / f"popup-{count}.png"
-            self.page.screenshot(path=str(shot))
-            shot.chmod(0o600)
+            safe_screenshot(self.page, shot)
         context = overlays.qwen_context(overlay, self.page.title())
         try:
             generated = reasoning.generate(directory, context, f"popup-{count}", attempts=1)
@@ -2756,8 +2804,7 @@ class RecruitingBrowser:
         """Stop with a screenshot and plain words: the owner closes it and replies go."""
         directory = state_root() / f"applications/{self.run['id']}"
         with contextlib.suppress(PlaywrightError, OSError):
-            self.page.screenshot(path=str(directory / "failure.png"))
-            (directory / "failure.png").chmod(0o600)
+            safe_screenshot(self.page, directory / "failure.png")
         self.note(
             f"A pop-up is in the way: “{overlays.describe(overlay)}”",
             f"popup held · {overlays.scrubbed(overlay.get('text'), 160)} · buttons "
@@ -2976,11 +3023,10 @@ class RecruitingBrowser:
                 if field is None:
                     raise ValueError("Filled field disappeared; re-inspect before continuing")
                 if (
-                    field["kind"] in ("text", "email", "tel", "url", "textarea", *dates.DATE_KINDS)
+                    field["kind"]
+                    in ("text", "email", "tel", "url", "textarea", "number", *dates.DATE_KINDS)
                     and entry.get("control") != "combobox"
-                    and not (dates.same_date if dates.is_date_box(field) else same_value)(
-                        entry["value"], field["value"]
-                    )
+                    and not same_field_value(field, entry["value"], field["value"])
                 ):
                     raise ValueError(f"Field verification failed: {field.get('label', '')[:80]}")
                 if (
@@ -2988,6 +3034,75 @@ class RecruitingBrowser:
                     and field.get("value") != entry["value"]
                 ):
                     raise ValueError(f"Field verification failed: {field.get('label', '')[:80]}")
+
+    def fill_upload(self, locator, field: dict, approved: dict, filled: list, pending: list):
+        """Attach and verify only the frozen resume; other uploads remain unresolved."""
+        directory = state_root() / f"applications/{self.run['id']}"
+        # Resume uploads are a separate, explicit preparation action, using a
+        # frozen file only. Other requested files always remain unresolved.
+        if not RESUME_UPLOAD.search(f"{field['label']} {field['name']} {field['id']}"):
+            if field["required"]:
+                pending.append(
+                    {
+                        "label": field["label"],
+                        "key": field["key"],
+                        "reason": "Unapproved required file requested",
+                    }
+                )
+            return
+        if self.resume_attached and not field["required"]:
+            return  # a second way to attach the resume this page already has
+        resume = directory / "resume.pdf"
+        manifest_path = directory / "resume-manifest.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text())
+            if not manifest.get("ready") or not resume.is_file():
+                raise PermissionError("Resume preparation is incomplete")
+            self.run["resume_sha256"] = manifest["resume_sha256"]
+            self.run["resume_is_tailored"] = manifest.get("tailored", False)
+        if not resume.exists():
+            source = Path(approved["profile"]["evidence"]["resume_path"])
+            if source.suffix.lower() != ".pdf":
+                raise ValueError("Approved resume must be a PDF")
+            shutil.copyfile(source, resume)
+            resume.chmod(0o600)
+            self.run["resume_sha256"] = hashlib.sha256(resume.read_bytes()).hexdigest()
+            self.save()
+        if hashlib.sha256(resume.read_bytes()).hexdigest() != self.run["resume_sha256"]:
+            raise PermissionError("Frozen resume changed")
+        upload_control = locator.element_handle()
+        accept = upload_control.evaluate("e=>e.getAttribute('accept')||''")
+        if not accepts_pdf(accept):
+            # The site takes other file types only: nothing is attached, the owner decides.
+            pending.append(
+                {
+                    "label": field["label"],
+                    "key": field["key"],
+                    "required": field["required"],
+                    "reason": f"This upload takes only {accepted_words(accept)} files, "
+                    "and the approved resume is a PDF",
+                }
+            )
+            return
+        if upload_control.evaluate("e=>e.files.length===1&&e.files[0].name==='resume.pdf'"):
+            self.resume_attached = True  # a pass run again: the file is already on
+        else:
+            self.upload(locator, resume)
+        if (
+            upload_control.evaluate("e=>e.files.length===1 && e.files[0].name==='resume.pdf'")
+            is not True
+        ):
+            raise ValueError("Resume attachment verification failed")
+        attached = {
+            "label": field["label"],
+            "source": "frozen Erga job resume"
+            if self.run.get("resume_is_tailored")
+            else "frozen approved base resume",
+            "sha256": self.run["resume_sha256"],
+        }
+        filled.append(attached)
+        self.keep_upload(attached)
+        return
 
     def _fill_page(self, run_id: str, before: dict, approved: dict, answers: dict):
         """Fill one page of a form from approved facts; returns (filled, pending)."""
@@ -3004,6 +3119,7 @@ class RecruitingBrowser:
         # What Rove recorded itself (a used draft, a blank), and whose employer this is.
         automatic = workflow.automatic_answers(run_id)
         employer = questions.employer_key(self.run.get("target_url") or before["url"])
+        questions.number_education_blocks(before["fields"])
 
         def resolve(field: dict, picker: bool = False):
             # Approved profile, then the owner's earlier answer, then a standing default.
@@ -3011,7 +3127,6 @@ class RecruitingBrowser:
             # remembered by their words, and a later twin takes only its own answer.
             # Which education block each school question is in, for the page as it is now;
             # a repeated education question is the next school's, not a twin.
-            questions.number_education_blocks(before["fields"])
             if field.get("occurrence") and not questions.education_field(field):
                 return None, None
             return questions.resolve(
@@ -3030,7 +3145,6 @@ class RecruitingBrowser:
                 continue
             if self.form.url != before["url"]:
                 raise PermissionError("Page changed before fill")
-            pace()
             if field["kind"] == "radio" and field.get("name") in grouped:
                 continue  # handled once as its group
             if self.fill_read_question(field, answers, filled, pending, automatic, resolve):
@@ -3087,78 +3201,14 @@ class RecruitingBrowser:
                         "reason": "Needs reviewed answer or supported control adapter"
                         if chosen is None
                         else "Selection could not be verified",
+                        **({"control_issue": True} if chosen is not None else {}),
                         **questions.unlabeled(field),
                     }
                 )
                 continue
             locator = self.form.locator(f'[data-rove-field="{int(field["ref"])}"]')
             if field["kind"] == "file":
-                # Resume uploads are a separate, explicit preparation action, using a
-                # frozen file only. Other requested files always remain unresolved.
-                if not RESUME_UPLOAD.search(f"{field['label']} {field['name']} {field['id']}"):
-                    if field["required"]:
-                        pending.append(
-                            {
-                                "label": field["label"],
-                                "key": field["key"],
-                                "reason": "Unapproved required file requested",
-                            }
-                        )
-                    continue
-                if self.resume_attached and not field["required"]:
-                    continue  # a second way to attach the resume this page already has
-                resume = directory / "resume.pdf"
-                manifest_path = directory / "resume-manifest.json"
-                if manifest_path.exists():
-                    manifest = json.loads(manifest_path.read_text())
-                    if not manifest.get("ready") or not resume.is_file():
-                        raise PermissionError("Resume preparation is incomplete")
-                    self.run["resume_sha256"] = manifest["resume_sha256"]
-                    self.run["resume_is_tailored"] = manifest.get("tailored", False)
-                if not resume.exists():
-                    source = Path(approved["profile"]["evidence"]["resume_path"])
-                    if source.suffix.lower() != ".pdf":
-                        raise ValueError("Approved resume must be a PDF")
-                    shutil.copyfile(source, resume)
-                    resume.chmod(0o600)
-                    self.run["resume_sha256"] = hashlib.sha256(resume.read_bytes()).hexdigest()
-                    self.save()
-                if hashlib.sha256(resume.read_bytes()).hexdigest() != self.run["resume_sha256"]:
-                    raise PermissionError("Frozen resume changed")
-                upload_control = locator.element_handle()
-                accept = upload_control.evaluate("e=>e.getAttribute('accept')||''")
-                if not accepts_pdf(accept):
-                    # The site takes other file types only: nothing is attached, the owner decides.
-                    pending.append(
-                        {
-                            "label": field["label"],
-                            "key": field["key"],
-                            "required": field["required"],
-                            "reason": f"This upload takes only {accepted_words(accept)} files, "
-                            "and the approved resume is a PDF",
-                        }
-                    )
-                    continue
-                if upload_control.evaluate("e=>e.files.length===1&&e.files[0].name==='resume.pdf'"):
-                    self.resume_attached = True  # a pass run again: the file is already on
-                else:
-                    self.upload(locator, resume)
-                if (
-                    upload_control.evaluate(
-                        "e=>e.files.length===1 && e.files[0].name==='resume.pdf'"
-                    )
-                    is not True
-                ):
-                    raise ValueError("Resume attachment verification failed")
-                attached = {
-                    "label": field["label"],
-                    "source": "frozen Erga job resume"
-                    if self.run.get("resume_is_tailored")
-                    else "frozen approved base resume",
-                    "sha256": self.run["resume_sha256"],
-                }
-                filled.append(attached)
-                self.keep_upload(attached)
+                self.fill_upload(locator, field, approved, filled, pending)
                 continue
             owner_answer = questions.application_answer(field, answers, automatic)
             if owner_answer and owner_answer["value"].lower() == "skip":
@@ -3223,6 +3273,7 @@ class RecruitingBrowser:
                         "key": field["key"],
                         "required": field["required"],
                         "reason": self.picker_reason or "No unique matching dropdown option",
+                        "control_issue": True,
                     }
                 )
                 continue
@@ -3302,9 +3353,11 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            dated = dates.is_date_box(field)
-            same = dates.same_date if dated else same_value
-            if field["value"] and not same(value, field["value"]) and not owner_answer:
+            if (
+                field["value"]
+                and not same_field_value(field, value, field["value"])
+                and not owner_answer
+            ):
                 pending.append(
                     {
                         "label": field["label"],
@@ -3314,18 +3367,23 @@ class RecruitingBrowser:
                     }
                 )
                 continue
-            if field["value"] and same(value, field["value"]):
+            if field["value"] and same_field_value(field, value, field["value"]):
                 filled.append(
                     {"label": field["label"], "value": value, "source": source, "key": field["key"]}
                 )
                 continue
             kept = self.write(locator, field, value)
-            if not dated and not same_value(value, kept) and kept and value.startswith(kept):
+            if (
+                field["kind"] == "textarea"
+                and not same_value(value, kept)
+                and kept
+                and value.startswith(kept)
+            ):
                 # The field silently keeps only its first N characters: fit the text to it.
                 value = workflow.brief(value, len(kept))
                 kept = self.write(locator, field, value)
                 source = f"{source} (shortened to {len(kept)} characters)"
-            if not same(value, kept):
+            if not same_field_value(field, value, kept):
                 raise ValueError(f"Field verification failed: {field['label'][:80]}")
             filled.append(
                 {"label": field["label"], "value": value, "source": source, "key": field["key"]}
@@ -3389,7 +3447,7 @@ class RecruitingBrowser:
             if before.get("code_step"):
                 # The site mailed a code to prove the address: fetched and typed, then
                 # the page after it is filled like any other.
-                if not self.enter_mailed_code(run_id):
+                if not self.enter_mailed_code(run_id, approved["profile"]["identity"]["email"]):
                     pending.append(
                         {
                             "label": "The code the site mailed you",
@@ -3426,16 +3484,18 @@ class RecruitingBrowser:
             if pending or result.get("final_controls") or not nav:
                 break
             # A complete step of a multi-page form: continue once, then keep filling.
-            state = self.form.evaluate(form_reading.FORM_STATE_JS)
+            state = self.where()
             self.run["code_asked_at"] = workflow.now()  # a code mailed from here on is this step's
             with self.requests_heard() as heard, self.step_armed():
                 self.click(self.form.locator(f'[data-rove-nav="{int(nav[0]["ref"])}"]'))
                 self.next_step(state, result["url"])
+                if self.form.evaluate(CAPTCHA_SHOWING_JS) and self.resolve_captcha():
+                    self.next_step(state, result["url"])
             before = landed = self.observe()
             workflow.record(run_id, "form_step", {"clicked": nav[0]["label"], "url": before["url"]})
             if self.form.evaluate(CAPTCHA_SHOWING_JS):
-                # The step put a picture check on screen: the owner's, never Rove's.
-                # Where the page stands is kept, to tell later that it moved on.
+                # The bounded local attempt did not clear it. Keep this exact step for
+                # the fallback watcher; a disappearing challenge is not progress.
                 captcha = True
                 self.run["captcha_state"] = self.where()
                 self.run["captcha_after"] = str(nav[0]["label"])[:60]
@@ -3622,11 +3682,9 @@ class RecruitingBrowser:
                 with contextlib.suppress(Exception):
                     page.remove_listener(name, handler)
 
-    def next_step(self, state: str, url: str, timeout_ms: int = 12000):
-        """After a Next click: wait until the step changed (another address, or other
-        controls and values), then for a loading indicator to go and for the new step's
-        fields or its final control. A step that shows neither (a video interview, an
-        assessment) is read after a short bound, not the ten seconds a fresh page gets."""
+    def next_step(self, state: list, url: str, timeout_ms: int = 12000):
+        """Wait for a changed step, then an actionable reading. A hidden chat upload
+        or a form disappearing while its replacement loads is not a finished step."""
         deadline = time.monotonic() + timeout_ms / 1000
         loaded = False
         while time.monotonic() < deadline:
@@ -3635,7 +3693,9 @@ class RecruitingBrowser:
                 if self.form.url != url:
                     loaded = True
                     break
-                if self.form.evaluate(form_reading.FORM_STATE_JS) != state:
+                if self.form.evaluate(CAPTCHA_SHOWING_JS):
+                    return
+                if self.where() != state:
                     break
             except PlaywrightError:
                 loaded = True  # the document is being replaced: the step changed
@@ -3647,7 +3707,7 @@ class RecruitingBrowser:
         self.clear_overlays()
         with contextlib.suppress(PlaywrightError):
             self.form.wait_for_function(BUSY_JS, timeout=10000)
-        self.wait_for_fields(8000 if loaded else 4000, script=STEP_JS)
+        self.wait_for_reading(12)
 
 
 def socket_path() -> Path:
@@ -3782,8 +3842,27 @@ def failure_screenshot(browser, run_id: str | None):
     if page is None or page.is_closed():
         return
     with contextlib.suppress(Exception):
-        page.screenshot(path=str(directory / "failure.png"))
-        (directory / "failure.png").chmod(0o600)
+        safe_screenshot(page, directory / "failure.png")
+
+
+def safe_screenshot(page, path: Path) -> bool:
+    """Never save a page containing a password, verification code or identity field.
+
+    Inspect every frame afresh: an exception may occur before observe has caught up
+    with navigation. Unreadable frames raise and callers omit the optional evidence.
+    """
+    for frame in page.frames:
+        controls = json.loads(frame.evaluate(WHERE_JS)[1])
+        if frame.evaluate(gates.CODE_BOXES_JS).get("count") or any(
+            field[1] == "password"
+            or questions.manual_only(" ".join(str(part or "") for part in field[2:]))
+            for field in controls
+        ):
+            path.unlink(missing_ok=True)
+            return False
+    page.screenshot(path=str(path))
+    path.chmod(0o600)
+    return True
 
 
 def respond(browser, raw: bytes) -> dict:

@@ -654,7 +654,8 @@ def test_owner_commands_for_submission_lifecycle_parse_strictly():
     assert parse("send it") is None and parse("go") is None
 
 
-def test_send_it_in_the_thread_binds_the_current_package_once(state):
+def test_send_it_in_the_thread_binds_the_current_package_once(state, monkeypatch):
+    monkeypatch.setattr(workflow, "discord", lambda *a, **k: {"id": "posted"})
     application_id, package, _current = ready_application(state)
     workflow.set_state(application_id, "READY_FOR_REVIEW", thread_id="t1")
     threads = {"t1": application_id}
@@ -750,6 +751,34 @@ def test_failed_submission_request_leaves_the_package_reviewable(state, monkeypa
             conn.execute("SELECT status FROM owner_commands WHERE message_id='msg-1'").fetchone()[0]
             == "failed"
         )
+
+
+def test_lost_browser_reply_after_submit_claim_is_not_called_unattempted(state, monkeypatch):
+    application_id, package, _ = ready_application(state)
+    worker.apply_command(
+        {
+            "kind": "submit",
+            "application_id": application_id,
+            "package_hash": package["package_hash"],
+        },
+        "msg-1",
+    )
+    lines, calls = [], []
+    monkeypatch.setattr(workflow, "system_line", lambda app, text: lines.append(text))
+
+    def disconnect(action, **kwargs):
+        calls.append(action)
+        submission.claim_attempt(application_id, package["package_hash"], "msg-1")
+        raise TimeoutError("connection lost after claim")
+
+    monkeypatch.setattr(worker, "browser_call", disconnect)
+    result = worker.run_approved_submissions()
+    assert result[0]["outcome"] == "failed"
+    assert workflow.get(application_id)["status"] == "SUBMITTING"
+    assert worker.run_approved_submissions() == []
+    assert calls == ["submit"]
+    assert any("recorded state SUBMITTING" in line and "do not retry" in line for line in lines)
+    assert not any("not attempted" in line for line in lines)
 
 
 def test_queue_holds_for_waiting_applications_unless_owner_resumes(state):

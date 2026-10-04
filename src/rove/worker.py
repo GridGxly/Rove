@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from . import (
+    command_effects,
     delivery,
     fastpath,
     gates,
@@ -25,7 +26,7 @@ from .discord_feed import discord, private_env
 from .live_browser import browser_call, owner_words, socket_path
 from .reasoning import GATE_KINDS
 from .resumes import one_erga_pass, prepare_resume, start_preparation
-from .runtime import state_root, write_private
+from .runtime import private_lock, state_root, write_private
 
 # A preparation no worker pass marked (the agent's own browsing) is handed back after this.
 INTERRUPTED_AFTER = timedelta(minutes=15)
@@ -346,6 +347,8 @@ def question_list(asked: list, pending: list, proposals: dict, used: set) -> lis
         }
         if question.get("label_missing"):
             entry["label_missing"] = True  # the card says the question could not be read
+        if question.get("control_issue"):
+            entry["control_issue"] = True
         if key in used:
             entry["state"] = "used"
         elif key in drafts:
@@ -424,7 +427,7 @@ def form_page(page: dict) -> bool:
     if page.get("code_step"):
         return True  # the code the site mailed: the browser fetches and types it
     if any(
-        f["kind"] == "file"
+        (f["kind"] == "file" and bool(re.search(r"\b(resume|cv)\b", f["label"], re.I)))
         or "first name" in f["label"].lower()
         or "full name" in f["label"].lower()
         for f in fields
@@ -502,6 +505,195 @@ def prepare_stop(page: dict, headline: str) -> tuple[str, str]:
     return headline, given if recovery.plain_text(given) else LOOK_AGAIN
 
 
+def prepare_fields(application_id: str, settings: dict) -> tuple[dict, list]:
+    """Fill approved facts, draft unresolved questions once, and apply approved drafts.
+
+    Verification and CAPTCHA holds never enter the drafting stage.
+    """
+    from .reasoning import review_application
+
+    phase = "prepare"
+    try:
+        timing.lap("fill")
+        page = browser_call("prepare", run_id=application_id)
+        timing.note(**fastpath.fill_counts(application_id, page))
+        pending = page.get("pending", [])
+        proposals: dict = {"answers": []}
+        asked: list = []
+        used: set = set()
+        if pending and not any(q.get("manual") for q in pending):
+            phase = "answer_drafting"
+            kinds = fastpath.drafting_counts(pending, page.get("fields"))
+            if fastpath.needs_model(kinds):
+                with timing.stage(application_id, "drafting", **kinds):
+                    proposals = review_application(application_id, page)
+                    timing.note(
+                        proposals=sum(
+                            a.get("kind") == "proposal" for a in proposals.get("answers", [])
+                        )
+                    )
+            else:
+                # Nothing here is Qwen's to write or choose: no call. The questions
+                # go to the owner exactly as they would after a needs-owner reply.
+                timing.record(application_id, "drafting", 0.0, skipped=True, **kinds)
+                workflow.system_line(
+                    application_id,
+                    f"drafting skipped · {kinds['questions']} pending, none needs "
+                    "writing or a model choice",
+                )
+            page["qwen_review"] = proposals
+            drafted_keys = {
+                a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"
+            }
+            optional = [
+                q for q in pending if not q.get("required", True) and q["key"] not in drafted_keys
+            ]
+            # The owner's numbered list: what the form asked beyond approved facts,
+            # in form order, without the optional fields that are left blank.
+            asked = [q for q in pending if q not in optional]
+            if settings.get("auto_use_drafts", settings.get("auto_submit")):
+                used = set(use_drafts(application_id, proposals, asked))
+            if optional:
+                # An optional field nobody can fill from approved facts stays blank.
+                skip_optional(application_id, optional)
+            if optional or used:
+                phase = "prepare"
+                timing.lap("fill")
+                page = browser_call("prepare", run_id=application_id)
+                timing.note(**fastpath.fill_counts(application_id, page))
+                page["qwen_review"] = proposals
+                pending = page.get("pending", [])
+        return page, question_list(asked, pending, proposals, used)
+    except Exception as error:
+        raise PhaseError(phase, error) from error
+
+
+def finish_preparation(item: dict, page: dict, questions: list, fit: dict, settings: dict) -> dict:
+    """Turn a filled page into one truthful hold or a queued, approved submission."""
+    application_id = item["id"]
+    final_state = "NEEDS_USER"
+    items: list = []
+    commands: list = ["go", "park it"]
+    headline = "Browser needs a look"
+    pending = page.get("pending", [])
+    if page.get("captcha"):
+        return held(
+            application_id,
+            "MANUAL_TAKEOVER",
+            page.get("reason") or gates.CAPTCHA_WORDS,
+            gates.CAPTCHA_HEADLINE,
+            commands=["go", "park it"],
+            watch="captcha",
+            in_place=True,
+        )
+    by_hand = next((q for q in pending if q.get("manual")), None)
+    if by_hand:
+        return held(
+            application_id,
+            "MANUAL_TAKEOVER",
+            by_hand["reason"],
+            "A step in the browser needs you",
+            commands=["go", "park it"],
+            in_place=True,
+        )
+    if pending:
+        open_numbers = [
+            n
+            for n, q in enumerate(questions, start=1)
+            if q["state"] == "open" and not q.get("control_issue")
+        ]
+        controls = sum(bool(q.get("control_issue")) for q in pending)
+        drafted = len([q for q in questions if q["state"] == "drafted"])
+        parts = []
+        if drafted:
+            parts.append(
+                f"{drafted} draft{'s' if drafted != 1 else ''} to approve in the "
+                "thread (each card says which `use draft` reply approves it)"
+            )
+        if open_numbers:
+            count = len(open_numbers)
+            parts.append(f"{count} question{'s' if count != 1 else ''} only you can answer")
+        if controls:
+            parts.append(
+                f"{controls} form control{'s' if controls != 1 else ''} "
+                "could not be set to the known answer"
+            )
+        reason = " · ".join(parts) + ". Then reply `go`."
+        commands = [f"{n}: " for n in open_numbers[:4]] + ["go", "park it"]
+        headline = "Form control needs a look" if controls else "Answers needed"
+    elif page.get("package_hash") and len(page.get("final_controls", [])) != 1:
+        reason = page.get(
+            "reason",
+            "The form's last step with its Submit control was not reached. Check "
+            "the recruiting browser, then reply `go`.",
+        )
+        headline = page.get("headline") or "Final step not reached"
+        if page.get("owner_step"):  # a video interview or assessment he takes
+            final_state, commands = "MANUAL_TAKEOVER", ["applied", "park it"]
+    elif page.get("package_hash"):
+        from .submission import enabled_adapter
+
+        if fit.get("unverified"):
+            items = [f"not verified · {u}" for u in fit["unverified"][:4]]
+        caveat = (
+            " The posting states requirements I could not check against your profile; see Why."
+            if fit.get("unverified")
+            else ""
+        )
+        try:
+            enabled_adapter(page.get("url") or item["url"])
+        except PermissionError as why:
+            # No adapter or submission disabled: the owner presses Submit.
+            final_state = "MANUAL_TAKEOVER"
+            cause = (
+                "this site has no submission adapter yet"
+                if "adapter" in str(why)
+                else "final submission is off in your local config"
+            )
+            reason = (
+                f"Every field is filled from approved facts, but {cause}. Review "
+                "the form in the recruiting browser, press its Submit button "
+                "yourself, then reply." + caveat
+            )
+            commands = ["applied", "park it"]
+            headline = "Ready · send it yourself"
+        else:
+            final_state = "READY_FOR_REVIEW"
+            if settings.get("auto_submit") and workflow.sends_unattended(item):
+                # Owner policy: send it; the thread is the record to review after.
+                workflow.set_state(application_id, "READY_FOR_REVIEW")
+                queue_auto_submit(application_id, page["package_hash"])
+                workflow.refresh_status(application_id)
+                result = {
+                    "application_id": application_id,
+                    "page": page,
+                    "status": "READY_FOR_REVIEW",
+                    "auto_submit": True,
+                    "submitted": False,
+                }
+                workflow.save_result(application_id, result)
+                return result
+            reason = (
+                "Every field is filled from approved facts. Check the form and "
+                "the resume in the recruiting browser, then reply `send it`." + caveat
+            )
+            commands = ["send it", "go"]
+            headline = "Ready to submit"
+    else:
+        headline, reason = prepare_stop(page, headline)
+    result = {"application_id": application_id, "page": page, "reason": reason, "submitted": False}
+    workflow.save_result(application_id, result)
+    return held(
+        application_id,
+        final_state,
+        reason,
+        headline,
+        questions=questions,
+        commands=commands,
+        items=items,
+    )
+
+
 @timing.stage(None, "pass")
 @one_erga_pass
 def process(application_id: str) -> dict:
@@ -537,9 +729,14 @@ def process(application_id: str) -> dict:
     headline = "Browser needs a look"
     try:
         timing.lap("open")
-        # After a step the owner took in the browser himself (a picture check), the tab
-        # is read as it stands: a fresh load would undo what he did.
-        in_place = bool((workflow.latest_hold(application_id) or {}).get("in_place"))
+        # Every resumed application keeps its current form. Reloading the posting after
+        # an answer needlessly repeats email verification and discards completed steps.
+        # The browser independently requires this exact job's application URL.
+        in_place = workflow.latest_hold(application_id) is not None
+        if in_place:
+            from .reasoning import stored_posting
+
+            posting_text = stored_posting(application_id)
         page = browser_call("open", url=item["url"], in_place=in_place)
         for _ in range(6):
             if not page.get("fields") and not page.get("blocked"):
@@ -680,7 +877,7 @@ def process(application_id: str) -> dict:
                 headline = "Manual step in the browser"
                 break
             if form_page(page):
-                from .reasoning import review_application, review_job
+                from .reasoning import review_job
 
                 # Erga's intake runs beside the job-fit review; the resume step joins it.
                 preparing = start_preparation(
@@ -734,161 +931,8 @@ def process(application_id: str) -> dict:
                     reason = resume_words(resume.get("reason"))
                     headline = "Resume needs review"
                     break
-                phase = "prepare"
-                timing.lap("fill")
-                page = browser_call("prepare", run_id=application_id)
-                timing.note(**fastpath.fill_counts(application_id, page))
-                pending = page.get("pending", [])
-                proposals: dict = {"answers": []}
-                asked: list = []
-                used: set = set()
-                if pending:
-                    phase = "answer_drafting"
-                    kinds = fastpath.drafting_counts(pending, page.get("fields"))
-                    if fastpath.needs_model(kinds):
-                        with timing.stage(application_id, "drafting", **kinds):
-                            proposals = review_application(application_id, page)
-                            timing.note(
-                                proposals=sum(
-                                    a.get("kind") == "proposal"
-                                    for a in proposals.get("answers", [])
-                                )
-                            )
-                    else:
-                        # Nothing here is Qwen's to write or choose: no call. The questions
-                        # go to the owner exactly as they would after a needs-owner reply.
-                        timing.record(application_id, "drafting", 0.0, skipped=True, **kinds)
-                        workflow.system_line(
-                            application_id,
-                            f"drafting skipped · {kinds['questions']} pending, none needs "
-                            "writing or a model choice",
-                        )
-                    page["qwen_review"] = proposals
-                    drafted_keys = {
-                        a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"
-                    }
-                    optional = [
-                        q
-                        for q in pending
-                        if not q.get("required", True) and q["key"] not in drafted_keys
-                    ]
-                    # The owner's numbered list: what the form asked beyond approved facts,
-                    # in form order, without the optional fields that are left blank.
-                    asked = [q for q in pending if q not in optional]
-                    if settings.get("auto_use_drafts", settings.get("auto_submit")):
-                        used = set(use_drafts(application_id, proposals, asked))
-                    if optional:
-                        # An optional field nobody can fill from approved facts stays blank.
-                        skip_optional(application_id, optional)
-                    if optional or used:
-                        phase = "prepare"
-                        timing.lap("fill")
-                        page = browser_call("prepare", run_id=application_id)
-                        timing.note(**fastpath.fill_counts(application_id, page))
-                        page["qwen_review"] = proposals
-                        pending = page.get("pending", [])
-                if page.get("captcha"):
-                    return held(
-                        application_id,
-                        "MANUAL_TAKEOVER",
-                        page.get("reason") or gates.CAPTCHA_WORDS,
-                        gates.CAPTCHA_HEADLINE,
-                        commands=["go", "park it"],
-                        watch="captcha",
-                        in_place=True,
-                    )
-                by_hand = next((q for q in pending if q.get("manual")), None)
-                if by_hand:
-                    return held(
-                        application_id,
-                        "MANUAL_TAKEOVER",
-                        by_hand["reason"],
-                        "A step in the browser needs you",
-                        commands=["go", "park it"],
-                        in_place=True,
-                    )
-                questions = question_list(asked, pending, proposals, used)
-                if pending:
-                    open_numbers = [
-                        n for n, q in enumerate(questions, start=1) if q["state"] == "open"
-                    ]
-                    drafted = len([q for q in questions if q["state"] == "drafted"])
-                    parts = []
-                    if drafted:
-                        parts.append(
-                            f"{drafted} draft{'s' if drafted != 1 else ''} to approve in the "
-                            "thread (each card says which `use draft` reply approves it)"
-                        )
-                    if open_numbers:
-                        count = len(open_numbers)
-                        parts.append(
-                            f"{count} question{'s' if count != 1 else ''} only you can answer"
-                        )
-                    reason = " · ".join(parts) + ". Then reply `go`."
-                    commands = [f"{n}: " for n in open_numbers[:4]] + ["go", "park it"]
-                    headline = "Answers needed"
-                elif page.get("package_hash") and len(page.get("final_controls", [])) != 1:
-                    reason = page.get(
-                        "reason",
-                        "The form's last step with its Submit control was not reached. Check "
-                        "the recruiting browser, then reply `go`.",
-                    )
-                    headline = page.get("headline") or "Final step not reached"
-                    if page.get("owner_step"):  # a video interview or assessment he takes
-                        final_state, commands = "MANUAL_TAKEOVER", ["applied", "park it"]
-                elif page.get("package_hash"):
-                    from .submission import enabled_adapter
-
-                    if fit.get("unverified"):
-                        items = [f"not verified · {u}" for u in fit["unverified"][:4]]
-                    caveat = (
-                        " The posting states requirements I could not check against your "
-                        "profile; see Why."
-                        if fit.get("unverified")
-                        else ""
-                    )
-                    try:
-                        enabled_adapter(page.get("url") or item["url"])
-                    except PermissionError as why:
-                        # No adapter or submission disabled: the owner presses Submit.
-                        final_state = "MANUAL_TAKEOVER"
-                        cause = (
-                            "this site has no submission adapter yet"
-                            if "adapter" in str(why)
-                            else "final submission is off in your local config"
-                        )
-                        reason = (
-                            f"Every field is filled from approved facts, but {cause}. Review "
-                            "the form in the recruiting browser, press its Submit button "
-                            "yourself, then reply." + caveat
-                        )
-                        commands = ["applied", "park it"]
-                        headline = "Ready · send it yourself"
-                    else:
-                        final_state = "READY_FOR_REVIEW"
-                        if settings.get("auto_submit") and workflow.sends_unattended(item):
-                            # Owner policy: send it; the thread is the record to review after.
-                            workflow.set_state(application_id, "READY_FOR_REVIEW")
-                            queue_auto_submit(application_id, page["package_hash"])
-                            workflow.refresh_status(application_id)
-                            result = {
-                                "application_id": application_id,
-                                "page": page,
-                                "status": "READY_FOR_REVIEW",
-                                "auto_submit": True,
-                                "submitted": False,
-                            }
-                            workflow.save_result(application_id, result)
-                            return result
-                        reason = (
-                            "Every field is filled from approved facts. Check the form and "
-                            "the resume in the recruiting browser, then reply `send it`." + caveat
-                        )
-                        commands = ["send it", "go"]
-                        headline = "Ready to submit"
-                else:
-                    headline, reason = prepare_stop(page, headline)
-                break
+                page, questions = prepare_fields(application_id, settings)
+                return finish_preparation(item, page, questions, fit, settings)
             links = page.get("application_links", [])
             if not links:
                 reason = (
@@ -923,6 +967,8 @@ def process(application_id: str) -> dict:
                 "browser, then reply `go`."
             )
             headline = "Navigation stopped"
+    except PhaseError:
+        raise
     except Exception as error:
         raise PhaseError(phase, error) from error
     result = {"application_id": application_id, "page": page, "reason": reason, "submitted": False}
@@ -1293,6 +1339,13 @@ def explicit_command(text: str) -> dict | None:
 
 
 def apply_command(command: dict, message_id: str):
+    # Chat and local commands may arrive while the scheduler is running.
+    with private_lock(state_root() / "owner-commands.lock"):
+        _apply_command(command, message_id)
+
+
+def _apply_command(command: dict, message_id: str):
+    command_effects.recover(close_deferred_tab)
     application_id = command["application_id"]
     item = workflow.get(application_id)
     label = None
@@ -1390,42 +1443,33 @@ def apply_command(command: dict, message_id: str):
                 application_id,
                 command["kind"],
                 json.dumps(command),
-                "applied",
+                "applied" if command["kind"] == "reconcile" else "pending",
                 workflow.now(),
             ),
         )
-    data = {k: v for k, v in command.items() if k != "application_id"}
-    if label is not None:
-        data["label"] = label
-    if remember_later:
-        data.update(keep_answer(remember_later, message_id, remember_how))
-    workflow.record(
-        application_id,
-        "owner_answer" if command["kind"] in {"answer", "use"} else command["kind"] + "_requested",
-        data,
-    )
-    workflow.flush_events(application_id)
-    if command["kind"] in {"resume", "proceed", "account"}:
-        workflow.set_state(application_id, "QUEUED")
-    elif command["kind"] == "defer":
-        workflow.set_state(application_id, "DEFERRED")
-        with contextlib.suppress(Exception):  # a tab that is already gone is fine
-            browser_call("close", run_id=application_id)
-    elif command["kind"] == "reconcile":
+        data = {k: v for k, v in command.items() if k != "application_id"}
+        if label is not None:
+            data["label"] = label
+        if command["kind"] != "reconcile":
+            command_effects.stage(conn, message_id, data, remember_later, remember_how)
+    if command["kind"] == "reconcile":
         from .submission import reconcile
 
+        workflow.record(application_id, "reconcile_requested", data)
+        workflow.flush_events(application_id)
         reconcile(application_id, command["outcome"], message_id)
+    else:
+        command_effects.recover(close_deferred_tab)
 
 
-def keep_answer(answered: tuple, message_id: str, how: dict) -> dict:
-    """His answer becomes a fact for later forms. Returns what the thread line adds: a
-    plain no about one employer (a relative there, a referral) is kept for every one."""
-    from . import questions
+def close_deferred_tab(application_id: str):
+    with contextlib.suppress(Exception):  # a tab that is already gone is fine
+        browser_call("close", run_id=application_id)
 
-    label, offered, given = answered
-    workflow.remember_answer(label, offered, given, message_id, **how)
-    tie = questions.classify(label, how["kind"], offered)
-    return {"every_company": True} if questions.general_no(tie, given) else {}
+
+def recover_commands():
+    with private_lock(state_root() / "owner-commands.lock"):
+        command_effects.recover(close_deferred_tab)
 
 
 # How often every candidate channel is read whatever Discord's channel list says, in case
@@ -1685,12 +1729,17 @@ def run_approved_submissions() -> list[dict]:
         except Exception as error:  # noqa: BLE001 -- persist the failure before yielding
             result = {"application_id": application_id, "error": str(error)[:800]}
             outcome = "failed"
+            state = workflow.get(application_id)["status"]
+            wording = (
+                "submission not attempted"
+                if state == "READY_FOR_REVIEW"
+                else f"submission response lost · recorded state {state} · do not retry"
+            )
             workflow.system_line(
                 application_id,
-                f"submission not attempted · package {package_hash} · "
-                + recovery.technical("send", error),
+                f"{wording} · package {package_hash} · " + recovery.technical("send", error),
             )
-            if workflow.get(application_id)["status"] == "READY_FOR_REVIEW":
+            if state == "READY_FOR_REVIEW":
                 workflow.action_needed(
                     application_id,
                     send_refusal(error),
@@ -1893,6 +1942,7 @@ def tick() -> dict:
         # This worker holds the lock: a delivery window still open was left by a crash.
         delivery.close_windows()
         workflow.ensure_system_channel()
+        recover_commands()
         reachable = poll_commands() is not False
         if reachable:
             workflow.flush_pending()
@@ -1942,7 +1992,9 @@ def carry_on_after_captcha() -> list[str]:
         workflow.record(application_id, "captcha_cleared", {})
         workflow.set_state(application_id, "QUEUED", error="")
         recovery.retry_later_first(application_id)
-        workflow.system_line(application_id, "picture check solved by the owner · carrying on")
+        workflow.system_line(
+            application_id, "picture check cleared and application advanced · carrying on"
+        )
         resumed.append(application_id)
     return resumed
 

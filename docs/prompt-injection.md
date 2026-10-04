@@ -57,14 +57,18 @@ Qwen's output is treated like any other untrusted input:
 - A cleanup rewrite is kept only if every number and name in the original survives and no new number appears.
 - A mail label must be one of six fixed words. A quoted deadline counts only if the mail contains it.
 
-One gap remains. The drafting prompt tells Qwen to leave unknown personal facts and demographic questions to the owner, but code does not yet block a draft on a legal or sensitive question when `auto_use_drafts` is on. That gate is in progress. Until it lands, review drafts on such questions before sending.
+Code blocks model drafts for legal or sensitive questions, unreadable labels, and
+recognized education and address facts. This gate also applies when `auto_use_drafts`
+is enabled. An unrecognized personal question still needs careful classification;
+the prompt alone is not proof that every possible wording is covered.
 
 ## Browser boundaries
 
 The recruiting Chrome has its own profile with no everyday logins.
 
 - Every request from a tab the daemon is driving must be public HTTPS to a public address.
-- The daemon clicks only controls it observed and classified: application-start links, Next and Continue, the account controls on a sign-in page, and the one final Submit control after an approval.
+- A CAPTCHA image reaches only the existing local vision model. Its response must be a bounded click/drag action inside an allowlisted provider frame; no script, URL, file or applicant value is accepted, and completion is checked independently.
+- For application forms, the daemon clicks only controls it observed and classified: application-start links, Next and Continue, the account controls on a sign-in page, and the one final Submit control after an approval.
 - A link to another host is followed only when that host is on the applicant-tracking list.
 - Applicant data is typed only when the form's host is on that list and the page is the same job as the queued link.
 
@@ -104,7 +108,12 @@ Recruiting mail is read to classify it, and only mail that matches an applicatio
 
 A mail can move a sent application forward or settle an unclear submission. It cannot queue, prepare or submit anything, cannot change the profile, and cannot make Rove send a message. The mail service has read-only Zoho scopes.
 
-Rove does not read or relay verification codes. Email verification of an employer account is the owner's step.
+The browser's narrow email-code broker can read a fresh code for the current step from
+the owner's Zoho mailbox. It requires an authenticated sender matching the expected
+site or its explicit mail-domain mapping and the application recipient. A familiar
+employer name in a subject or display name grants no trust. Codes stay out of model
+context, logs, screenshots and stored observations. SMS, authenticator and security-key
+verification still require the owner.
 
 ## MCP output
 
@@ -120,7 +129,8 @@ Before adding or upgrading an MCP server or skill, review what it exposes and ru
 | An Apply link to an unknown host | not followed, and the run stops for the owner |
 | A form on another host or another job | nothing is typed, and the run stops |
 | A required file that is not the resume | becomes a question for the owner |
-| A password, identity or verification-code page | no values read, no screenshot, handed to the owner |
+| A supported account or email-code page | narrowly scoped credential/code handling; no secret in model context or evidence |
+| An unsupported identity, SMS or authenticator step | handed to the owner |
 | A draft that invents an option or cites nothing | discarded or turned into a question |
 | Instruction-like lines in research or mail | dropped before the model sees them |
 | An unclear result after Submit | recorded as unclear and never retried |

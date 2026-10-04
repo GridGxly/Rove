@@ -175,7 +175,7 @@ Every stop is one card in the thread and one in an owner channel, with the repli
 
 A posting whose page says it no longer accepts applications is parked with a line in the thread and no card.
 
-Rove never solves a CAPTCHA, never completes MFA, and never types a password it did not generate itself. It uses no proxies. The one code it enters is a code a site mails to the owner's application address, read from his own mailbox as described in [Browser automation](browser-automation.md#steps-in-front-of-the-form).
+Rove attempts supported picture checks with its existing local vision model, then asks for help if the bounded attempt fails. It never completes SMS/authenticator MFA or types a password it did not generate itself. It uses no proxies. The one code it enters is a code a site mails to the owner's application address, read from his own mailbox as described in [Browser automation](browser-automation.md#steps-in-front-of-the-form).
 
 ### Where a form may be filled
 

@@ -1,6 +1,6 @@
 # Browser automation
 
-Rove fills application forms in a browser of its own: the Rove Browser, a copy of the owner's Google Chrome under its own name. Code observes the page, resolves fields from approved data, fills them, and reads the values back. Qwen is asked only about questions the approved data does not answer. It never drives the browser.
+Rove fills application forms in a browser of its own: the Rove Browser, a copy of the owner's Google Chrome under its own name. Code observes the page, resolves fields from approved data, fills them, and reads the values back. Qwen handles unresolved questions and bounded visual actions inside CAPTCHA frames. It receives no general browser execution tool.
 
 The path of a whole application, including sending, is in [Application workflow](application-workflow.md).
 
@@ -70,7 +70,7 @@ Patchright's own Chromium build, installed by `patchright install chromium`, run
 
 ### Pacing
 
-With `human_pacing` on (the default), the daemon pauses a random fraction of a second between fields, moves the pointer to a control before clicking it, types values of up to 80 characters key by key, and visits a site's front page before its first deep link. Tests turn pacing off.
+With `human_pacing` on (the default), the daemon pauses briefly before a click, moves the pointer to a control before clicking it, types values of up to 80 characters key by key, and visits a site's front page before its first deep link. Reading or verifying an unchanged field adds no pacing delay. Tests turn pacing off.
 
 ## Where applicant data may be typed
 
@@ -82,7 +82,7 @@ While the daemon drives a tab, every request the tab makes is checked: public HT
 
 `prepare` types nothing unless both of these hold:
 
-- The form's host is on the applicant-tracking list in `ATS_HOSTS` in `src/rove/live_browser.py`. The list covers Greenhouse, Lever, Ashby, Workday, Oracle Cloud, iCIMS, SmartRecruiters, Eightfold and Workable, plus employer hosts added to it in code.
+- The form's host and path match a board in `src/rove/destinations.py`. The list covers Greenhouse, Lever, Ashby, Workday, Oracle Cloud, iCIMS, SmartRecruiters, Eightfold and Workable, plus employer hosts added to it in code.
 - The page has the same job scope as the queued link. For Greenhouse the scope is the board and the job number. For Lever and Ashby it is the company and the posting. For other hosts it is the host and the job number in the path, or the path itself when there is no number.
 
 A shared applicant-tracking hostname is never enough. A form for another employer or another job on the same host does not match.
@@ -99,11 +99,11 @@ One script evaluation returns everything the next step needs:
 - application-start links, Next and Continue controls, sign-in and account controls, and final Submit controls
 - markers: a visible CAPTCHA, "already applied" wording, the Greenhouse confirmation block, Lever's success heading and verification error, and the text of visible status and validation messages
 
-A field's label is its associated label, then `aria-label`, then `aria-labelledby`, then the nearest label within four ancestors that owns no other control, then the placeholder. Radio buttons that share a name are reported as one question with options.
+A field's label follows accessible-name precedence: `aria-labelledby`, then `aria-label`, then its associated label, the nearest label within four ancestors that owns no other control, and finally the placeholder. This keeps a compound phone field's country-code selector distinct from the phone number. Radio buttons that share a name are reported as one question with options.
 
 A field counts as required when the input says so, or when its label carries a `required` class or ends in an asterisk.
 
-The values of password, hidden and file inputs are never read. On a page with a password field or a field labeled social security, passport, bank account or verification code, all field values are dropped, the text is cut short, no screenshot is taken, and the page is flagged for the owner.
+The values of password, hidden and file inputs are never read. On a page with a password field or a field labeled social security, passport, bank account or verification code, all field values are dropped, the text is cut short, and no screenshot is taken. Identity steps are flagged for the owner; an email-code step may continue through the verified mailbox flow below. Failure screenshots also inspect the current frames for secrets, including when a failure happened before the next observation.
 
 Every other observation is saved privately with a screenshot of the viewport. Page text is marked as untrusted data and cannot authorize anything.
 
@@ -139,12 +139,13 @@ A phone-type field defaults to Mobile, and the form card shows that as a default
 
 Each page is filled in one pass and then observed again.
 
-Text fields are typed and read back. The value passes when the site kept it, changed only its whitespace, or reformatted a phone number with the same last ten digits. Any other difference stops the run with a card naming the field.
+Text fields are typed and read back. The value passes when the site kept it, changed only its whitespace, or reformatted a phone field without changing its number (a US +1 prefix may be omitted). Other fields never use phone-number matching. Any other difference stops the run with a card naming the field.
 
 - A field that already holds a different value is left alone and becomes a question.
 - A US phone is typed as ten national digits first, because sites with their own country selector reject a repeated code. If a step then rejects the phone, the international form is tried once.
 - A text the site silently truncates is cut to what the field keeps, at a sentence boundary, and the form card says so.
 - A native select is set only when exactly one option matches. Country options match under the common spellings of United States.
+- Searchable dropdowns receive keyboard events and use their linked popup, including ARIA grids. A selected row must commit and close the control or expose selected-state evidence. US state names also match their [USPS abbreviations](https://pe.usps.com/text/pub28/28apb.htm); multiple matching cities remain unresolved.
 - A radio group or button group is set to the matching option and checked afterward. An option that is already selected is recorded and not toggled.
 - A long-text field is filled only from an answer stored for the application: one the owner typed, a draft the owner approved, or a draft used under the `auto_use_drafts` policy.
 
@@ -162,9 +163,9 @@ A field is treated as a picker when it is a combobox, when it has an autocomplet
 
 For an ordinary picker the daemon opens the list and selects the option whose text equals the approved value, when there is exactly one. Typing into the search box does not count as a selection. The choice is confirmed from the widget: the selected option, the displayed value, or the accessibility announcement.
 
-For a place picker the daemon types the approved city and waits for suggestions, polling for up to six seconds because these widgets geocode after a pause. It picks the suggestion that equals the approved "City, State" or "City, State, Country", or else the first one that starts with the city, preferring one that also names the state. When the suggestion list has no ARIA roles, it clicks the shortest visible suggestion that contains the city, or takes the first suggestion with the keyboard when it finds none. The pick is accepted only when the committed text names the approved city: the text in the input, or the chosen value the widget shows beside an input it emptied.
+For a place picker the daemon types the approved city and waits up to six seconds for suggestions. It requires one matching city, preferring the approved state (including its USPS abbreviation). Multiple matching counties or states remain unresolved. A popup without ARIA option roles is read within the input's linked popup or nearby container; unrelated menus cannot supply a choice. Rove never takes the first suggestion just because a wait expired. The chosen row must commit into the input or the widget's selected-value display.
 
-A picker that refuses the value becomes a question. The daemon keeps private evidence for the next fix: what it typed, the options the picker listed, what the input kept, and a screenshot.
+A picker that refuses a known value is recorded as a browser control problem. It does not ask Qwen to invent another answer. The daemon keeps private evidence for a fix: what it typed, the options the picker listed, what the input kept, and a screenshot when no secret field is present. Missing address facts also stay out of model drafting.
 
 When no value is known, the daemon opens the list once to read its options so Qwen and the owner see the real choices.
 
@@ -200,13 +201,17 @@ Some sites wire a step's Next control as a submit of that step's own form. The f
 
 Two kinds of step are not questions, and `gates.py` holds their rules.
 
-**A picture check (CAPTCHA).** Rove never solves one and never works around one. When a challenge is on screen, on the page as opened or after a Next click, the run stops with one card, "CAPTCHA needs you", and the tab stays as it is. Each worker tick then asks the daemon whether that tab still shows the challenge and whether the page has moved on since (`challenge`, which only looks). When the challenge is gone and the page moved, the application goes back to the front of the queue by itself, the card is withdrawn, and the next pass reads the tab in place instead of loading the posting again, so what the owner did there is kept. A challenge that was closed without the page moving changes nothing.
+**A picture check (CAPTCHA).** Rove tries the existing local Qwen vision model first (`captcha_solver: "local"`, the default). Only a visible frame on an allowlisted CAPTCHA provider is captured. The image stays on this Mac; the model gets no applicant profile, cookies or tokens. Code accepts only bounded click or drag coordinates inside that frame, checks that the challenge's instruction and media identities have not changed, and limits an attempt to eight rounds and 90 seconds. Animated challenges receive a bounded sequence of frames. Set `captcha_solver: "manual"` to skip the local attempt. Unsupported or unsuccessful challenges still produce one "CAPTCHA needs you" card and preserve the tab.
+
+Progress is measured by visible form identities and the site's result, not a count of inputs. Hidden CAPTCHA response textareas cannot mark a challenge solved. After Next, the browser waits for a delayed challenge and for the actual next form to render. Resuming an answer or verification hold keeps the existing application tab when it still belongs to the same job. Searchable dropdowns read their own linked grid; a shared calling code such as +1 requires an exact country match.
+
+Detection watches throughout the bounded wait after Next. A hidden response textarea appearing does not end that wait. Progress compares the URL and identities of visible form controls, excluding hidden controls, CAPTCHA fields and challenge dialogs. Closing a challenge alone does not mean it was solved. The local solver accepts a response token or a real form transition after the challenge disappears; tokens never leave the browser. The fallback watcher resumes only after a real form transition, and the log says the check cleared without guessing who solved it. Submission still requires the normal independent confirmation contract.
 
 A challenge that comes up after a Next click closes by itself when nobody answers it, so the card names the control to press ("press “Next” on this application's tab and solve the check that comes up") instead of pointing at a check that may be gone.
 
 **A tab left to the owner.** The guard that blocks form submits while Rove fills a page would also swallow the owner's own press of a Next, a Sign in or a Verify. When a run stops on a step that is his to take in the browser (a CAPTCHA, a sign-in, a manual step, a form Rove could not reach or finish, a send he makes himself), the worker asks the daemon to lift the guard on that tab's page as it stands (`hand_over`). A page loaded afterwards has the guard again. The guard is put back on every frame of a tab before any operation in which Rove drives it. The card that asks for `send it` is not such a step: that send stays Rove's.
 
-**A code mailed to the owner's application address.** A page that says it sent a code and shows the boxes for one (a single box, or four to eight one-character boxes) is a code step. The daemon reads the code from the owner's own Zoho mailbox with `mail.verification_code`: only Inbox mail that arrived after the step that asked for it, only from the site's own mail domains (the form's domain, its board's sending domain, such as `oracle.com` for `oraclecloud.com`), and only when Zoho's verdict says that domain really sent it. It waits up to two minutes, types the code into the boxes it read, presses the one control that reads as Verify or Continue, and goes on. The code is never logged, saved or posted; the thread gets one line. When no code arrives or the site refuses it, the run stops with a card and the step is the owner's. A page that says its code came by text message, a call or an authenticator app is never a code step: those stay manual.
+**A code mailed to the owner's application address.** A page that says it sent a code and shows the boxes for one (a single box, or four to eight one-character boxes) is a code step. The daemon reads the code from the owner's own Zoho mailbox with `mail.verification_code`: only Inbox mail that arrived after the step that asked for it, only from the site's own mail domains (the form's domain, its board's sending domain, such as `oracle.com` for `oraclecloud.com`), and only when Zoho's verdict says that domain really sent it. It waits up to two minutes, types the code into the boxes it read, presses the one control that reads as Verify or Continue, and goes on. A resumed request older than ten minutes may use one unique, enabled Send New Code or Resend Code button. The new request time is saved before that click, preventing a resend loop and excluding older mail. Sender display names and subjects cannot authorize an unrelated sending domain. The message's To address must match the frozen application email; another alias or missing recipient metadata is rejected. Rove requests recipient details using [Zoho's documented `includeto` option](https://www.zoho.com/mail/help/api/get-emails-list.html). The code is never logged, saved or posted; the thread gets one line. When no code arrives or the site refuses it, the run stops with a card and the step is the owner's. A page that says its code came by text message, a call or an authenticator app is never a code step: those stay manual.
 
 A page's own loading screen (no words, no buttons, a spinner or progress mark over the window) is waited out for up to fifteen seconds and is never treated as a pop-up to close.
 
@@ -230,6 +235,8 @@ The stop screenshot is also posted to the application's thread. See [Discord](di
 
 ## The synthetic fixture
 
+`rove bench fixture` runs preparation, an owner-answer hold, resume and submission against a loopback employer. Its server independently checks the transmitted field values and exact synthetic resume bytes, rejects duplicate fields and duplicate submissions, and exposes confirmation only after acceptance. The worker must also record APPLIED. Qwen, Erga and Discord are stand-ins; this measures integration and browser mechanics, not model accuracy or live service delivery.
+
 `rove smoke` is a separate, older path used for certification. It serves a synthetic form on localhost, fills ten known fields from a synthetic profile, uploads a fixture resume, and submits nothing. It does not accept real application URLs. See [Local runtime](local-runtime.md).
 
 ## Rules for changing this layer
@@ -250,8 +257,38 @@ Optimize one application before adding concurrency. One Qwen request at a time i
 
 When a page cannot be handled safely, stop for the owner.
 
-## Not built yet
+## Coverage and remaining limits
 
-- The browser layer has no timing or round-trip instrumentation. Measurements and `rove bench` are in progress.
-- Qwen is not used to recover from an unfamiliar page state. Such a state is a stop.
-- Site-specific code is limited to the job-scope rules for Greenhouse, Lever and Ashby, the Greenhouse and Lever submission adapters, and the handling of React Select dropdowns.
+A recognized board or a passing fixture does not establish complete support for every employer on it. As of the October 4, 2026 acceptance audit, the seven selected Oracle/Navy Federal applications have no confirmed submissions. The [visual benchmark](visual-benchmark.md) has no verified full-game completion.
+
+| Board | Implemented path | Evidence and limit |
+| --- | --- | --- |
+| Greenhouse, Lever | Board-specific submission verification plus shared form filling | Browser fixtures cover fields and submission evidence. This audit does not establish broad live success rates. |
+| Ashby, Workday, Oracle | Job-scope recognition plus generic form and submission handling | Synthetic coverage varies. The current live acceptance cases are Oracle; signup, session expiry and dependent location fields remain material cases. |
+| Workable, Paylocity, JazzHR, BambooHR | Versioned board modules, enabled separately in local configuration | Fixtures cover each board's controls and positive/negative submission evidence. They are not live applications. |
+| Indeed and other aggregators | Intake link resolution toward a verified employer application | No verified Indeed Easy Apply workflow. |
+| Unrecognized employer forms | Explicit destination validation and generic fallback | Unfamiliar controls or uncertain destination/receipt stop the run. No claim of universal support. |
+
+### Speed measurements and Jev
+
+The [Jev browser demo](https://github.com/browser-use/jev-ultrafast) uses compact DOM observations, dynamic action choices, fewer protocol calls and a text generator only when it needs to type. Its reported seven-second flight search begins after the initial observation and excludes important application features such as frames, uploads and popup tabs. It is not a comparable job-application benchmark.
+
+Rove already reads a form in a grouped observation and resolves known facts in code. Its October 4 live audit found a 395-second held application pass: 251 seconds of model calls and 138 seconds of browser operations. That was a failed/held pass, not a completed application. Resuming that form had incorrectly replaced the job description with form text, triggering a fresh fit review. The corrected resume reused the review in 0.03 seconds on the next observed pass; this is one phase measurement, not an end-to-end speedup claim.
+
+Known-value dropdown failures now bypass answer drafting. Verified unchanged fields incur no extra per-field pacing delay. The worker still measures real stage times and call counts through `rove bench report`; the isolated `rove bench fixture` measures code and browser work with a model stand-in. Neither report substitutes for live outcome evidence.
+
+### Recovery boundaries
+
+| Case | Current behavior |
+| --- | --- |
+| Slow rendering, late CAPTCHA or upload parsing | Bounded waits observe actual page state; hidden response fields do not count as progress. |
+| Expired application session | On the same job, try the site's exact Continue Working and Resume Application controls once each; never use Submit for recovery. |
+| Shared calling code, duplicate city names, combined postal/city rows | Use approved country/state and exact components; require one observed matching option. |
+| Unknown street address, county, legal or qualification fact | Ask for the missing fact. Model drafting cannot supply it. |
+| Browser restart or dropped connection | Reattach eligible tabs and preserve holds; uncertain sends remain blocked from retry. |
+| Lost response after Submit | Keep unknown-submission state until a receipt or explicit reconciliation settles it. |
+| Duplicate job URLs or concurrent workers | Canonical job identity and transactional submission claims prevent another send. |
+| Discord delivery outage | Preserve local state and retry recorded delivery; a channel message is not proof of employer receipt. |
+| Optional unanswered question | Leave it blank where the site's validation permits; a required question remains unresolved. |
+
+Qwen has no general browser execution tool for arbitrary unfamiliar page recovery. Assessments, unsupported widgets, unresolved visual challenges and missing facts can still interrupt the workflow. Passing the seven-job gate would validate those cases; it would not prove all job boards work.

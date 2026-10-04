@@ -94,18 +94,23 @@ def owner_only(question: dict, kind: str = "") -> bool:
     and the review and the auto-use policy refuse such drafts for the same reason. A file
     the form wants that nobody approved is the owner's too: no draft can be uploaded.
     """
-    if question.get("reason") == UNAPPROVED_FILE or kind in {"file", "password", "hidden"}:
+    if (
+        question.get("manual")
+        or question.get("reason") == UNAPPROVED_FILE
+        or kind in {"file", "password", "hidden"}
+    ):
         return True
     return questions.draft_gate({**question, "kind": kind}) is not None
 
 
 def question_kind(question: dict, field: dict | None = None) -> str:
-    """What a pending question needs: `writing`, `choice`, `short` or `owner`.
+    """What a pending item needs: writing, choice, short answer, owner or control repair.
 
-    `owner` is the only kind the model is not asked. Anything else, an unknown control
-    included, still goes to the model, so the call is skipped only when code is sure a
-    draft could not be used.
+    Known-value control failures and owner-only facts bypass drafting. Unknown controls
+    still go to the model; only a proven unusable draft is skipped.
     """
+    if question.get("control_issue"):
+        return "control"
     kind = str((field or {}).get("kind") or question.get("kind") or "")
     if owner_only(question, kind):
         return "owner"
@@ -123,7 +128,9 @@ def drafting_counts(pending: list, fields: list | None = None) -> dict:
     names = {"writing": "writing", "choice": "choices", "short": "short", "owner": "owner_only"}
     for question in pending:
         counts["questions"] += 1
-        counts[names[question_kind(question, by_key.get(question.get("key")))]] += 1
+        kind = question_kind(question, by_key.get(question.get("key")))
+        name = "control_issues" if kind == "control" else names[kind]
+        counts[name] = counts.get(name, 0) + 1
     return counts
 
 

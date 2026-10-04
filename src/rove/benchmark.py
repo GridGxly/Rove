@@ -3,6 +3,7 @@ snapshots, the per-stage report over what `timing` recorded for applications, an
 offline synthetic application that records the same stages without a model or a network."""
 
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -12,6 +13,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from email import policy
+from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -439,23 +442,70 @@ status?</label><select id="visa" name="visa" required>{YES_NO}</select></div>
 <button type="submit">Submit application</button></form><p id="error" role="alert"></p>
 <script>document.querySelector('form').addEventListener('submit', async e => {{
   e.preventDefault();
-  const r = await fetch(location.pathname, {{method: 'POST', body: '{{}}'}});
+  const r = await fetch(location.pathname, {{method: 'POST', body: new FormData(e.target)}});
   if (r.ok) {{ location.assign(location.pathname + '/done'); }}
   else {{ document.querySelector('#error').textContent = 'The form could not be sent.'; }}
 }});</script>""".encode()
 FIXTURE_DONE = b"""<!doctype html><title>Example Labs</title>
 <p>Thank you for applying to Example Labs. We received your application.</p>"""
+FIXTURE_RESUME = b"%PDF-1.4 synthetic approved resume"
+FIXTURE_ANSWERS = {
+    "first": "Alex",
+    "last": "Example",
+    "email": "alex@example.invalid",
+    "phone": "2025550147",
+    "school": "Example University",
+    "major": "Computer Science",
+    "linkedin": "https://example.invalid/alex",
+    "github": "https://example.invalid/alex-code",
+    "auth": "Yes",
+    "visa": "No",
+    "heard": "Other",
+    "team": "Platform",
+    "clearance": "No",
+    "why": "I like building small, reliable tools.",
+}
+
+
+def fixture_received(content_type: str, body: bytes) -> dict:
+    """An independent employer check of transmitted bytes, not Rove's filled-field log."""
+    message = BytesParser(policy=policy.default).parsebytes(
+        b"Content-Type: " + content_type.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body
+    )
+    fields = {}
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if not name or name in fields:
+            raise ValueError("Missing or duplicate form field")
+        fields[name] = part.get_payload(decode=True)
+    expected = {key: value.encode() for key, value in FIXTURE_ANSWERS.items()}
+    expected["resume"] = FIXTURE_RESUME
+    if fields != expected:
+        raise ValueError("Submitted fields or resume differ from the synthetic applicant")
+    return {
+        "fields": {k: v.decode() for k, v in fields.items() if k != "resume"},
+        "resume_sha256": hashlib.sha256(fields["resume"]).hexdigest(),
+    }
+
+
+class FixtureServer(ThreadingHTTPServer):
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), FixtureBoard)
+        self.receipts: list[dict] = []
+        self.receipt_lock = threading.Lock()
 
 
 class FixtureBoard(BaseHTTPRequestHandler):
     """One posting, its form and its confirmation, served on loopback only."""
+
+    server: FixtureServer
 
     def do_GET(self):
         if self.path == FIXTURE_JOB:
             body = FIXTURE_POSTING
         elif self.path == FIXTURE_JOB + "/apply":
             body = FIXTURE_FORM
-        elif self.path == FIXTURE_JOB + "/apply/done":
+        elif self.path == FIXTURE_JOB + "/apply/done" and self.server.receipts:
             body = FIXTURE_DONE
         else:
             self.send_error(404)
@@ -466,8 +516,22 @@ class FixtureBoard(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        self.send_response(200 if self.path == FIXTURE_JOB + "/apply" else 404)
+        length = int(self.headers.get("Content-Length") or 0)
+        if self.path != FIXTURE_JOB + "/apply" or not 0 < length <= 1048576:
+            self.send_error(400)
+            return
+        body = self.rfile.read(length)
+        try:
+            receipt = fixture_received(self.headers.get("Content-Type") or "", body)
+        except ValueError:
+            self.send_error(422)
+            return
+        with self.server.receipt_lock:
+            if self.server.receipts:
+                self.send_error(409)
+                return
+            self.server.receipts.append(receipt)
+        self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"ok":true}')
@@ -602,11 +666,11 @@ def run_fixture(root: Path) -> str:
     from .resumes import base_resume_manifest
 
     resume = root / "approved.pdf"
-    resume.write_bytes(b"%PDF-1.4 synthetic approved resume")
+    resume.write_bytes(FIXTURE_RESUME)
     for section, values in fixture_profile(resume).items():
         propose(section, values, digest(draft()))
     approve(digest(draft()))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureBoard)
+    server = FixtureServer()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{server.server_port}/"
 
@@ -715,6 +779,9 @@ def run_fixture(root: Path) -> str:
             if status != "APPLIED":
                 why = "; ".join(str(s.get("reason") or s.get("error") or "") for s in sent)
                 raise RuntimeError(f"The fixture application ended as {status}: {why}"[:600])
+            if len(server.receipts) != 1:
+                raise RuntimeError("The employer fixture did not receive exactly one application")
+            write_private(root / "employer-receipt.json", server.receipts[0])
             table = stage_report()
     finally:
         submission.ADAPTERS.pop(FixtureBoardV1.name, None)

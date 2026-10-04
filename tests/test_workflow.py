@@ -415,16 +415,16 @@ def test_tracking_parameters_do_not_create_duplicate_applications(state):
 def test_discord_outage_keeps_events_pending_instead_of_failing_the_run(state, monkeypatch):
     import httpx
 
+    def down(*a, **k):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(workflow, "discord", down)
     monkeypatch.setattr(
         workflow, "config", lambda: {"enabled": True, "forum_channel_id": "f", "guild_id": "g"}
     )
     application_id = workflow.enqueue("https://jobs.example.com/4")["application_id"]
     workflow.set_state(application_id, "PREPARING", thread_id="thread")
 
-    def down(*a, **k):
-        raise httpx.ConnectError("offline")
-
-    monkeypatch.setattr(workflow, "discord", down)
     workflow.record(application_id, "opened", {"url": "https://jobs.example.com/4", "title": "t"})
     workflow.flush_events(application_id)  # must not raise
     with workflow.db() as conn:
@@ -528,6 +528,37 @@ def test_application_note_is_written_to_the_vault(state, monkeypatch, tmp_path):
     )
     assert "QUEUED → NEEDS_USER" in text
     assert sync_application(application_id) == path
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [("resume", "QUEUED"), ("proceed", "QUEUED"), ("account", "QUEUED"), ("defer", "DEFERRED")],
+)
+def test_owner_lifecycle_command_updates_vault_and_records_once(
+    state, monkeypatch, command, expected
+):
+    from rove import vault, worker
+
+    monkeypatch.setattr(worker, "browser_call", lambda *a, **k: {})
+    application_id = workflow.enqueue("https://jobs.example.com/resume")["application_id"]
+    workflow.transition(application_id, "NEEDS_USER", "test hold")
+    request = {"kind": command, "application_id": application_id}
+    apply_command(request, "owner-command-1")
+    apply_command(request, "owner-command-1")
+    item = workflow.get(application_id)
+    assert item["status"] == expected
+    text = vault.note_path(item).read_text()
+    assert f"status: {expected}\n" in text
+    assert f"NEEDS_USER → {expected}" in text
+    with workflow.db() as conn:
+        events = conn.execute(
+            "SELECT data FROM application_events WHERE application_id=? AND kind='lifecycle'",
+            (application_id,),
+        ).fetchall()
+    changes = [json.loads(event["data"]) for event in events]
+    assert (
+        sum(change["from"] == "NEEDS_USER" and change["to"] == expected for change in changes) == 1
+    )
 
 
 def test_account_command_parses_and_resumes_a_held_application(state):
@@ -1320,7 +1351,8 @@ def proposals_file(state, app, answers):
     return directory
 
 
-def test_numbered_replies_bind_the_exact_question_and_draft(state):
+def test_numbered_replies_bind_the_exact_question_and_draft(state, monkeypatch):
+    monkeypatch.setattr(workflow, "discord", lambda *a, **k: {"id": "posted"})
     app = workflow.enqueue("https://jobs.example.com/numbers")["application_id"]
     workflow.set_state(app, "NEEDS_USER", thread_id="t1")
     directory = proposals_file(
@@ -1655,6 +1687,7 @@ def test_system_channel_is_looked_up_once_by_name_and_kept_in_config(state, monk
 def test_a_thread_reply_that_cannot_apply_gets_one_plain_line(state, monkeypatch):
     from rove import worker
 
+    monkeypatch.setattr(workflow, "discord", lambda *a, **k: {"id": "posted"})
     app = workflow.enqueue("https://jobs.example.com/plain")["application_id"]
     workflow.set_state(app, "NEEDS_USER", thread_id="t1")
     monkeypatch.setattr(workflow, "config", lambda: {"control_channel_id": "control"})

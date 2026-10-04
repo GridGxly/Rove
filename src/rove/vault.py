@@ -35,7 +35,7 @@ def sync_answers() -> Path | None:
     lines = [
         "# Remembered answers",
         "",
-        "Facts you answered once in Discord. Rove fills them on any later form that asks the",
+        "Answers you approved for reuse. Rove fills them on any later form that asks the",
         "same question. Edit or remove a line here and tell Rove in `#memory` to change it;",
         "the exact store is the local database.",
         "",
@@ -45,8 +45,7 @@ def sync_answers() -> Path | None:
     for row in rows:
         label = row["label"].replace("|", "/")
         lines.append(f"| {label} | {row['value'].replace('|', '/')} | {row['created_at'][:10]} |")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n")
+    atomic_private(path, "\n".join(lines) + "\n")
     return path
 
 

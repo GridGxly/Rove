@@ -1,7 +1,8 @@
 name: ci
 
-# Every job is its own required check. Each step runs one command, so a red check names
-# the command to run locally; CONTRIBUTING.md lists them all under "Checks".
+# Each job publishes a separate check. Repository branch protection or rulesets must
+# require those checks; this workflow alone does not prevent an unchecked push or merge.
+# Each step names its local command; CONTRIBUTING.md lists them under "Checks".
 
 on:
   push:

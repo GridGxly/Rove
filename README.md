@@ -142,3 +142,4 @@ Focused issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTIN
 ## Author
 
 Built by [Ralph Clavens Love Noel](https://github.com/GridGxly).
+- [Qwen visual benchmark](docs/visual-benchmark.md): recorded game attempts and the evidence required for the MVP

@@ -94,7 +94,7 @@ READING_JS = r"""
    const held=[...p.querySelectorAll('*')].filter(x=>hostsOf().has(x));
    return held.length?[...light,...held].sort((a,b)=>a===b?0:before(a,b)?-1:1):light;};
  // An input name or id is never a question: cards[..][field0], question_12345, input-17.
- const machine=t=>{t=squash(t);return !!t&&!/\s/.test(t)&&(/[\[\]{}=_]/.test(t)||/^[a-z]+[-.:]?\d+$/i.test(t)||/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t)||/^[0-9a-f]{12,}$/i.test(t));};
+ const machine=t=>{t=squash(t);return !!t&&!/\s/.test(t)&&(/[\[\]{}=_]/.test(t)||/^(?:[a-z]+[-.:]|input|question|field|control|widget|q)\d+$/i.test(t)||/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t)||/^[0-9a-f]{12,}$/i.test(t));};
  // A class that marks its element required, hashed or not: `required`, `is-required`,
  // `_required_f7cvd_91`.
  const requiredClass=c=>/(^|[\s_-])required($|[\s_-])/i.test(String(c||''));
@@ -176,14 +176,16 @@ READING_JS = r"""
  // plus the value the dropdown shows: take its heading, or its text without the widget.
  const wrapped=(l,without)=>{const head=[...l.querySelectorAll(HEADING)].find(h=>!h.querySelector(CONTROLS)&&!(without&&(without.contains(h)||h.contains(without)))&&visible(h)&&pieces(h,{own:l}).text);
    const all=pieces(l,{own:l,without});return {text:head?pieces(head,{own:l}).text:all.text,required:all.required};};
- // What the page itself ties to the control: its labels, then its ARIA name.
+ // Accessible names take precedence over a shared enclosing label. In a compound
+ // phone field, the picker is "Country code" and only the number input is "Phone".
  const ownText=e=>{let required=false;const shell=e.matches(NATIVE)?shellOf(e):null;
-   const own=[...(e.labels||[])].map(l=>{const inside=shell&&l.contains(shell)?shell:null;if(!inside&&!l.querySelector('select'))return l.innerText;const read=wrapped(l,inside);required=required||read.required;return read.text;}).join(' ').trim();
-   if(own&&!machine(own))return {text:own,required};
+   const by=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>byId(e,id)?.textContent||'').join(' ').trim();
+   if(by&&!machine(by))return {text:by};
    const aria=e.getAttribute('aria-label');
    if(aria&&!machine(aria))return {text:aria};
-   const by=(e.getAttribute('aria-labelledby')||'').split(' ').map(id=>byId(e,id)?.innerText||'').join(' ').trim();
-   return by&&!machine(by)?{text:by}:null;
+   const own=[...(e.labels||[])].map(l=>{const inside=shell&&l.contains(shell)?shell:null;if(!inside&&!l.querySelector('select'))return l.innerText;const read=wrapped(l,inside);required=required||read.required;return read.text;}).join(' ').trim();
+   if(own&&!machine(own))return {text:own,required};
+   return null;
  };
  // The value a custom dropdown shows as chosen; a prompt such as "Select..." or "--" is none.
  const PROMPT=/^\W*(select|choose|pick|please)\b/i;
@@ -412,7 +414,8 @@ FORM_STATE_JS = r"""() => {
 UNREADABLE = "A question on the form that Rove could not read"
 
 MACHINE_KEY = re.compile(
-    r"[^\s]*[\[\]{}=_][^\s]*|[a-z]+[-.:]?\d+|[0-9a-f]{8}-[0-9a-f]{4}-[^\s]*|[0-9a-f]{12,}",
+    r"[^\s]*[\[\]{}=_][^\s]*|(?:[a-z]+[-.:]|input|question|field|control|widget|q)\d+"
+    r"|[0-9a-f]{8}-[0-9a-f]{4}-[^\s]*|[0-9a-f]{12,}",
     re.IGNORECASE,
 )
 

@@ -5,6 +5,7 @@ refusing HTTP client and a DNS-free destination check; the research tests replac
 client with their own synthetic employer site.
 """
 
+import ipaddress
 from pathlib import Path
 
 import httpx
@@ -21,6 +22,38 @@ from rove import discord_feed, research
 from rove.jobs import public_link
 
 real_http_client = research.http_client
+
+
+@pytest.fixture(autouse=True)
+def local_http_only(monkeypatch):
+    """Real HTTP transports may contact fixture servers only; services need mocks."""
+    send = httpx.HTTPTransport.handle_request
+    send_async = httpx.AsyncHTTPTransport.handle_async_request
+    attempted = []
+
+    def require_local(request):
+        host = request.url.host
+        try:
+            local = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            local = host == "localhost"
+        if not local:
+            attempted.append(host)
+            raise AssertionError(f"Unmocked external HTTP request in test: {host}")
+
+    def checked(transport, request):
+        require_local(request)
+        return send(transport, request)
+
+    async def checked_async(transport, request):
+        require_local(request)
+        return await send_async(transport, request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", checked)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", checked_async)
+    yield
+    discord_feed.drop_client()
+    assert not attempted, f"Test attempted external HTTP, even if its error was caught: {attempted}"
 
 
 def offline_client() -> httpx.Client:
