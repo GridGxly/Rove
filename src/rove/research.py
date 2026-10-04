@@ -65,7 +65,20 @@ NOT_EMPLOYER_HOSTS = (
     "goo.gl",
     "bit.ly",
     "t.co",
+    # Hosts that only serve a page's images, scripts and files.
+    "ctfassets.net",
+    "cloudfront.net",
+    "amazonaws.com",
+    "googleusercontent.com",
+    "gstatic.com",
+    "akamaihd.net",
+    "cloudinary.com",
+    "imgix.net",
+    "jsdelivr.net",
+    "unpkg.com",
 )
+# Leading labels of a host that serves files, never a company's own pages.
+ASSET_LABELS = frozenset({"assets", "static", "cdn", "images", "img", "media", "files", "fonts"})
 # Leading labels that name a careers site rather than the company: dropped so
 # `careers.acme.example` researches `acme.example`.
 SITE_PREFIXES = {
@@ -189,6 +202,7 @@ def excluded(host: str) -> bool:
         or ats_vendor(host)
         or approved_ats(f"https://{host}/")
         or any(host == h or host.endswith("." + h) for h in NOT_EMPLOYER_HOSTS)
+        or host.split(".")[0] in ASSET_LABELS
     )
 
 

@@ -417,7 +417,8 @@ IDENTITY_NAMES = {
     "major": "major|field of study|what is your field of study|discipline|area of study"
     "|major field of study|major discipline|major field|academic major|primary major|your major"
     "|what is your major|degree major|course of study|program of study|major area of study"
-    "|field of study major|major field of study discipline",
+    "|field of study major|major field of study discipline|school major|college major"
+    "|university major",
     "degree": "degree|degree type|type of degree|degree level|degree program|current degree"
     "|degree level currently pursuing|degree currently pursuing|current degree level"
     "|level of degree|level of degree currently pursuing|degree level pursuing"
@@ -451,7 +452,8 @@ COMMON_NAMES = {
     "school_start": "enrollment date|enrollment start date|date of enrollment"
     "|when did you start school|when did you start at your school"
     "|when did you start at your current school|when did you start college"
-    "|when did you start university|current school start date",
+    "|when did you start university|current school start date"
+    "|start date at current school|start date at your current school",
     # When the degree applications state begins, which may lie ahead.
     "degree_start": "degree start date|start date of your degree|when did you begin your degree"
     "|school start date|school start month|college start date|university start date",
@@ -532,6 +534,7 @@ SPONSORSHIP_WORDS = _words(
     " example like legally lawfully continue be employed remain stay order obtain maintain"
     " extend extension type kind form related support opt cpt stem f1 f j1 j tn l1 l o1 o e3"
     " lawful legal from this your us u s usa united states america xplace xjobplace order"
+    " including and"
 )
 # A condition in front of the sponsorship question that does not change it: "If working in
 # the US, will you now or in the future require sponsorship?"
@@ -707,6 +710,8 @@ GRADUATION_DATE = frozenset(
         "when will you graduate",
     }
 )
+# A question about high school is its own: never answered from the college dates.
+HIGH_SCHOOL = re.compile(r"\bhigh ?school\b|\bsecondary school\b|\bged\b")
 GRADUATION_YEAR = frozenset({"graduation year", "expected graduation year", "year of graduation"})
 LOCATED_IN_US = re.compile(
     rf"are you (?:currently )?(?:located|based|residing|living)(?: and (?:located|based))? in {US}"
@@ -1144,7 +1149,8 @@ def _loose(name: str, text: str) -> dict | None:
     if not WILLINGNESS.match(text):
         # Any other question about graduating: answered only by an option that states
         # the approved graduation month.
-        return {"id": "graduation_date"} if any(w.startswith("graduat") for w in words) else None
+        about_degree = any(w.startswith("graduat") for w in words) and not HIGH_SCHOOL.search(text)
+        return {"id": "graduation_date"} if about_degree else None
     # A willingness question: which one decides the profile fact or the default.
     risky = "risky" if RISK_WORDS & set(words) else ""
     if RELOCATE.search(text):
@@ -2250,6 +2256,58 @@ BY_OPTIONS = frozenset({"degree", "major", "gpa"})
 FIRST_PAGE = 100  # Greenhouse's pickers load their lists a hundred at a time
 
 
+# Facts that are a month of a year, which a form may offer as terms ("Spring 2029").
+MONTH_FACTS = frozenset({"graduation_date", "school_start", "degree_start"})
+# The months a term's name covers. A winter term is left out: it spans two years, and
+# which one a form means cannot be told.
+TERM_MONTHS = {"spring": range(1, 7), "summer": range(6, 9), "fall": range(8, 13)}
+TERM_MONTHS["autumn"] = TERM_MONTHS["fall"]
+MONTH_NUMBERS = {
+    name: number
+    for number, names in enumerate(
+        (
+            ("january", "jan"),
+            ("february", "feb"),
+            ("march", "mar"),
+            ("april", "apr"),
+            ("may",),
+            ("june", "jun"),
+            ("july", "jul"),
+            ("august", "aug"),
+            ("september", "sep", "sept"),
+            ("october", "oct"),
+            ("november", "nov"),
+            ("december", "dec"),
+        ),
+        start=1,
+    )
+    for name in names
+}
+TERM = re.compile(r"\b([a-z]+) (20\d\d)\b")
+
+
+def months_named(label) -> set[tuple[int, int]]:
+    """The (year, month) pairs an option names: "Spring 2029", "May 2029",
+    "December 2028/January 2029". Empty when it names none this reads."""
+    found: set[tuple[int, int]] = set()
+    for word, year in TERM.findall(normalized(label)):
+        if word in MONTH_NUMBERS:
+            found.add((int(year), MONTH_NUMBERS[word]))
+        elif word in TERM_MONTHS:
+            found.update((int(year), month) for month in TERM_MONTHS[word])
+    return found
+
+
+def term_option(labels: list[str], values: list) -> str | None:
+    """The one option whose term or span of months holds the approved month. `values`
+    opens with the month written out ("May 2029"), as `month_fact` gives it."""
+    wanted = months_named(values[0]) if values else set()
+    if len(wanted) != 1:
+        return None
+    holding = [label for label in labels if wanted <= months_named(label)]
+    return holding[0] if len(holding) == 1 else None
+
+
 def authorized_as_citizen(labels: list[str], profile: dict) -> str | None:
     """Among several "yes" options that say how he is authorized to work, the one for a
     citizen, when the approved profile says he is one. Any other way is his to pick."""
@@ -2283,6 +2341,10 @@ def choose(
         return gpa_choice(labels, values[0], scale)
     if canonical in {"class_standing", "enrollment_status"}:
         return first_listed(labels, values)  # the closest wording first
+    if canonical in MONTH_FACTS:
+        term = term_option(labels, values)
+        if term is not None:
+            return term
     if canonical == "work_authorization_us" and values == ["Yes"]:
         as_citizen = authorized_as_citizen(labels, profile)
         if as_citizen is not None:

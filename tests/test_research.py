@@ -116,6 +116,17 @@ def test_an_ats_posting_without_an_employer_link_gets_no_research(state, monkeyp
     assert not (state / "vault/Rove/Research").exists()
 
 
+def test_a_host_that_only_serves_files_is_never_the_employers_site():
+    # What a live posting did: its only link off the board was an image on a file host.
+    board = "https://jobs.ashbyhq.com/northwind/1234"
+    text = "About us https://assets.ctfassets.net/abc/logo.png and https://d1x2y3.cloudfront.net/hero.jpg"
+    assert research.employer_site(text, board) == ""
+    assert research.employer_site(text + " https://www.northwind.example/about", board) == (
+        "northwind.example"
+    )
+    assert research.employer_site("See https://static.northwind.example/brochure.pdf", board) == ""
+
+
 def test_employer_site_prefers_the_posting_host_unless_it_is_an_ats_or_a_board():
     assert research.employer_site("", "https://careers.acme.example/jobs/42") == "acme.example"
     assert research.employer_site("", "https://www.acme.example/jobs/42") == "acme.example"

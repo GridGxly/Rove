@@ -737,3 +737,61 @@ def test_a_new_pass_decides_again_what_an_earlier_pass_left_blank(state):
     with workflow.db() as conn:
         kept = [r[0] for r in conn.execute("SELECT field_key FROM application_answers ORDER BY 1")]
     assert kept == ["k2", "k3"]
+
+
+# --- 10. a third live form: terms for months, and what is not the degree's --------------------
+TERMS = [
+    "December 2026/January 2027",
+    "Spring 2027",
+    "December 2027/January 2028",
+    "Spring 2028",
+    "December 2028/January 2029",
+    "Spring 2029",
+    "Other",
+]
+
+
+def test_a_graduation_month_is_matched_to_the_term_or_span_that_holds_it():
+    label = "Graduation date or expected graduation date:"
+    spring = {**OWNER, "education": {"schools": [{**UNIVERSITY, "graduation_month": "2029-05"}]}}
+    value, source = answer(label, TERMS, profile=spring)
+    assert value == "Spring 2029" and source.endswith(".graduation_month")
+    winter = {**OWNER, "education": {"schools": [{**UNIVERSITY, "graduation_month": "2027-12"}]}}
+    assert answer(label, TERMS, profile=winter)[0] == "December 2027/January 2028"
+    # A month no option holds, or one two options hold, is not guessed.
+    summer = {**OWNER, "education": {"schools": [{**UNIVERSITY, "graduation_month": "2029-08"}]}}
+    assert answer(label, TERMS, profile=summer) == (None, None)
+    both = ["Spring 2029", "May 2029", "Other"]
+    assert answer(label, both, profile=spring)[0] == "May 2029"  # the month itself, exactly
+    assert (
+        questions.term_option(["Spring 2029", "Spring/Summer 2029 (May 2029)"], ["May 2029"])
+        is None
+    )
+    assert questions.months_named("Winter 2029") == set()
+
+
+def test_high_school_is_never_answered_from_the_college_dates():
+    label = "What year did you graduate high school?"
+    years = [str(Y - 2), str(Y - 1), str(Y), str(Y + 3), "Other"]
+    assert classify(label).canonical_id != "graduation_date"
+    assert answer(label, years) == (None, None)  # UNIVERSITY graduates in Y + 3
+
+
+def test_board_wordings_of_major_school_start_and_future_sponsorship():
+    assert classify("School Major:").canonical_id == "major"
+    assert classify("Start Date at Current School:").canonical_id == "school_start"
+    label = (
+        "Will you need sponsorship at any point in the future to maintain lawful employment "
+        "in the United States (including CPT and OPT)?"
+    )
+    no_need = {
+        **OWNER,
+        "eligibility": {
+            **OWNER["eligibility"],
+            "sponsorship_now": False,
+            "sponsorship_future": False,
+        },
+    }
+    assert answer(label, YES_NO, profile=no_need) == ("No", "eligibility.sponsorship_future")
+    unknown = {**OWNER, "eligibility": {**OWNER["eligibility"], "sponsorship_future": None}}
+    assert answer(label, YES_NO, profile=unknown) == (None, None)
