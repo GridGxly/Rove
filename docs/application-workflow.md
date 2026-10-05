@@ -373,7 +373,7 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 
 ## Limits
 
-The seven selected validation jobs still have zero confirmed submissions, and the visual stress test has zero verified full-game completions. The October 4 Oracle debugging passes demonstrated email-code retrieval and acceptance, then encountered form-control failures. No Submit attempt was made. These observations do not establish autonomous end-to-end success.
+The seven selected validation jobs still have zero confirmed submissions. The October 4 Oracle debugging passes demonstrated email-code retrieval and acceptance, then encountered form-control failures. No Submit attempt was made. These observations do not establish autonomous end-to-end success.
 
 - Forms are filled only on boards in the table and on hosts the owner let in, and only for the same job as the queued link (see [Where a form may be filled](#where-a-form-may-be-filled)). A posting on an employer page whose Apply control leads to a board's own job page, not an embed, is not yet matched to that job and stops for the owner.
 - `lever_v1`'s handling of a CAPTCHA-rejected send follows Lever's reported wording and has not been observed in a live run. Lever's inline field messages use a class the shared error read does not cover, so a Lever form kept open by a field error without the verification sentence is recorded as unclear.

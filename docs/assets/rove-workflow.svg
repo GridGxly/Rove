@@ -70,5 +70,5 @@
 
   <rect x="64" y="737" width="1312" height="110" rx="18" fill="#342e24" stroke="#8c7547"/>
   <text x="92" y="776" style="font-size:19px;font-weight:650;fill:#f3d49e">IMPLEMENTED DOES NOT MEAN VERIFIED END TO END</text>
-  <text x="92" y="817" style="font-size:22px;fill:#f3d49e">0 verified full-game completions · 0 confirmed submissions for the seven selected validation jobs</text>
+  <text x="92" y="817" style="font-size:22px;fill:#f3d49e">0 confirmed submissions for the seven selected validation jobs</text>
 </svg>

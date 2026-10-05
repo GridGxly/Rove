@@ -18,7 +18,6 @@ Rove is a personal, local-first recruiting system. It is not a hosted service.
 - [Getting started](getting-started.md): the setup steps in order
 - [Local runtime](local-runtime.md): tested versions, model and Hermes settings, verification commands
 - [Runtime measurements](runtime-benchmarks.md): what was measured on the reference Mac
-- [Qwen visual benchmark](visual-benchmark.md): actual game attempts, failures, evidence, and the MVP acceptance gate
 - [Will this run on my machine?](hardware-check.md): a prompt for checking other hardware
 - [Onboarding and jobs](onboarding-and-jobs.md): the profile interview, approval, the job catalog and the Hermes tool list
 

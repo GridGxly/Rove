@@ -276,7 +276,7 @@ When a page cannot be handled safely, stop for the owner.
 
 ## Coverage and remaining limits
 
-A recognized board or a passing fixture does not establish complete support for every employer on it. As of the October 4, 2026 acceptance audit, the seven selected Oracle/Navy Federal applications have no confirmed submissions. The [visual benchmark](visual-benchmark.md) has no verified full-game completion.
+A recognized board or a passing fixture does not establish complete support for every employer on it. As of the October 4, 2026 acceptance audit, the seven selected Oracle/Navy Federal applications have no confirmed submissions.
 
 | Board | Implemented path | Evidence and limit |
 | --- | --- | --- |

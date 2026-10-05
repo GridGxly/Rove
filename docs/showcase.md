@@ -2,7 +2,7 @@
 
 Rove brings the application workflow onto your machine: intake, evidence-backed preparation, a dedicated recruiting browser, owner decisions, and an exact record of the result. Discord is the control surface. Qwen handles judgment; code owns permissions, validation, and submission.
 
-**This is a pre-alpha walkthrough. There are zero verified full-game completions and zero confirmed submissions for the seven selected validation jobs.**
+**This is a pre-alpha walkthrough. There are zero confirmed submissions for the seven selected validation jobs.**
 
 ![Illustration of Rove's application workflow](assets/rove-workflow.svg)
 
@@ -56,7 +56,7 @@ That command uses synthetic state and stand-ins, requires no model server, and d
 
 | Area | Current evidence and limit |
 | --- | --- |
-| Qwen visual recognition | Recorded attempts contain rejected answers and premature completion claims. Zero verified full-game completions. See the [original records](visual-benchmark.md). |
+| Qwen visual recognition | The local picture-check solver remains experimental. An unresolved challenge needs the owner; reliable autonomous completion has not been established. |
 | Browser and control behavior | The live Oracle attempt accepted an email verification code, then stopped on form controls. Fixture regressions exercise specific controls; live recovery is still unverified. |
 | Approved applicant facts | An unknown required fact needs the owner's answer. Model inference and public research cannot supply it. |
 | Outcome verification | None of the seven selected validation jobs has a confirmed submission. Employer confirmation, durable records, Discord delivery, recruiting mail, and vault notes still need to agree. |

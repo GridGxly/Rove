@@ -6,7 +6,7 @@ name: ci
 
 on:
   push:
-    branches: [main, docs-initial-setup]
+    branches: [main, mvp]
   pull_request:
   workflow_dispatch:
 

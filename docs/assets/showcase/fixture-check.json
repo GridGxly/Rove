@@ -22,7 +22,6 @@
     "matches_synthetic_fixture": true
   },
   "real_submissions_for_seven_selected_jobs": 0,
-  "verified_full_game_completions": 0,
   "captured_on": "2026-10-04",
   "source_commit": "1d6b163b0e9e06d885004168e4e601ea1c302da5",
   "initial_capture_check": "failed assertion: expected a processed outbox row to remain; original run and artifacts preserved privately",

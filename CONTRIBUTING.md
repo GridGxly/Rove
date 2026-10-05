@@ -52,7 +52,7 @@ Optional integrations should stay optional.
 ## Setup
 
 ```bash
-git clone --branch docs-initial-setup https://github.com/GridGxly/Rove.git
+git clone --branch mvp https://github.com/GridGxly/Rove.git
 cd Rove
 uv sync --frozen --python 3.12
 ```
@@ -61,7 +61,7 @@ As implementation lands, keep verified test commands here or in [Getting started
 
 ## Checks
 
-Pushes to `main` and `docs-initial-setup`, and every pull request, run
+Pushes to `main` and `mvp`, and every pull request, run
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Each job below publishes a
 separate check. GitHub branch protection or a ruleset must require those checks before
 merging; the workflow file alone does not enforce that. Run `uv sync` first; the browser

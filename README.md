@@ -11,13 +11,13 @@
   <img src="https://img.shields.io/badge/status-pre--alpha-F2A93B.svg" alt="Pre-alpha" />
   <img src="https://img.shields.io/badge/python-3.12%2B-3776AB.svg" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-171717.svg" alt="macOS Apple Silicon" />
-  <a href="https://github.com/GridGxly/Rove/actions/workflows/ci.yml"><img src="https://github.com/GridGxly/Rove/actions/workflows/ci.yml/badge.svg?branch=docs-initial-setup" alt="CI" /></a>
+  <a href="https://github.com/GridGxly/Rove/actions/workflows/ci.yml"><img src="https://github.com/GridGxly/Rove/actions/workflows/ci.yml/badge.svg?branch=mvp" alt="CI" /></a>
 </p>
 
 <p align="center">
   <a href="docs/showcase.md">Visual walkthrough</a> ·
   <a href="docs/getting-started.md">Set it up</a> ·
-  <a href="docs/visual-benchmark.md">Recorded results</a>
+  <a href="docs/application-workflow.md#limits">Current limits</a>
 </p>
 
 > **Pre-alpha.** The real end-to-end acceptance gate remains unmet. The walkthrough shows a synthetic fixture; it does not establish reliable employer submissions or Qwen visual reasoning.
@@ -83,7 +83,6 @@ Qwen handles judgment: job fit, unfamiliar questions, written answers, and mail 
 - [Requirements](docs/requirements.md): the full install checklist and configuration keys
 - [Getting started](docs/getting-started.md): setup in order
 - [Visual walkthrough](docs/showcase.md): a synthetic application and the evidence behind it
-- [Qwen visual benchmark](docs/visual-benchmark.md): recorded failures and the evidence required for the MVP
 - [Security](SECURITY.md) and [Prompt injection](docs/prompt-injection.md): the trust model
 
 The rest is listed in [docs/README.md](docs/README.md).
@@ -131,12 +130,12 @@ Read [SECURITY.md](SECURITY.md), [Browser automation](docs/browser-automation.md
 Rove is pre-alpha and has no one-command installer.
 
 ```bash
-git clone --branch docs-initial-setup https://github.com/GridGxly/Rove.git
+git clone --branch mvp https://github.com/GridGxly/Rove.git
 cd Rove
 uv sync --frozen --python 3.12
 ```
 
-`docs-initial-setup` contains the current pre-alpha implementation; `main` may lag while changes are under review. Then follow [Getting started](docs/getting-started.md). Start with synthetic data and leave submission off until preparation works on your machine.
+`mvp` contains the current implementation being validated; `main` may lag while changes are under review. Then follow [Getting started](docs/getting-started.md). Start with synthetic data and leave submission off until preparation works on your machine.
 
 If you want the original recruiting assistant without browser auto-application, use [Erga](https://github.com/Adr1an04/erga-mcp) directly.
 
@@ -144,7 +143,7 @@ If you want the original recruiting assistant without browser auto-application, 
 
 Rove runs my own search on one Mac. The pieces above are implemented and covered by an offline test suite. These limits matter most:
 
-The MVP acceptance gate is still unmet: zero verified full-game completions and zero confirmed submissions for the seven selected validation jobs. The latest Oracle test retrieved and accepted an email verification code, then stopped on form controls. It did not submit. Offline fixture success and local inference checks do not establish real application completion.
+MVP application validation remains incomplete: zero confirmed submissions for the seven selected validation jobs. The latest Oracle test retrieved and accepted an email verification code, then stopped on form controls. It did not submit. Offline fixture success and local inference checks do not establish real application completion.
 
 - Forms are filled only on a fixed list of applicant-tracking hosts, and only when the form belongs to the same job as the queued link.
 - Public Greenhouse, public Lever and generic page-confirmation adapters are available, with additional board modules enabled separately in local configuration. Their fixtures establish specific behavior, not broad live success rates. Where no enabled adapter matches, Rove fills the form and I press Submit.

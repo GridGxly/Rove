@@ -18,7 +18,7 @@ node --version           # 22 or newer, for QMD
 ## 2. Clone and install
 
 ```bash
-git clone --branch docs-initial-setup https://github.com/GridGxly/Rove.git
+git clone --branch mvp https://github.com/GridGxly/Rove.git
 cd Rove
 uv sync --frozen --python 3.12
 uv run patchright install chromium
@@ -28,7 +28,7 @@ The last command installs Patchright's Chromium build. The synthetic fixture and
 
 Keep hardware-specific changes in your own clone or fork.
 
-Use `docs-initial-setup` for the current pre-alpha implementation; `main` may lag while changes are under review. `--frozen` uses the dependency versions checked into this branch.
+Use `mvp` for the current implementation being validated; `main` may lag while changes are under review. `--frozen` uses the dependency versions checked into this branch.
 
 ## 3. Keep live data outside Git
 
