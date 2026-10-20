@@ -2424,6 +2424,8 @@ def status() -> dict:
 
 def field_key(field: dict) -> str:
     identity = {k: field.get(k) for k in ("label", "name", "id", "kind", "options")}
+    if field.get("education_profile_index") is not None:
+        identity["education_profile_index"] = field["education_profile_index"]
     name, element_id = field.get("name"), field.get("id")
     # Oracle redraws fields as lastName-15, lastName-27, etc. The declared field name
     # still identifies the same question; a render counter must not discard answers.

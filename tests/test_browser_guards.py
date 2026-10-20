@@ -2524,6 +2524,26 @@ def test_a_reconnect_keeps_an_unclear_sends_tab_and_every_tab_rove_did_not_open(
         assert runtime.pages[unclear["run_id"]].url == site + "/acme/jobs/620"
 
 
+def test_reconnect_never_closes_an_unmatched_unknown_submission_tab(
+    board, site, monkeypatch, tmp_path
+):
+    runtime, _base, _state = board
+    Site.pages["/acme/jobs/622"] = live.FORM
+    Site.pages["/search"] = b"<title>Search jobs</title><p>Session expired</p>"
+    monkeypatch.setattr(live_browser, "same_job", lambda a, b: urlsplit(a).path == urlsplit(b).path)
+    with running_chrome(runtime, tmp_path):
+        monkeypatch.setattr(workflow, "system_line", lambda app, text: None)
+        opened = ask_daemon(runtime, action="open", url=site + "/acme/jobs/622")["result"]
+        workflow.set_state(opened["run_id"], "UNKNOWN_SUBMISSION")
+        runtime.page.goto(site + "/search")
+        runtime.playwright.stop()
+        answer = ask_daemon(runtime, action="observe", run_id=opened["run_id"])
+        assert "error" in answer  # cannot attribute the search page as an application form
+        assert any(p.url == site + "/search" for p in runtime.context.pages if not p.is_closed())
+        assert workflow.get(opened["run_id"])["status"] == "UNKNOWN_SUBMISSION"
+        assert Site.posts == []
+
+
 def runtime_executable() -> str:
     from patchright.sync_api import sync_playwright
 

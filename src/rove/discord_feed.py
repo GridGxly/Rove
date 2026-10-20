@@ -14,7 +14,7 @@ import httpx
 from . import timing
 from .jobs import database, identity_key, sync_keryx
 from .onboarding import read_approved
-from .runtime import state_root, write_private
+from .runtime import on_hold, refuse_on_hold, state_root, write_private
 
 
 def private_env() -> dict:
@@ -127,6 +127,7 @@ def _replayable(method: str, payload, error: httpx.TransportError) -> bool:
 def _request(method: str, path: str, *, payload=None, send=None) -> httpx.Response:
     """One Discord request through the shared client: a stale connection is replaced once,
     a definite rate limit is waited out up to three times, anything else is the caller's."""
+    refuse_on_hold("Discord")
     token = private_env().get("DISCORD_BOT_TOKEN")
     if not token:
         raise ValueError("Discord bot credential is missing")
@@ -374,6 +375,8 @@ def checked_sync() -> tuple[dict | None, Exception | None]:
 def tick(seed: bool = False) -> dict:
     from . import alerts, intake
 
+    if on_hold():
+        return {"held": True}
     config = json.loads((state_root() / "config/feed.json").read_text())
     if not config.get("enabled"):
         return {"enabled": False}

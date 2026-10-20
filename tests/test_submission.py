@@ -596,6 +596,19 @@ def test_preflight_accepts_only_the_reviewed_unchanged_form(state):
         submission.preflight(application_id, package["package_hash"], current)
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["A required field is empty", "You have 4 issues that need to be fixed before you can submit."],
+)
+def test_preflight_refuses_visible_validation_errors_even_on_an_unchanged_form(state, message):
+    application_id, package, current = ready_application(state)
+    current["ats_markers"] = {"form_error": message}
+    with pytest.raises(PermissionError, match="validation"):
+        submission.preflight(application_id, package["package_hash"], current)
+    with workflow.db() as conn:
+        assert not conn.execute("SELECT 1 FROM live_submission_attempts").fetchone()
+
+
 def test_claim_needs_exact_owner_approval_and_never_repeats(state):
     application_id, package, _current = ready_application(state)
     package_hash = package["package_hash"]

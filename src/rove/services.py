@@ -1,11 +1,14 @@
 """Install the local browser and deterministic feed services on macOS."""
 
+import contextlib
+import json
 import os
 import plistlib
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
-from .runtime import state_root
+from .runtime import hold_path, on_hold, state_root, write_private
 
 SERVICE_PATH = str(Path.home() / ".local/bin") + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -18,6 +21,8 @@ SERVICES = [
     ("workflow", ["workflow", "tick"], 30),
     ("mail", ["mail", "tick"], 900),
 ]
+# The Hermes gateway is the Discord bot; a hold stops it with Rove's own services.
+GATEWAY = "ai.hermes.gateway"
 
 
 def install():
@@ -78,3 +83,55 @@ def install():
             }
         )
     return result
+
+
+def labels() -> list[str]:
+    return ["dev.rove." + name for name, _, _ in SERVICES] + [GATEWAY]
+
+
+def launchctl(*args: str) -> subprocess.CompletedProcess:
+    command = ["/bin/launchctl", *args]
+    return subprocess.run(command, capture_output=True, check=False)  # noqa: S603 -- own labels
+
+
+def loaded(label: str) -> bool:
+    return launchctl("print", f"gui/{os.getuid()}/{label}").returncode == 0
+
+
+def hold(action: str) -> dict:
+    """Put every service on hold, take it off, or report it.
+
+    `on` writes the hold file first, so a tick that starts during the stop already does
+    nothing, then disables and unloads each launchd agent so none returns at login, and
+    stops the local model. `off` removes the file before loading the agents again, so the
+    browser service does not start, see the hold and exit. The private config switches
+    (`enabled` in workflow, feed and mail) are left as they are either way.
+    """
+    domain = f"gui/{os.getuid()}"
+    if action == "on":
+        if not on_hold():
+            write_private(hold_path(), {"since": datetime.now(UTC).isoformat()})
+        for label in labels():
+            launchctl("disable", f"{domain}/{label}")
+            launchctl("bootout", f"{domain}/{label}")
+        omlx = Path.home() / ".omlx/bin/omlx"
+        if omlx.is_file():
+            subprocess.run([str(omlx), "stop"], capture_output=True, check=False)  # noqa: S603 -- fixed path
+    elif action == "off":
+        hold_path().unlink(missing_ok=True)
+        agents = Path.home() / "Library/LaunchAgents"
+        for label in labels():
+            path = agents / (label + ".plist")
+            if path.exists():
+                launchctl("enable", f"{domain}/{label}")
+                if not loaded(label):
+                    launchctl("bootstrap", domain, str(path))
+    since = None
+    if on_hold():
+        with contextlib.suppress(ValueError, OSError):
+            since = json.loads(hold_path().read_text()).get("since")
+    return {
+        "held": on_hold(),
+        "since": since,
+        "services": {label: "running" if loaded(label) else "stopped" for label in labels()},
+    }

@@ -279,6 +279,17 @@ Each agent runs the checkout's `.venv/bin/rove` with a fixed `PATH` and `ROVE_ST
 
 Each timed service checks its own switch on every run, so an installed service does nothing until its config file enables it.
 
+### Putting everything on hold
+
+`uv run rove hold on` stops Rove completely. It writes `config/hold` in the state root, then disables and unloads the four agents above plus the Hermes gateway (`ai.hermes.gateway`, the Discord bot), so none comes back at login, and stops the local model. While the file exists:
+
+- every tick returns `{"held": true}` before it reads any config
+- the browser service exits at start
+- every Discord request, read or post, every Zoho token refresh and every local-model request is refused in code
+- `rove start`, `rove install-services`, `rove gateway start|restart` and `rove model start|restart` refuse to run
+
+`uv run rove hold off` removes the file, then enables and loads the agents again. It does not change the `enabled` switches in the workflow, feed or mail config. If you turned those off, turn them back on separately. `uv run rove hold status` shows whether the hold is on, since when, and which agents are loaded.
+
 The browser service needs the Rove Browser, built once with `uv run rove browser install` from your installed Google Chrome. The copy lives at `browser/Rove Browser.app` in the state root and is rebuilt by the daemon when Chrome updates. [Browser automation](browser-automation.md#the-rove-browser) describes what the copy changes and what it keeps.
 
 ## Hermes

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 
-from .runtime import MODEL, client
+from .runtime import MODEL, client, on_hold
 
 
 def gateway(action: str):
@@ -70,6 +70,8 @@ def main():
     memory.add_argument("action", choices=["index", "search"])
     memory.add_argument("--query", default="")
     sub.add_parser("install-services")
+    held = sub.add_parser("hold", help="stop every service and outbound call, or start them again")
+    held.add_argument("action", choices=["on", "off", "status"])
     live = sub.add_parser("browser")
     live.add_argument(
         "action", choices=["serve", "status", "open", "observe", "prepare", "install"]
@@ -91,6 +93,16 @@ def main():
     mail.add_argument("--days", type=int, default=7, help="recheck: how far back to read again")
     sub.add_parser("doctor", help="read-only health check, one line per check")
     args = parser.parse_args()
+    starts = args.command in {"start", "install-services"} or (
+        args.command in {"gateway", "model"} and args.action in {"start", "restart"}
+    )
+    if starts and on_hold():
+        parser.error("Rove is on hold; run `rove hold off` first")
+    if args.command == "hold":
+        from .services import hold
+
+        print(json.dumps(hold(args.action), indent=2))
+        return
     if args.command == "doctor":
         from .doctor import main as doctor
 
@@ -128,6 +140,8 @@ def main():
         from .live_browser import browser_call, serve
 
         if args.action == "serve":
+            if on_hold():
+                print("Rove is on hold; the browser service stays off until `rove hold off`")
             serve()
         elif args.action == "install":
             from .browser_app import install

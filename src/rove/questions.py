@@ -2059,7 +2059,7 @@ def education_date(
     graduation months of the entry the block states (the first block states the entry
     applications state). A start that lies ahead is given as it is. The start of the
     school he attends now may also be the owner's earlier answer."""
-    index, school = education.entry_for_block(profile, education.block_index(field)) or NO_ENTRY
+    index, school = education.entry_for_field(profile, field) or NO_ENTRY
     if school is None:
         return None, None
     edge, unit = part
@@ -2503,6 +2503,8 @@ def block_entry(field: dict, question: Question, profile: dict) -> tuple | None:
     school of the owner's, None when the field is not in a numbered or repeated block."""
     if not question.known or question.canonical_id not in BLOCK_IDS:
         return None
+    if field.get("education_profile_index") is not None:
+        return education.entry_for_field(profile, field) or NO_ENTRY
     index = education.block_index(field)
     if index is None:
         return None
@@ -2522,6 +2524,9 @@ def resolve(
     label, kind = field.get("label") or "", field.get("kind") or ""
     if field.get("label_missing"):
         return None, None
+    card_status = education.card_status(field, profile)
+    if card_status is not None:
+        return card_status
     labels = option_labels(field.get("options"))
     unread = picker and not labels
     part = education_part(field)
@@ -2535,7 +2540,9 @@ def resolve(
         return None, None
     loose = question.sensitivity == PLAIN
     entry = block_entry(field, question, profile)
-    if (part or entry is not None) and education.block_index(field):
+    if field.get("education_profile_index") is not None or (
+        (part or entry is not None) and education.block_index(field)
+    ):
         # A later education block states another school: what the owner said for the
         # first never fills it.
         recall = None

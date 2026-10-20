@@ -184,9 +184,11 @@ def read_grid_picker(reader, label, rows):
         "for(const text of "
         + json.dumps(rows)
         + ') {const row=document.createElement("div");row.setAttribute("role","row");'
+        "row.onmousedown=e=>e.preventDefault();"
+        "if(!text.toLowerCase().startsWith(input.value.toLowerCase()))continue;"
         "row.textContent=text;row.onclick=()=>{document.body.dataset.picked=text;"
         'input.value=text;grid.innerHTML="";input.setAttribute("aria-expanded","false");};'
-        "grid.appendChild(row);}};input.onfocus=draw;input.onkeyup=draw;"
+        'grid.appendChild(row);}};input.onfocus=draw;input.onkeyup=e=>{if(e.key!=="Tab")draw();};'
         'input.onkeydown=e=>{if(e.key==="ArrowDown")draw();};</script>'
     )
 
@@ -200,6 +202,64 @@ def test_unknown_linked_grid_reads_its_decline_option_before_asking_the_owner(re
     ]
     assert reader.page.locator("body").get_attribute("data-picked") == "Prefer not to say"
     assert reader.page.locator("body").get_attribute("data-unrelated") is None
+
+
+def test_repeated_preparation_reselects_a_grid_it_reopened_to_read_choices(reader, approved):
+    seen = read_grid_picker(reader, "Gender", ["Female", "Male", "Prefer not to say"])
+    for _ in range(2):
+        filled, pending = reader._fill_page(reader.run["id"], seen, approved, {})
+        assert not pending and filled[0]["value"] == "Prefer not to say"
+        seen = reader.observe()
+        assert seen["fields"][0]["selected"] == "Prefer not to say"
+
+
+@pytest.mark.parametrize(
+    "change", ["typed", "replaced", "opened", "reclosed", "invalid", "changed", "forgotten"]
+)
+def test_required_grid_selection_is_observed_until_its_control_changes(reader, approved, change):
+    seen = read_grid_picker(reader, "Gender", ["Female", "Male", "Prefer not to say"])
+    filled, pending = reader._fill_page(reader.run["id"], seen, approved, {})
+    assert not pending and filled[0]["value"] == "Prefer not to say"
+    assert reader.observe()["fields"][0]["selected"] == "Prefer not to say"
+    control = reader.page.locator("input")
+    if change == "typed":
+        control.fill("Prefer not to say")
+    elif change == "replaced":
+        control.evaluate("e=>e.replaceWith(e.cloneNode(true))")
+    elif change == "reclosed":
+        control.evaluate(
+            "e=>{e.setAttribute('aria-expanded','true');e.setAttribute('aria-expanded','false');}"
+        )
+    elif change == "invalid":
+        control.evaluate("e=>e.setAttribute('aria-invalid','true')")
+    elif change == "changed":
+        control.evaluate("e=>e.value='Male'")
+    elif change == "forgotten":
+        reader.selections.forget(reader.run["id"])
+    else:
+        control.evaluate("e=>e.setAttribute('aria-expanded','true')")
+    assert reader.observe()["fields"][0]["selected"] is None
+
+
+def test_typed_grid_value_or_forged_page_marker_is_not_a_verified_selection(reader):
+    reader.read("""<label>Gender<input role="combobox" aria-expanded="false"
+        value="Prefer not to say" data-rove-selected="Prefer not to say" required></label>""")
+    assert reader.observe()["fields"][0]["selected"] is None
+
+
+@pytest.mark.parametrize("notification", ["blur_change", "closed_again", "tab"])
+def test_grid_selection_survives_notifications_that_do_not_edit_it(reader, approved, notification):
+    seen = read_grid_picker(reader, "Gender", ["Female", "Male", "Prefer not to say"])
+    filled, pending = reader._fill_page(reader.run["id"], seen, approved, {})
+    assert not pending and filled[0]["value"] == "Prefer not to say"
+    control = reader.page.locator("input")
+    if notification == "blur_change":
+        control.evaluate("e=>e.dispatchEvent(new Event('change',{bubbles:true}))")
+    elif notification == "closed_again":
+        control.evaluate("e=>e.setAttribute('aria-expanded','false')")
+    else:
+        control.press("Tab")
+    assert reader.observe()["fields"][0]["selected"] == "Prefer not to say"
 
 
 def test_numbered_month_answer_commits_the_named_month_option(reader):
@@ -258,6 +318,65 @@ def test_reordered_options_still_click_the_observed_label(reader):
     assert reader.page.locator("body").get_attribute("data-picked") == "Expected"
     reader.page.locator("#first").evaluate("e=>e.textContent='Expected'")
     assert pickers.exact_row(reader.page.get_by_role("option"), "Expected") is None
+
+
+@pytest.mark.parametrize(
+    ("replacement", "accepted"),
+    [
+        (["Springfield, Second, KS", "Another City, Second, KS"], True),
+        (["Springfield, First, KS"], False),
+        (["Springfield, Second, KS", "Springfield, Second, KS"], False),
+    ],
+)
+def test_picker_reacquires_a_replaced_linked_popup(reader, replacement, accepted):
+    import json
+
+    seen = reader.read(
+        """<label>City *<input id="city" role="combobox" aria-autocomplete="list"
+          aria-controls="cities" aria-expanded="false"></label>
+        <div role="option" onclick="document.body.dataset.unrelated='clicked'">
+          Springfield, Second, KS</div><div id="cities"></div><script>
+        const input=document.querySelector('input'); let replaced=false;
+        const draw=(id,texts,refresh)=>{
+          document.querySelector('#'+input.getAttribute('aria-controls')).remove();
+          const popup=document.createElement('div');popup.id=id;document.body.append(popup);
+          input.setAttribute('aria-controls',id);input.setAttribute('aria-expanded','true');
+          for(const text of texts){
+            const row=document.createElement('div');row.setAttribute('role','option');
+            row.textContent=text;
+            row.onclick=()=>{document.body.dataset.picked=text;input.value=text;
+              popup.remove();input.setAttribute('aria-expanded','false');};
+            // Reproduce a popup replacement between reading options and selecting a row.
+            if(refresh)Object.defineProperty(row,'textContent',{get(){
+              if(!replaced){replaced=true;queueMicrotask(()=>draw('replacement',"""
+        + json.dumps(replacement)
+        + """,false));}return text;
+            }});
+            popup.append(row);
+          }
+        };
+        input.onkeyup=()=>draw('cities',['Springfield, Second, KS'],true);
+        </script>"""
+    )
+    profile = {
+        "identity": {
+            "city": "Springfield",
+            "state_region": "Kansas",
+            "country": "United States",
+            "county": "Second",
+        }
+    }
+    result = reader.select_combobox(
+        reader.page.locator("input"), seen["fields"][0], "Springfield", profile
+    )
+    assert result is accepted
+    assert reader.page.locator("body").get_attribute("data-picked") == (
+        "Springfield, Second, KS" if accepted else None
+    )
+    assert reader.page.locator("body").get_attribute("data-unrelated") is None
+    assert reader.page.locator("input").get_attribute("aria-expanded") == (
+        "false" if accepted else "true"
+    )
 
 
 def test_expired_session_resumes_without_clicking_final_submit(reader, monkeypatch):

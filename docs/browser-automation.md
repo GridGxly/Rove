@@ -60,7 +60,7 @@ Every application gets its own tab, created in the background through the DevToo
 
 - A tab closes when its application is applied or the owner parks it.
 - At most `max_open_tabs` tabs stay open (default 5). The oldest is closed first, and a closed tab reopens on `go`.
-- The browser outlives the daemon. After a restart the daemon reconnects to the same port, keeps the tabs that belong to applications still waiting, and closes the rest.
+- The browser outlives the daemon. After a restart the daemon reconnects to the same port, keeps the tabs that belong to applications still waiting, and closes completed runs' tabs. When a submitting or unknown run cannot be matched to a tab, cleanup leaves the remaining tabs open. An expired session may have redirected the application to job search; that page remains available for inspection and is never treated as permission to retry a send.
 
 Drive that browser with one client only. During development a second Playwright client attached to the same instance stalled it.
 
@@ -95,7 +95,8 @@ One script evaluation returns everything the next step needs:
 
 - the title and the first 15,000 characters of visible text
 - every visible input, textarea and select, and every file input, with its label, kind, role, placeholder, required and disabled state, current value, character limit and options (up to 300 for a select)
-- groups of pressed-state buttons, such as a Yes/No pair, as one choice
+- groups of pressed-state buttons, such as a Yes/No pair, as one choice; standalone ARIA radio and checkbox controls are grouped with their question and read from their checked state
+- Oracle profile-card summaries, including the school and validation state of collapsed education cards
 - application-start links, Next and Continue controls, sign-in and account controls, and final Submit controls
 - markers: a visible CAPTCHA, "already applied" wording, the Greenhouse confirmation block, Lever's success heading and verification error, and the text of visible status and validation messages
 
@@ -106,6 +107,30 @@ A field counts as required when the input says so, or when its label carries a `
 The values of password, hidden and file inputs are never read. On a page with a password field or a field labeled social security, passport, bank account or verification code, all field values are dropped, the text is cut short, and no screenshot is taken. Identity steps are flagged for the owner; an email-code step may continue through the verified mailbox flow below. Failure screenshots also inspect the current frames for secrets, including when a failure happened before the next observation.
 
 Every other observation is saved privately with a screenshot of the viewport. Page text is marked as untrusted data and cannot authorize anything.
+
+Oracle's custom choices may be native inputs reached through visible labels, or ARIA
+radio pills with no input inside. Both are read and verified against their actual checked
+state. A hidden question stays hidden; an option wrapper containing a native input is
+counted once. Required labels and group names belong to the whole question, so missing
+personal facts stop preparation before Submit.
+
+### Imported education cards
+
+For Oracle's inline profile-card layout, preparation opens an education card only when
+its school exactly matches one unique approved school record. Degree, major, disclosed
+GPA and dates use that record's index, regardless of which school is marked `apply_as`.
+Current enrollment can answer the current-education question. A planned transfer never
+becomes current enrollment or a completed degree by inference.
+
+Preparation verifies the editor's filled values, clicks its scoped Save control and
+checks that the editor closed and the matching card is valid. Private
+`education-<profile index>.json` artifacts retain the saved fields, sources and observed
+request statuses. Unmatched schools, duplicate cards, unsupported editors, unknown facts
+and rejected saves stop the run. Cards are never deleted automatically. Visible saved
+summaries are frozen in the package and checked again before Submit.
+
+The browser/server/database regression uses synthetic schools and one isolated local
+application. It establishes those mechanics, not a live Oracle acceptance rate.
 
 ### Waiting for the page
 
@@ -172,12 +197,29 @@ matches the approved county name and rejects a different displayed US state. Mor
 than one matching row remains unresolved. Failed picker evidence includes the linked
 rows' text and visible/selected state, including a list that changed before selection.
 
+If a dropdown replaces its popup after the choices were read, Rove rereads the control's
+current popup reference with two bounded waits. It selects only the same exact, uniquely
+visible choice and verifies the committed value. A missing or duplicate choice stays
+unresolved; an unrelated popup cannot supply it.
+
+For grids that commit into an input without exposing a selected option, the daemon keeps
+an opaque handle to the original control after the row click and value verification.
+The final observation accepts that evidence only while the same visible control retains
+the value, stays closed and has no validation error. Editing, reopening, replacing the
+control, navigating or restarting the daemon discards it. Typed text and page attributes
+alone cannot satisfy the required-dropdown submission check.
+
+If a later preparation pass reopens a dropdown to read its choices, it clears the old
+selection observation before filling it again. An earlier selected flag cannot skip
+the new row click after that read.
+
 When no value is known, the daemon opens the list once to read its options so Qwen and the owner see the real choices.
 
 That read includes rows in the input's linked grid. It lets the standing policy use
 the form's own decline option for self-identification instead of asking for a
 demographic fact. A named month control may match an approved numeric month to the
-same month written out; duplicate matching options still stop selection.
+same month written out and searches using that name; duplicate matching options still
+stop selection.
 
 ### Multi-page forms
 
@@ -207,6 +249,10 @@ When a site rejects a submission and names a "required field", the label is save
 Preparation ends by writing a package: the page URL, the profile hash, the resume hash, every filled field with its value and source, the open questions, the full form state, the final control and the pages visited. The package is hashed. It is ready for review only when no question is open and the page has exactly one final control.
 
 Sending checks the live page against this package field by field. See [Application workflow](application-workflow.md#sending).
+
+Visible validation errors prevent preparation from becoming ready and block submission
+even when the frozen field values have not changed. Repeated errors remain unresolved;
+an unchanged error banner does not become permission to submit.
 
 ## The submit guard
 
@@ -246,6 +292,7 @@ All of it stays in the application's private folder under the state root:
 - `failure.png`, the tab as it looked when an action raised an error
 - `picker-<field>.json` and `picker-<field>.png`, for a picker that refused a value
 - `dropdown-<field>.json`, how a dropdown selection was confirmed
+- `selection-<field>.json`, why a verified grid selection expired, without answer values
 - `form-before-submit.png`, the form just before the Submit click
 
 The stop screenshot is also posted to the application's thread. See [Discord](discord.md#files-posted-in-the-thread).
@@ -277,6 +324,15 @@ When a page cannot be handled safely, stop for the owner.
 ## Coverage and remaining limits
 
 A recognized board or a passing fixture does not establish complete support for every employer on it. As of the October 4, 2026 acceptance audit, the seven selected Oracle/Navy Federal applications have no confirmed submissions.
+
+The October 5 Oracle follow-up verified Zoho email-code entry and navigation across three
+form steps. It still produced no confirmed application. The final click exposed incomplete
+imported education details and required radio questions omitted by the form reader. Oracle
+returned to an earlier step with validation errors; the submission record remains unknown
+under the conservative confirmation contract. Collapsed profile cards and those radio
+controls now have synthetic regression coverage. The live case still needs approved
+personal-history answers, education-import reconciliation and outcome verification
+before it can establish an end-to-end success.
 
 | Board | Implemented path | Evidence and limit |
 | --- | --- | --- |

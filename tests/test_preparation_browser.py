@@ -84,3 +84,21 @@ def test_new_questions_are_filled_through_the_browser_only_with_draft_policy(
         assert not workflow.automatic_answers(application)
     assert runtime.page.locator("html").get_attribute("data-submissions") == "0"
     assert not workflow.approved_answers(application)
+
+
+def test_existing_validation_errors_cannot_be_frozen_as_ready(sites):
+    runtime, employer, _board, state = sites
+    test_frames.Employer.pages["/validation/jobs/12"] = """<title>Apply</title>
+      <div role="alert">You have 4 issues that need to be fixed before you can submit.</div>
+      <label>First name<input name="first" required></label>
+      <label>Resume<input type="file" name="resume" required></label>
+      <div>Education: Example College. Fields to fix: 2</div>
+      <button id="submit" onclick="document.body.dataset.sent='yes'">Submit application</button>"""
+    opened = runtime.open(f"{employer}/validation/jobs/12")
+    application = opened["run_id"]
+    test_frames.freeze_resume(state, application)
+    page = runtime.prepare(application)
+    assert page["status"] == "NEEDS_USER"
+    assert any(q.get("control_issue") and q["required"] for q in page["pending"])
+    assert workflow.get(application)["status"] == "NEEDS_USER"
+    assert runtime.page.locator("body").get_attribute("data-sent") is None

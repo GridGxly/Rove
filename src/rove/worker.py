@@ -26,7 +26,7 @@ from .discord_feed import discord, private_env
 from .live_browser import browser_call, owner_words, socket_path
 from .reasoning import GATE_KINDS
 from .resumes import one_erga_pass, prepare_resume, start_preparation
-from .runtime import private_lock, state_root, write_private
+from .runtime import on_hold, private_lock, state_root, write_private
 
 # A preparation no worker pass marked (the agent's own browsing) is handed back after this.
 INTERRUPTED_AFTER = timedelta(minutes=15)
@@ -400,12 +400,17 @@ def skip_optional(application_id: str, questions: list):
     """
     from . import form_reading
 
+    skipped = []
     with workflow.db() as conn:
         for question in questions:
-            conn.execute(
+            inserted = conn.execute(
                 "INSERT OR IGNORE INTO application_answers VALUES(?,?,?,?)",
                 (application_id, question["key"], "skip", f"auto-skip:{question['key']}"),
-            )
+            ).rowcount
+            if inserted:
+                skipped.append(question)
+    if not skipped:
+        return
 
     def named(question: dict) -> str:
         label = form_reading.squash(question.get("label"))
@@ -414,7 +419,7 @@ def skip_optional(application_id: str, questions: list):
         return label[:80]
 
     workflow.record(
-        application_id, "optional_skipped", {"labels": [named(q) for q in questions[:12]]}
+        application_id, "optional_skipped", {"labels": [named(q) for q in skipped[:12]]}
     )
     workflow.flush_events(application_id)
 
@@ -529,7 +534,11 @@ def draft_pending(application_id: str, page: dict, settings: dict) -> tuple[dict
             "none needs writing or a model choice",
         )
     drafted = {a["key"] for a in proposals.get("answers", []) if a["kind"] == "proposal"}
-    optional = [q for q in pending if not q.get("required", True) and q["key"] not in drafted]
+    optional = [
+        q
+        for q in pending
+        if not q.get("required", True) and not q.get("control_issue") and q["key"] not in drafted
+    ]
     asked = [q for q in pending if q not in optional]
     used = (
         set(use_drafts(application_id, proposals, asked))
@@ -1952,6 +1961,8 @@ def next_queued(max_waiting: int):
 
 
 def tick() -> dict:
+    if on_hold():
+        return {"held": True}
     settings = workflow.config()
     if not settings.get("enabled"):
         return {"enabled": False}

@@ -120,7 +120,11 @@ GENERIC_PENDING_PATH = re.compile(
     r"|confirm[-_]?e?-?mail|activate)(?:[/_.-]|$)",
     re.IGNORECASE,
 )
-GENERIC_ERROR = r"required|invalid|error|could not|try again"
+GENERIC_ERROR = (
+    r"required|invalid|error|could not|try again"
+    r"|issues? that need to be fixed before .*submit"
+    r"|need to add or modify some info before submitting"
+)
 GENERIC_SUCCESS_RE = re.compile(GENERIC_SUCCESS, re.IGNORECASE)
 GENERIC_NEGATION_RE = re.compile(GENERIC_NEGATION, re.IGNORECASE)
 GENERIC_FAILURE_RE = re.compile(GENERIC_FAILURE, re.IGNORECASE)
@@ -676,6 +680,10 @@ def preflight(application_id: str, package_hash: str, current: dict) -> dict:
         raise PermissionError("Application is not ready for submission")
     if package["pending"] or len(package["final_controls"]) != 1:
         raise PermissionError("Resolve every question and verify one final application control")
+    if GENERIC_ERROR_RE.search(str(current.get("ats_markers", {}).get("form_error") or "")):
+        raise PermissionError(
+            "The form still shows validation errors; resolve them before submission"
+        )
     approved = read_approved()
     frozen = json.loads((directory / "profile.json").read_text())
     if (
@@ -693,6 +701,12 @@ def preflight(application_id: str, package_hash: str, current: dict) -> dict:
         raise PermissionError("The visible form changed after review; prepare and review again")
     if current.get("final_controls") != package["final_controls"]:
         raise PermissionError("The final application control changed")
+    from . import profile_cards
+
+    if any(c.get("invalid") for c in current.get("profile_cards", [])) or profile_cards.state(
+        current.get("profile_cards", [])
+    ) != profile_cards.state(package.get("profile_cards", [])):
+        raise PermissionError("The imported profile cards changed or still have errors")
     resume = directory / "resume.pdf"
     actual = hashlib.sha256(resume.read_bytes()).hexdigest() if resume.is_file() else None
     manifest_path = directory / "resume-manifest.json"

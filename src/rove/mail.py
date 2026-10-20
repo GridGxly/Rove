@@ -38,7 +38,7 @@ from . import workflow
 from .discord_feed import private_env
 from .jobs import database
 from .mail_prompt import MAIL_PROMPT  # noqa: F401 -- part of this module's surface
-from .runtime import state_root, write_private
+from .runtime import on_hold, refuse_on_hold, state_root, write_private
 
 LABELS = ("acknowledgement", "oa", "interview", "offer", "rejection", "other")
 LABEL_STATES = {"oa": "OA", "interview": "INTERVIEW", "offer": "OFFER", "rejection": "REJECTED"}
@@ -154,6 +154,7 @@ class Zoho:
             self.client.close()
 
     def connect(self):
+        refuse_on_hold("Zoho")
         try:
             with http(self.creds["accounts_base"]) as accounts:
                 response = accounts.post(
@@ -2098,6 +2099,8 @@ def tick() -> dict:
     mail. A Zoho failure (a refused token, a limit, an outage) ends the run quietly: one
     system-log line, an owner card after three in a row, no traceback.
     """
+    if on_hold():
+        return {"held": True}
     settings = config()
     creds = credentials()
     if not settings.get("enabled") or not creds:

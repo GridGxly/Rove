@@ -150,6 +150,8 @@ To stop a service, unload it:
 launchctl bootout gui/$UID/dev.rove.workflow
 ```
 
+To stop everything at once, including the Hermes gateway, Discord posts, Zoho reads and the local model, use `uv run rove hold on`. `uv run rove hold off` starts the services again. [Requirements](requirements.md#putting-everything-on-hold) lists what the hold covers.
+
 Service output goes to `logs/` in the state root.
 
 ## 13. Prepare one application

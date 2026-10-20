@@ -39,6 +39,7 @@ from . import (
     gates,
     overlays,
     pickers,
+    profile_cards,
     questions,
     recovery,
     timing,
@@ -51,7 +52,7 @@ from .browser_app import devtools_alive
 from .destinations import approved_ats, job_scope, nested_paths
 from .jobs import lookup_job_link, posting_gone, public_link
 from .onboarding import read_approved
-from .runtime import state_root, write_private
+from .runtime import on_hold, state_root, write_private
 
 # An error the browser already wrote in plain words for the owner starts with this; the
 # worker shows the rest as the card's reason instead of naming an exception.
@@ -337,19 +338,19 @@ __READING__
  const controls=deepAll(CONTROLS).filter(shown);
  const fields=controls.map((e,i)=>{
    // The reference goes on what a person would click: the control, or the visible face of a hidden or covered one.
-   const native=e.matches(NATIVE);const rich=!native&&e.matches(RICH);const face=faceOf(e);const styled=!!wrapperOf(e);
-   const widget=rich?null:!native?'listbox':face&&!styled?(e.tagName==='SELECT'?'toggle':'shell'):null;
+   const native=e.matches(NATIVE);const rich=!native&&e.matches(RICH);const choice=choiceType(e);const face=faceOf(e);const styled=!!wrapperOf(e);
+   const widget=rich||choice?null:!native?'listbox':face&&!styled?(e.tagName==='SELECT'?'toggle':'shell'):null;
    (face||e).setAttribute('data-rove-field',String(i));
    // A grouped radio or checkbox is one option of its group's question, never a question itself.
    const g=groupFor(e,controls);const column=g&&g.column?g.column(e):'';const read=g?(column?{text:column}:readOption(e)):readLabel(e);const chosen=widget?picked(e,face):null;
    const options=e.tagName==='SELECT'?[...e.options].map(o=>({label:o.text,value:o.value})).slice(0,300):(native||rich?[]:listed(e));
-   return {ref:String(i),label:read.text,group:g?g.label:'',name:e.name||e.getAttribute('name')||'',id:e.id,kind:native?e.type:rich?'textarea':'combobox',tag:(widget==='toggle'?face:e).tagName.toLowerCase(),role:rich?'textbox':widget?'combobox':e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
+   return {ref:String(i),label:read.text,group:g?g.label:'',name:e.name||e.getAttribute('name')||'',id:e.id,kind:choice|| (native?e.type:rich?'textarea':'combobox'),tag:(widget==='toggle'?face:e).tagName.toLowerCase(),role:rich?'textbox':widget?'combobox':e.getAttribute('role'),placeholder:e.getAttribute('placeholder')||'',autocomplete:e.getAttribute('aria-autocomplete')||'',
     selected:e.closest('.select__container')?.querySelector('.select__single-value')?.innerText||chosen,
     selection_code:e.closest('.select__container')?.querySelector('.select__single-value .iti__flag')?.className.match(/\biti__([a-z]{2})\b/)?.[1]||null,
     required:!!e.required || e.getAttribute('aria-required')==='true' || requiredBy(e) || !!read.required || (!!face&&(face.hasAttribute('required')||face.getAttribute('aria-required')==='true')),
     disabled:native?e.disabled:e.getAttribute('aria-disabled')==='true',readonly:native?e.readOnly:e.getAttribute('aria-readonly')==='true',
-    checked:styled?(e.checked||face.getAttribute('aria-checked')==='true'):(native?e.checked:false),
-    value:native?(['password','hidden','file'].includes(e.type)?null:e.value):rich?e.innerText.trim():(chosen||''),maxlength:(e.maxLength>0?e.maxLength:null),
+    checked:styled?(e.checked||face.getAttribute('aria-checked')==='true'):(native?e.checked:e.getAttribute('aria-checked')==='true'),
+    value:native?(['password','hidden','file'].includes(e.type)?null:e.value):choice?(e.getAttribute('value')||read.text):rich?e.innerText.trim():(chosen||''),maxlength:(e.maxLength>0?e.maxLength:null),
     options:widget==='toggle'?options.filter(o=>o.label.trim()):options,
     ...(widget?{widget}:{}),...(rich?{rich:true}:{}),...(read.missing?{label_missing:true}:{}),...(g?{_group:{key:g.key,required:g.required,missing:g.missing}}:{}),_section:sectionOf(e)};
  }).filter(e=>e.kind!=='hidden');
@@ -391,7 +392,7 @@ __READING__
      if(video||test)return {kind:video?'video':'assessment',host:h||location.hostname,link:u?u.href:location.href};}
    return null;})();
  const shadowText=SHADOW?ROOTS.map(r=>[...r.children].filter(visible).map(c=>c.innerText||'').join('\n')).join('\n'):'';
- return {title:document.title,http_status:(performance.getEntriesByType('navigation')[0]||{}).responseStatus||0,text:(shadowText?document.body.innerText+'\n'+shadowText:document.body.innerText).slice(0,15000),fields,application_links:links,auth_controls:auth,nav_controls:nav,
+ return {title:document.title,http_status:(performance.getEntriesByType('navigation')[0]||{}).responseStatus||0,text:(shadowText?document.body.innerText+'\n'+shadowText:document.body.innerText).slice(0,15000),fields,profile_cards:__CARDS__,application_links:links,auth_controls:auth,nav_controls:nav,
  final_controls:deepAll('button,input[type=submit],a,[role=button]').filter(visible).filter(e=>FINAL.test((e.innerText||e.value||'').trim())).map((e,i)=>{e.setAttribute('data-rove-submit',String(i));return {ref:String(i),label:(e.innerText||e.value||'').trim()};}),
  ats_markers:{captcha_challenge:(__CAPTCHA__)().showing,
  already_applied:/\b(you have |you've )?already (applied|submitted an application)\b|application already exists/i.test(document.body.innerText),
@@ -406,6 +407,7 @@ __READING__
     .replace("__STATUS__", STATUS_SELECTOR)
     .replace("__ERROR__", ERROR_SELECTOR)
     .replace("__BOARDS__", boards.MARKERS_JS)
+    .replace("__CARDS__", profile_cards.READ_JS)
 )
 
 # Text fields a person cannot see: fully transparent (itself or an ancestor), positioned
@@ -776,6 +778,7 @@ class RecruitingBrowser:
         self.frames = {}
         self.frames_waited = None
         self.sending = False  # between a send's click and its recorded outcome
+        self.selections = pickers.SelectionProofs()
 
     def destination(self, url: str) -> str:
         """ "public", "private" (anything that is not public HTTPS), or "unresolved" when
@@ -966,6 +969,7 @@ class RecruitingBrowser:
 
     def reset(self):
         """Drop a dead or stale session; every tab it held is gone with it."""
+        self.selections.forget()
         for closer in (
             lambda: self.cdp.detach(),
             lambda: self.browser.close(),
@@ -1078,7 +1082,8 @@ class RecruitingBrowser:
             waiting = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT id,url FROM application_queue WHERE run_id IS NOT NULL AND status IN "
+                    "SELECT id,url,status FROM application_queue "
+                    "WHERE run_id IS NOT NULL AND status IN "
                     "('QUEUED','NEEDS_USER','READY_FOR_REVIEW','MANUAL_TAKEOVER','PREPARING',"
                     "'SUBMITTING','UNKNOWN_SUBMISSION')"
                 )
@@ -1115,8 +1120,12 @@ class RecruitingBrowser:
                     self.runs[owner["id"]] = runs[owner["id"]]
                     self.lost.pop(owner["id"], None)
                     self.watch_dialogs(page)
+        unresolved = any(
+            item["status"] in {"SUBMITTING", "UNKNOWN_SUBMISSION"} and item["id"] not in self.pages
+            for item in waiting
+        )
         for page in free:
-            if only is None and self.tab_id(page) in mine:
+            if only is None and not unresolved and self.tab_id(page) in mine:
                 # Only a tab Rove itself opened, for a run that is over or a blank one;
                 # the owner's own tabs and one an unclear send left open stay.
                 with contextlib.suppress(PlaywrightError):
@@ -1286,6 +1295,7 @@ class RecruitingBrowser:
         return getattr(page, "_rove_guard", 0)
 
     def close_run(self, run_id: str) -> dict:
+        self.selections.forget(run_id)
         page = self.pages.pop(run_id, None)
         self.runs.pop(run_id, None)
         self.frames.pop(run_id, None)
@@ -1734,7 +1744,9 @@ class RecruitingBrowser:
         self.save()
         # One question with options, not one question per radio button or checkbox.
         data["fields"] = form_reading.group_choices(data["fields"])
+        profile_cards.context(self.run, frame, data)
         form_reading.distinct_keys(data["fields"], workflow.field_key)
+        self.selections.observe(self.run["id"], frame, data["fields"])
         passwords = [f for f in data["fields"] if f["kind"] == "password"]
         intents = {c["intent"] for c in data.get("auth_controls", [])}
         if passwords:
@@ -1782,6 +1794,12 @@ class RecruitingBrowser:
     def set_box(self, box, wanted: bool):
         """Tick or clear one checkbox or radio. A styled box hides its input (no size, no
         opacity): its label is the visible target then."""
+        if box.get_attribute("role") in {"radio", "checkbox"} and not box.evaluate(
+            "e=>e.matches('input')||!!e.querySelector('input[type=radio],input[type=checkbox]')"
+        ):
+            if bool(box.evaluate(form_reading.CHECKED_JS)) != wanted:
+                self.click(box)
+            return
         try:
             box.set_checked(wanted, timeout=3000)
         except PlaywrightError as error:
@@ -2233,6 +2251,8 @@ class RecruitingBrowser:
             for i, text in enumerate(texts)
             if normalized(text) in wanted or pickers.matches(text, value, field, profile)
         ]
+        if place and city:
+            matches = pickers.city_options(texts, city, profile)
         if not matches and place and city:
             # A place picker geocodes after a pause and may list "Loading" first: poll until
             # an option starts with our city, preferring one that also names our state.
@@ -2256,6 +2276,8 @@ class RecruitingBrowser:
                 for i, text in enumerate(texts)
                 if normalized(text) in wanted or pickers.matches(text, value, field, profile)
             ]
+            if place and city:
+                matches = pickers.city_options(texts, city, profile)
         if len(matches) != 1:
             if len(matches) > 1 and (
                 place or questions.classify(field["label"]).canonical_id == "postal_code"
@@ -2270,22 +2292,18 @@ class RecruitingBrowser:
         expected = texts[matches[0]]
         row = pickers.exact_row(options, expected)
         if row is None:
-            self.picker_reason = "The location list changed before selection; read it again."
+            row = pickers.refreshed_row(self.form, locator, expected)
+        if row is None:
+            self.picker_reason = "The observed dropdown choice is no longer uniquely visible."
             self.picker_diagnostic(field, city or value, texts, locator)
             locator.press("Escape")
             return False
-        row.click()
         # An ARIA grid can commit directly into its input and close itself. Check this
         # before reopening it, which discards that signal in some typeaheads.
-        try:
-            self.form.wait_for_function(
-                pickers.COMMITTED_JS,
-                arg={"ref": field["ref"], "values": [expected, value]},
-                timeout=1000,
-            )
+        if self.selections.select(
+            self.run["id"], self.form, field, locator, row, [expected, value]
+        ):
             return True
-        except PlaywrightError:
-            pass
         if place and city:
             # A place picker commits the suggestion into the input, or shows it as the
             # chosen value beside an emptied input: either text is the proof.
@@ -3280,6 +3298,9 @@ class RecruitingBrowser:
                 except PlaywrightError:
                     pass
                 locator.press("Escape")
+                # Opening the choices invalidated the prior selection observation.
+                # A later fill must actually choose again, not reuse that stale flag.
+                field = {**field, "selected": None, "selection_code": None}
             if value is None and choices and unread_picker:
                 # The options are known now: resolve again against them.
                 value, source = resolve({**field, "options": [{"label": c} for c in choices]})
@@ -3421,6 +3442,7 @@ class RecruitingBrowser:
 
     def _prepare(self, run_id: str) -> dict:
         from .submission import (
+            GENERIC_ERROR_RE,
             duplicate_words,
             embedded_form,
             fill_hold_words,
@@ -3458,7 +3480,7 @@ class RecruitingBrowser:
             raise ValueError("Approved profile changed; reopen the job to freeze the new version")
         if before.get("manual_takeover_required"):
             return {**before, "status": "MANUAL_LOGIN_REQUIRED"}
-        if not before["fields"]:
+        if not before["fields"] and not before.get("profile_cards"):
             return {
                 **before,
                 "status": "APPLICATION_FORM_NOT_OPEN",
@@ -3491,6 +3513,14 @@ class RecruitingBrowser:
                 before = result = landed = self.observe()
                 continue
             pages.append(before["url"])
+            card_filled, card_pending = profile_cards.prepare(self, before, approved, answers)
+            filled.extend(card_filled)
+            pending.extend(card_pending)
+            if card_pending:
+                result = landed = self.observe()
+                break
+            if before.get("profile_cards"):
+                before = self.observe()  # edits replaced controls and their observation references
             page_filled, page_pending = self.fill_cleared(run_id, before, approved, answers)
             filled.extend(page_filled)
             pending.extend(page_pending)
@@ -3582,6 +3612,17 @@ class RecruitingBrowser:
             kept = self.upload_still_on(result)
             if kept:
                 filled.append(kept)
+        if GENERIC_ERROR_RE.search(str(result.get("ats_markers", {}).get("form_error") or "")):
+            pending.append(
+                {
+                    "label": "Site validation errors",
+                    "key": "site-validation",
+                    "required": True,
+                    "control_issue": True,
+                    "reason": "The site still shows validation issues. Review the marked fields "
+                    "in the recruiting browser.",
+                }
+            )
         self.run["pending"] = pending
         self.save()
         package = {
@@ -3592,6 +3633,7 @@ class RecruitingBrowser:
             "filled": filled,
             "pending": pending,
             "form_state": result["fields"],
+            "profile_cards": result.get("profile_cards", []),
             "final_controls": result.get("final_controls", []),
             "pages": pages,
             "submission_enabled": False,
@@ -3916,6 +3958,8 @@ def respond(browser, raw: bytes) -> dict:
 
 
 def serve():
+    if on_hold():
+        return
     os.umask(0o077)
     lock = open(state_root() / "browser-daemon.lock", "a")  # noqa: SIM115 -- lifetime of service
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

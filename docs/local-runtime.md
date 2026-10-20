@@ -253,7 +253,7 @@ uv run rove status
 uv run rove stop
 ```
 
-`start` starts the official oMLX app-managed service, waits for its model inventory, and starts the Hermes gateway. Weights load on the first inference request. `stop` stops Hermes before stopping oMLX.
+`start` starts the official oMLX app-managed service, waits for its model inventory, and starts the Hermes gateway. Weights load on the first inference request. `stop` stops Hermes before stopping oMLX. While `rove hold on` is in effect, `start` and the start commands below refuse to run; see [Requirements](requirements.md#putting-everything-on-hold).
 
 Individual components:
 

@@ -1,11 +1,13 @@
 """Read a combobox's own popup, including searchable ARIA grids."""
 
+import contextlib
 import json
 import re
 
 from patchright.sync_api import Error as PlaywrightError
 
 from . import dates, questions
+from .runtime import state_root, write_private
 
 # USPS Publication 28, Appendix B: https://pe.usps.com/text/pub28/28apb.htm
 US_REGIONS = dict(
@@ -93,6 +95,11 @@ def search_value(value: str, field: dict, profile: dict) -> str:
     if questions.classify(field.get("label", "")).canonical_id == "state_region":
         short = min(region_names(value, profile), key=len)
         return short.upper() if len(short) == 2 else value
+    name = questions.plain_name(field.get("label", ""))
+    if name.endswith(" month") and dates.question_label(name):
+        month = dates.month_number(value)
+        if month is not None:
+            return dates.MONTHS[month - 1]
     return value
 
 
@@ -158,7 +165,28 @@ def with_county(profile: dict, value) -> dict:
 def exact_row(options, expected: str):
     """A changing list may reorder rows; the observed label must still name one row."""
     row = options.filter(has_text=re.compile(r"^\s*" + re.escape(expected.strip()) + r"\s*$"))
-    return row if row.count() == 1 and row.is_visible() else None
+    try:
+        return row if row.count() == 1 and row.is_visible() else None
+    except PlaywrightError:
+        return None  # a redraw between the count and visibility check is unresolved
+
+
+def refreshed_row(form, control, expected: str):
+    """Reacquire the control's current popup after a redraw, keeping the exact choice.
+
+    Popup IDs can change after their rows were read. Wait only for the linked popup,
+    twice at most; a missing, hidden or duplicate expected row never becomes a click.
+    """
+    for _ in range(2):
+        current = options(form, control)
+        try:
+            current.first.wait_for(state="visible", timeout=750)
+        except PlaywrightError:
+            continue
+        row = exact_row(current, expected)
+        if row is not None:
+            return row
+    return None
 
 
 CUSTOM_ROWS_JS = """ref => {
@@ -230,6 +258,117 @@ COMMITTED_JS = """({ref,values}) => {
  const norm=s=>(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
  return values.some(v=>norm(v)===norm(e.value));
 }"""
+
+
+SELECTION_PROOF_JS = """(e,{ref,selected,values}) => {
+ const norm=s=>(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+ if(document.querySelector('[data-rove-field="'+ref+'"]')!==e ||
+    e.getAttribute('aria-expanded')!=='false' ||
+    !values.some(v=>norm(v)===norm(e.value))) return null;
+ const proof={control:e,value:e.value,selected,valid:true,reason:null};
+ const events=['input','change'];
+ const observer=new MutationObserver(changes=>{
+   if(changes.some(c=>c.oldValue==='true') || e.getAttribute('aria-expanded')!=='false')
+     invalidate();
+ });
+ const stop=()=>{
+   observer.disconnect();events.forEach(type=>e.removeEventListener(type,invalidate));
+ };
+ const invalidate=event=>{
+   if(event?.type==='change' && e.value===proof.value) return;
+   proof.reason=event?.type||'reopened';
+   proof.valid=false;stop();
+ };
+ proof.stop=stop;
+ events.forEach(type=>e.addEventListener(type,invalidate));
+ observer.observe(e,{attributes:true,attributeFilter:['aria-expanded'],attributeOldValue:true});
+ return proof;
+}"""
+
+READ_SELECTION_JS = """(proof,ref) => {
+ if(!proof?.valid) return null;
+ const e=proof.control;
+ return document.querySelector('[data-rove-field="'+ref+'"]')===e &&
+   e.isConnected && e.value===proof.value && e.getAttribute('aria-expanded')==='false' &&
+   e.getAttribute('aria-invalid')!=='true' && e.getClientRects().length &&
+   getComputedStyle(e).visibility!=='hidden' ? proof.selected : null;
+}"""
+
+
+SELECTION_DETAILS_JS = """(proof,ref) => {
+ const e=proof?.control;
+ return {valid:!!proof?.valid,reason:proof?.reason||'control_changed',
+   same_control:document.querySelector('[data-rove-field="'+ref+'"]')===e,
+   connected:!!e?.isConnected,value_unchanged:e?.value===proof?.value,
+   expanded:e?.getAttribute('aria-expanded'),invalid:e?.getAttribute('aria-invalid')};
+}"""
+
+
+class SelectionProofs:
+    """Opaque handles prove a clicked grid row; page attributes cannot invent proof."""
+
+    def __init__(self):
+        self.entries = {}
+
+    def forget(self, run_id=None, key=None):
+        for entry in list(self.entries):
+            if (run_id is None or entry[0] == run_id) and (key is None or entry[1] == key):
+                _frame, proof = self.entries.pop(entry)
+                with contextlib.suppress(PlaywrightError):
+                    proof.evaluate("proof=>proof?.stop()")
+                    proof.dispose()
+
+    def select(self, run_id, frame, field, control, row, values):
+        """Keep the original node across the click, then verify its committed value."""
+        node = control.element_handle()
+        try:
+            row.click()
+            try:
+                frame.wait_for_function(
+                    COMMITTED_JS,
+                    arg={"ref": field["ref"], "values": values},
+                    timeout=1000,
+                ).dispose()
+                proof = node.evaluate_handle(
+                    SELECTION_PROOF_JS,
+                    {"ref": field["ref"], "selected": values[0], "values": values},
+                )
+                if not proof.evaluate(READ_SELECTION_JS, field["ref"]):
+                    proof.dispose()
+                    return False
+            except PlaywrightError:
+                return False
+            self.forget(run_id, field["key"])
+            self.entries[run_id, field["key"]] = (frame, proof)
+            return True
+        finally:
+            if node is not None:
+                node.dispose()
+
+    def observe(self, run_id, frame, fields):
+        keys = {field["key"] for field in fields}
+        for entry, (seen_frame, _proof) in list(self.entries.items()):
+            if entry[0] == run_id and (entry[1] not in keys or seen_frame is not frame):
+                self.forget(*entry)
+        for field in fields:
+            if field.get("role") != "combobox" or field.get("selected"):
+                continue
+            entry = self.entries.get((run_id, field["key"]))
+            if entry is None:
+                continue
+            try:
+                field["selected"] = entry[1].evaluate(READ_SELECTION_JS, field["ref"])
+                if not field["selected"]:
+                    details = entry[1].evaluate(SELECTION_DETAILS_JS, field["ref"])
+            except PlaywrightError:
+                field["selected"] = None
+                details = {"reason": "expired_handle"}
+            if not field["selected"]:
+                write_private(
+                    state_root() / f"applications/{run_id}/selection-{field['key']}.json",
+                    {"label": field["label"], **details},
+                )
+                self.forget(run_id, field["key"])
 
 
 def matches(label: str, value: str, field: dict, profile: dict) -> bool:

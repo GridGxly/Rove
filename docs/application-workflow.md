@@ -94,6 +94,10 @@ Some questions are answered by rule from the approved profile: whether he return
 
 An optional field with no fact and no draft is left blank and listed in one line in the thread. Only required questions reach the owner.
 
+A picker that cannot select a known answer stays a control hold even when it is optional.
+The skipped-fields line lists only blanks actually saved, never an existing answer that
+was preserved.
+
 ### Remembered answers
 
 An answer the owner types in Discord, such as `3: 5 months`, is stored in the `answer_memory` table under a fingerprint of the question's wording (without "(Optional)", "(Required)" and asterisks) and, when the question has options, its options. Any later form that asks the same question is filled from it, with the source shown as "your earlier answer". When the new form offers options, the remembered value is used only if it is one of them. `skip` is never remembered, and an approved Qwen draft is not remembered either.
@@ -373,7 +377,7 @@ The Hermes agent gets four tools for this workflow, `start_job_application`, `ap
 
 ## Limits
 
-The seven selected validation jobs still have zero confirmed submissions. The October 4 Oracle debugging passes demonstrated email-code retrieval and acceptance, then encountered form-control failures. No Submit attempt was made. These observations do not establish autonomous end-to-end success.
+The seven selected validation jobs still have zero confirmed submissions. The October 4 Oracle debugging passes demonstrated email-code retrieval and acceptance, then encountered form-control failures. The October 5 follow-up made one Submit attempt, returned to education validation errors and remains an unknown submission. Custom choices, education cards and reconnect cleanup now have synthetic regressions; the live case still lacks approved personal-history answers and verified receipt evidence. These observations do not establish autonomous end-to-end success.
 
 - Forms are filled only on boards in the table and on hosts the owner let in, and only for the same job as the queued link (see [Where a form may be filled](#where-a-form-may-be-filled)). A posting on an employer page whose Apply control leads to a board's own job page, not an embed, is not yet matched to that job and stops for the owner.
 - `lever_v1`'s handling of a CAPTCHA-rejected send follows Lever's reported wording and has not been observed in a live run. Lever's inline field messages use a class the shared error read does not cover, so a Lever form kept open by a field error without the verification sentence is recorded as unclear.

@@ -184,3 +184,33 @@ def entry_for_block(profile: dict | None, index: int | None) -> tuple[int, dict]
     blocks = ordered(profile)
     position = index or 0
     return blocks[position] if position < len(blocks) else None
+
+
+def entry_for_field(profile: dict, field: dict) -> tuple[int, dict] | None:
+    """An explicitly matched card uses its profile record, regardless of display order."""
+    if field.get("education_profile_index") is not None:
+        index = int(field["education_profile_index"])
+        entries = schools(profile)
+        return (index, entries[index]) if 0 <= index < len(entries) else None
+    return entry_for_block(profile, block_index(field))
+
+
+def card_status(field: dict, profile: dict) -> tuple[str | None, str | None] | None:
+    """Current enrollment can answer current education; past completion is never inferred."""
+    if field.get("education_profile_index") is None:
+        return None
+    label = " ".join(str(field.get("label") or "").lower().split()).rstrip(" *?")
+    if label not in {"graduated", "most recent or current education"}:
+        return None
+    entry = entry_for_field(profile, field)
+    if entry is None:
+        return None, None
+    index, school = entry
+    source = f"education.schools.{index}.currently_enrolled"
+    current = school.get("currently_enrolled") is True
+    if label == "most recent or current education":
+        return ("Yes", source) if current else (None, None)
+    end = school.get("graduation_month")
+    if current and end and end > this_month():
+        return "No", source + "+graduation_month"
+    return None, None

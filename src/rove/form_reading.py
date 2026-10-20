@@ -23,7 +23,12 @@ READING_JS = r"""
  const RICH='[contenteditable]:not([contenteditable=false]):is([role=textbox],.ql-editor,.ProseMirror,.public-DraftEditor-content,[data-slate-editor])';
  // A control is a form element, an ARIA dropdown that has no form element inside it, or
  // a rich-text editor.
- const CONTROLS=NATIVE+',[role=combobox]:not(input,select,textarea):not(:has('+NATIVE+')),'+RICH;
+ const CHOICES='[role=radio]:not(input):not(:has(input[type=radio])),'
+   +'[role=checkbox]:not(input):not(:has(input[type=checkbox]))';
+ const CONTROLS=NATIVE+','+CHOICES
+   +',[role=combobox]:not(input,select,textarea):not(:has('+NATIVE+')),'+RICH;
+ const choiceType=e=>['radio','checkbox'].includes(e.type)?e.type:
+   (['radio','checkbox'].includes(e.getAttribute('role'))?e.getAttribute('role'):null);
  // What sends an application, word for word.
  const FINAL=/^(submit|submit application|submit my application|submit your application|submit now|send application|complete application|finish application)$/i;
  // Open shadow roots: a web-component form keeps its controls inside them. Without any,
@@ -62,7 +67,9 @@ READING_JS = r"""
  const shellOf=c=>{if(!textual(c)||c.tagName!=='INPUT'||c.getAttribute('role')==='combobox'||c.hasAttribute('aria-haspopup'))return null;
    const s=c.parentElement&&c.parentElement.closest('[aria-haspopup][aria-expanded]');
    return s&&!s.matches('label,form,body')&&[...s.querySelectorAll(NATIVE)].filter(visible).every(x=>x===c)?s:null;};
- const faceOf=c=>c.matches(NATIVE)?(wrapperOf(c)||toggleOf(c)||shellOf(c)):null;
+ const choiceLabel=c=>choiceType(c)&&c.matches(NATIVE)?
+   [...(c.labels||[])].find(visible)||null:null;
+ const faceOf=c=>c.matches(NATIVE)?(wrapperOf(c)||choiceLabel(c)||toggleOf(c)||shellOf(c)):null;
  // A trap for bots: a text field no person can reach. One parked off the page is always a
  // trap; one that is transparent, sizeless or inside hidden markup is a trap when its
  // name or label says so (a dropdown's own search input can be transparent too).
@@ -199,7 +206,7 @@ READING_JS = r"""
    const roots=[e,...ids.map(id=>byId(e,id)).filter(Boolean)];
    return [...new Set(roots.flatMap(r=>[...r.querySelectorAll('[role=option]')]))].map(o=>squash(o.textContent)).filter(Boolean).map(t=>({label:t,value:t})).slice(0,300);};
  // One option of a group: its own text, never the group's question.
- const readOption=e=>{const own=ownText(e);const text=own?own.text:trailing(e);if(text)return {text};
+ const readOption=e=>{const own=ownText(e);const text=own?own.text:(e.matches(CHOICES)?squash(e.innerText):trailing(e));if(text)return {text};
    const value=e.getAttribute('value')||'';return {text:value&&value!=='on'&&!machine(value)?value:''};};
  const readLabelOwn=e=>{
    const file=e.type==='file';
@@ -287,19 +294,19 @@ READING_JS = r"""
    if(card)return card;
    return {text:nearby(first,members),missing:true};
  };
- const choiceOnly=(box,type)=>{const inside=controlsIn(box);return inside.length&&inside.every(c=>c.type===type)?inside:null;};
+ const choiceOnly=(box,type)=>{const inside=controlsIn(box);return inside.length&&inside.every(c=>choiceType(c)===type)?inside:null;};
  // A box that names its options: a legend, an ARIA name, or a label of its own that
  // points at no control (a board's question title).
  const titledBox=box=>!!(box.querySelector('legend')||box.getAttribute('aria-label')||box.getAttribute('aria-labelledby')||[...box.querySelectorAll('label')].some(l=>!l.control&&squash(l.innerText)));
  const membersOf=(e,all)=>{
-   const box=e.closest(e.type==='radio'?'fieldset,[role=radiogroup],[role=group]':'fieldset,[role=group]');
-   if(e.name){let same=all.filter(x=>x.type===e.type&&x.name===e.name&&x.form===e.form&&x.getRootNode()===e.getRootNode());
+   const type=choiceType(e);const box=e.closest(type==='radio'?'fieldset,[role=radiogroup],[role=group]':'fieldset,[role=group]');
+   if(e.name){let same=all.filter(x=>choiceType(x)===type&&x.name===e.name&&x.form===e.form&&x.getRootNode()===e.getRootNode());
      // Checkboxes that share a name but sit in separate titled boxes are separate
      // questions (a board that names every lone box "Yes").
      if(e.type==='checkbox'&&box&&titledBox(box)&&same.some(x=>x.closest('fieldset,[role=group]')!==box))same=same.filter(x=>x.closest('fieldset,[role=group]')===box);
      if(same.length>=2)return same;}
-   const boxed=box&&choiceOnly(box,e.type);
-   if(boxed&&(boxed.length>=2||(e.type==='checkbox'&&titledBox(box))))return boxed;
+   const boxed=box&&choiceOnly(box,type);
+   if(boxed&&(boxed.length>=2||(type==='checkbox'&&titledBox(box))))return boxed;
    if(e.type==='checkbox'){
      // A question row whose only control is this checkbox, with the question in its own label block (Lever cards).
      const row=e.closest('.application-question');const carded=row&&choiceOnly(row,'checkbox');
@@ -334,7 +341,7 @@ READING_JS = r"""
    return {text:t&&r?t+' — '+r:(t||r),required};};
  const groupFor=(()=>{const found=new Map();const list=[];
    return (e,all)=>{
-     if(e.type!=='radio'&&e.type!=='checkbox')return null;
+     if(!choiceType(e))return null;
      if(found.has(e))return found.get(e);
      const grid=gridOf(e);
      const members=grid?grid.members:membersOf(e,all);
@@ -399,6 +406,7 @@ PICKED_JS = (
 # On a radio or checkbox, or the role wrapper that stands in for a hidden one.
 CHECKED_JS = (
     "e => e.getAttribute('aria-checked')==='true' || !!e.checked"
+    " || !!e.control?.checked"
     " || [...e.querySelectorAll('input[type=radio],input[type=checkbox]')].some(c=>c.checked)"
 )
 

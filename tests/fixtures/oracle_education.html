@@ -1,0 +1,61 @@
+<!doctype html><title>Apply - Northwind</title>
+<div class="apply-flow-block"><h2 class="apply-flow-block__title">Education Required</h2>
+  <div class="profile-item-container" id="education">
+    <article class="apply-flow-profile-item-tile">
+      <div data-profile-item-tile="true" data-profile-item-invalid="true" role="group">
+        <div class="apply-flow-profile-item-tile__summary-title">Unnamed Major</div>
+        <div class="apply-flow-profile-item-tile__summary-subtitle">Example College</div>
+        <div id="issues">Fields to fix: 2</div>
+        <button type="button" aria-label="Edit" class="apply-flow-profile-item-tile__edit-item-icon">Edit</button>
+        <button type="button" aria-label="Delete" onclick="throw Error('Must never delete')">Delete</button>
+      </div>
+    </article>
+    <div id="editor"></div>
+  </div>
+</div>
+<div role="radiogroup" aria-labelledby="auth-label">
+  <label id="auth-label" class="required">Are you lawfully authorized to work in the United States?</label>
+  <button type="button" role="radio" aria-checked="false" onclick="choose(this)">Yes</button>
+  <button type="button" role="radio" aria-checked="false" onclick="choose(this)">No</button>
+</div>
+<button type="button" id="submit">Submit application</button>
+<p id="error" role="alert"></p><pre id="saved"></pre>
+<label>Resume<input type="file" name="resume"></label>
+<script>
+let saved = null;
+function choose(button) {
+  button.parentElement.querySelectorAll('[role=radio]').forEach(b =>
+    b.setAttribute('aria-checked', String(b === button)));
+}
+document.querySelector('[aria-label=Edit]').onclick = () => {
+  document.querySelector('#editor').innerHTML = `
+    <div class="profile-item-content">
+      <label>School<input name="school" value="Example College" disabled></label>
+      <label>Degree<input name="degree" required></label>
+      <label>Major<input name="major" required></label>
+    </div><div class="profile-item-footer">
+      <button type="button" class="cancel-btn">Cancel</button>
+      <button type="button" class="save-btn">Save</button></div>`;
+  document.querySelector('.cancel-btn').onclick = () => document.querySelector('#editor').replaceChildren();
+  document.querySelector('.save-btn').onclick = async () => {
+    const entry = Object.fromEntries([...document.querySelectorAll('#editor input')].map(e => [e.name, e.value]));
+    const response = await fetch('/education/save', {method: 'POST', body: JSON.stringify(entry)});
+    if (!response.ok) {
+      document.querySelector('#error').textContent = 'Invalid education';
+      document.querySelector('#editor').replaceChildren();
+      return;
+    }
+    saved = entry;
+    document.querySelector('#saved').textContent = JSON.stringify(saved);
+    document.querySelector('[data-profile-item-invalid]').setAttribute('data-profile-item-invalid', 'false');
+    document.querySelector('[class*=summary-title]').textContent = entry.major;
+    document.querySelector('#issues').remove();
+    document.querySelector('#editor').replaceChildren();
+  };
+};
+document.querySelector('#submit').onclick = async () => {
+  const authorization = document.querySelector('[aria-checked=true]')?.textContent;
+  const response = await fetch(location.pathname, {method: 'POST', body: JSON.stringify({education: saved, authorization})});
+  if (response.ok) location.assign(location.pathname + '/done');
+};
+</script>

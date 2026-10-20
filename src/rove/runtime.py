@@ -21,6 +21,25 @@ def state_root() -> Path:
     return p
 
 
+class OnHold(RuntimeError):
+    """An outbound call refused because the owner put Rove on hold."""
+
+
+def hold_path() -> Path:
+    return state_root() / "config/hold"
+
+
+def on_hold() -> bool:
+    """Whether the owner put Rove on hold (`rove hold on`): no tick does work and nothing
+    reaches Discord, Zoho or the model until `rove hold off`."""
+    return hold_path().exists()
+
+
+def refuse_on_hold(what: str) -> None:
+    if on_hold():
+        raise OnHold(f"Rove is on hold; {what} is not used until `rove hold off`")
+
+
 def api_key() -> str:
     if key := os.environ.get("ROVE_MODEL_API_KEY"):
         return key
@@ -29,6 +48,7 @@ def api_key() -> str:
 
 
 def client() -> httpx.Client:
+    refuse_on_hold("the local model")
     return httpx.Client(
         base_url=BASE_URL,
         headers={"Authorization": "Bearer " + api_key()},

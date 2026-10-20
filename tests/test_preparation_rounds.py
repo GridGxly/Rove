@@ -86,6 +86,53 @@ def test_repeated_unresolved_question_stops_without_redrafting(application, monk
     assert page["pending"] and not page.get("preparation_limit")
 
 
+def test_optional_control_failure_preserves_its_answer_without_claiming_a_skip(
+    application, monkeypatch
+):
+    control = question(2, label="Earliest Available Date Month", required=False, control_issue=True)
+    with workflow.db() as conn:
+        conn.execute(
+            "INSERT INTO application_answers VALUES(?,?,?,?)",
+            (application, control["key"], "9", "auto-draft:approved-date-part"),
+        )
+    calls, drafts = staged_browser(monkeypatch, application, [[control]])
+    page, _ = worker.prepare_fields(application, {"auto_use_drafts": True})
+    assert page["pending"] == [control]
+    assert len(calls) == 1 and not drafts
+    assert workflow.automatic_answers(application)[control["key"]]["value"] == "9"
+    with workflow.db() as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM application_events WHERE application_id=? "
+                "AND kind='optional_skipped'",
+                (application,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_optional_skip_event_lists_only_newly_saved_blanks(application):
+    import json
+
+    known = question(1, label="Middle Name", required=False)
+    blank = question(2, label="Education Link", required=False)
+    with workflow.db() as conn:
+        conn.execute(
+            "INSERT INTO application_answers VALUES(?,?,?,?)",
+            (application, known["key"], "Approved", "owner-reply"),
+        )
+    worker.skip_optional(application, [known, blank])
+    assert workflow.approved_answers(application)[known["key"]]["value"] == "Approved"
+    assert workflow.automatic_answers(application)[blank["key"]]["kind"] == "skip"
+    with workflow.db() as conn:
+        events = conn.execute(
+            "SELECT data FROM application_events WHERE application_id=? "
+            "AND kind='optional_skipped'",
+            (application,),
+        ).fetchall()
+    assert [json.loads(event[0])["labels"] for event in events] == [[blank["label"]]]
+
+
 def test_required_personal_fact_on_next_step_is_never_drafted(application, monkeypatch):
     unknown = question(2, label="Address1")
     calls, drafts = staged_browser(monkeypatch, application, [[question(1)], [unknown]])
